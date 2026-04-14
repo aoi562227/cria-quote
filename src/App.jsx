@@ -1821,18 +1821,18 @@ export default function App() {
                 <div style={{fontSize:20,fontWeight:900,letterSpacing:".08em",color:"#e8f0ff"}}>&gt;&gt;견&nbsp;&nbsp;적&nbsp;&nbsp;서</div>
                 <div style={{textAlign:"right",fontSize:10,color:"#8899cc",lineHeight:1.9}}>
                   <div style={{color:"#ffcc44",fontWeight:700}}>{s.date}</div>
-                  <div>크리아종합특수인쇄</div>
-                  <div>서울시 중구 서애로 5길 14</div>
-                  <div>TEL: 2268-3774  FAX: 2265-5283</div>
+                  <div>코리팩</div>
+                  <div>서울시 영등포구 경인로 775 2동 908호</div>
+                  <div>TEL: 02-2677-2675</div>
                 </div>
               </div>
 
               {/* 거래처 정보 */}
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",borderBottom:"2px solid #0a1628"}}>
                 {[
-                  ["거래처",s.customer||"—"],["상  호","크리아종합특수인쇄"],
-                  ["품  목",s.product||"—"], ["주  소","서울시 중구 서애로 5길 14"],
-                  ["수  량",`${qty.toLocaleString()} EA`],["연락처","TEL:2268-3774 FAX:2265-5283"],
+                  ["거래처",s.customer||"—"],["상  호","코리팩"],
+                  ["품  목",s.product||"—"], ["주  소","서울시 영등포구 경인로 775 2동 908호"],
+                  ["수  량",`${qty.toLocaleString()} EA`],["연락처","TEL: 02-2677-2675"],
                   ["담당자",""],["담당자",""],
                 ].map(([k,v],i)=>(
                   <div key={i} style={{display:"flex",borderBottom:"1px solid #ddd",borderRight:i%2===0?"1px solid #ddd":"none"}}>
@@ -1901,11 +1901,6 @@ export default function App() {
                 </tbody>
               </table>
 
-              {result.showIRWarning && (
-                <div style={{margin:"8px 16px 0",padding:"9px 14px",background:"#fff8f0",border:"1px solid #ffaa44",borderRadius:4,color:"#cc4400",fontSize:13,fontWeight:700}}>
-                  ⚠ IR코팅 하더라도 뒷 묻음이 생길 수 있습니다
-                </div>
-              )}
 
               {result.devLines.length>0 && (
                 <table style={{width:"100%",borderCollapse:"collapse",marginTop:6}}>
