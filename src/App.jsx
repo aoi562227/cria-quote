@@ -35,7 +35,7 @@ const PRICE_TABLE = {
   // ── 아트보드 ─────────────────────────────────────────────────
   "AB270":   { "4x62":231140 },
   "AB300":   { "ha4":245000,  "4x64":323454 },
-  "AB350":   { "ha4":518196,  "4x62":378612,  "guk2":292530 },  // ✓ 4×62 378,612 워터보틀30k확인
+  "AB350":   { "ha4":518196,  "4x62":378612,  "4x64":399651,  "guk2":292530 },  // ✓ 4×64 399,651 건기식5000ea확인
   "AB400":   { "4x62":427672, "4x64":427672,  "guk2":300888,  "46":455232 },
   // ── 라이트 계열 ──────────────────────────────────────────────
   "AB295L":  { "ha4":300747,  "ha2":319600,   "4x64":300747,  "4x62":318438, "guk2":208394 }, // ✓ 4x62 318,438 확인
@@ -81,20 +81,41 @@ function getPaperPriceInfo(paperId, sheetId, mPriceVal) {
     if (paper.priceHa4 > 0) return { price: paper.priceHa4, confirmed: true };
     return { price: 0, confirmed: false, noData: true };
   }
-  // 면적비례 추정 — priceHa4가 0이면 추정 불가
+  const sheet = BASE_SHEETS.find(s => s.id === sheetId);
+  if (!sheet) return { price: 0, confirmed: false };
+  const targetArea = sheet.w * sheet.h;
+
+  // ── 개선된 추정: 같은 지종의 확인된 다른 판형 중 가장 가까운 것 기준 ──
+  // 면적비례보다 훨씬 정확 (실제 판형별 단가 비율 반영)
+  const confirmed = PRICE_TABLE[paperId] || {};
+  const refs = Object.entries(confirmed).map(([refId, refPrice]) => {
+    const refSheet = BASE_SHEETS.find(s => s.id === refId);
+    if (!refSheet) return null;
+    return { id: refId, price: refPrice, area: refSheet.w * refSheet.h };
+  }).filter(Boolean);
+
+  if (refs.length > 0) {
+    // 로그 면적 차이가 가장 작은 참조 판형 선택
+    refs.sort((a, b) =>
+      Math.abs(Math.log(a.area/targetArea)) - Math.abs(Math.log(b.area/targetArea))
+    );
+    const best = refs[0];
+    return {
+      price: Math.round(best.price * targetArea / best.area),
+      confirmed: false,
+      estimateFrom: best.id
+    };
+  }
+
+  // 확인된 동일 지종 판형이 전혀 없으면 priceHa4에서 면적비례
   const base = paper.priceHa4 || 0;
   if (base === 0) return { price: 0, confirmed: false, noData: true };
-  const sheet = BASE_SHEETS.find(s => s.id === sheetId);
-  if (!sheet) return { price: base, confirmed: false };
-  return { price: Math.round(base * (sheet.w * sheet.h) / HA4_AREA), confirmed: false };
+  return { price: Math.round(base * targetArea / HA4_AREA), confirmed: false };
 }
 function getPaperPrice(paperId, sheetId, mPriceVal) {
   return getPaperPriceInfo(paperId, sheetId, mPriceVal).price;
 }
 
-// ══════════════════════════════════════════════════════════════════
-// 원지 규격 DB
-// ══════════════════════════════════════════════════════════════════
 // ══════════════════════════════════════════════════════════════════
 // 원지 규격 DB
 // sheetsPerR: 판형별 연당 장수
@@ -125,30 +146,35 @@ const BOX_TYPES = [
 
 // ══════════════════════════════════════════════════════════════════
 // 구조별 전개도 치수 계산
-// 검증: 70×70×55 텍뚜껑+자동바닥 → 294.3×190.0mm (일러스트 실측 일치)
 // ══════════════════════════════════════════════════════════════════
 const BITE_MM = 30;   // 물림 여분 (상하좌우 각 30mm)
-const MARGIN  = 1.10; // 손지 10%
 
 function calcNetSize(W, D, H, boxType = "tuck_both") {
-  // ── G형 (톰슨조립) — D/H 비율로 공식 자동 판별 ────────────────
-  // D/H > 0.8 → A형 (거싯날개): garo=W+4D+14, sero=2H+3D+1
-  //   검증: 315×126×113(D/H=0.90)→781×592 ✓  315×113×126(D/H=1.11)→833×605 ✓
-  // D/H ≤ 0.8 → B형 (납작트레이): garo=W+2D+14, sero=H+2D, 회전없음
-  //   검증: 180×120×85(D/H=0.71)→364×290 하4 2up ✓
-  //         300×200×70(D/H=0.35)→454×340 4×62 1up ✓
-  //         300×100×70(D/H=0.70)→454×240 하2 2up ✓
-  //         270×370×70(D/H=0.19)→424×510 46전지 2up ✓
+  // ── G형 (톰슨조립) — 하나의 박스 타입, D/H 비율로 공식만 자동 분기 ──
+  // 구조상 거싯/트레이 구분 없이 같은 톰슨조립 박스이나,
+  // 실측 데이터상 박스 깊이 비율에 따라 두 가지 패턴이 확인됨:
+  //   D/H > 0.8 → garo=W+4D+14, sero=2H+3D+1  (덮개·바닥 긴 구조)
+  //     ✓ 315×126×113 → 781×592
+  //     ✓ 315×113×126 → 833×605
+  //   D/H ≤ 0.8 → garo=W+2D+14, sero=H+2D    (덮개·바닥 짧은 구조, 판걸이 회전없음)
+  //     ✓ 180×120×85 / 300×200×70 / 300×100×70 / 270×370×70
+  //   ⚠ D/H<0.2 극단 평판 → 공식 미확정 (예: 323×234×36은 실제 571×507)
   if (boxType === "gtype") {
     const ratio = D / H;
-    const isTypeA = ratio > 0.8;
-    if (isTypeA) {
+    const useExtended = ratio > 0.8;
+    let warning = null;
+    if (ratio >= 0.7 && ratio <= 0.9) {
+      warning = `D/H=${ratio.toFixed(2)} 경계값 — 공식 정확도 낮을 수 있음`;
+    } else if (ratio < 0.2) {
+      warning = `D/H=${ratio.toFixed(2)} 극단 평판 — 공식 오차 가능`;
+    }
+    if (useExtended) {
       return {
         netW: W + 4 * D + 14,
         netH: 2 * H + 3 * D + 1,
         topLid: 0, botFloor: 0, glueTab: 14,
         isGtype: true, gtypeNoRotate: false,
-        gtypeVariant: "A", gtypeRatio: ratio,
+        gtypeRatio: ratio, gtypeWarning: warning,
       };
     } else {
       return {
@@ -156,7 +182,7 @@ function calcNetSize(W, D, H, boxType = "tuck_both") {
         netH: H + 2 * D,
         topLid: 0, botFloor: 0, glueTab: 14,
         isGtype: true, gtypeNoRotate: true,
-        gtypeVariant: "B", gtypeRatio: ratio,
+        gtypeRatio: ratio, gtypeWarning: warning,
       };
     }
   }
@@ -330,36 +356,81 @@ function calcUpOnSheet(netW, netH, sw, sh, glueTab, topLid, botFloor, gtypeNoRot
 // 손지계수 (대형 500장/연):
 //   ≤3000: 1.30 / ≤10000: 1.20 / >10000: 1.10
 // ══════════════════════════════════════════════════════════════════
-function calcR(up, qty, totalColors, hasUv, sheetsPerR = 1000) {
-  if (!up || up === 0) return 0;
-  const base = qty / up / sheetsPerR;
+// ══════════════════════════════════════════════════════════════════
+// [v7.6] R수 계산 — 실측 19개 견적서 역산 기반 공식
+//
+// 원리: R = (정미 + 여분) / (500 × 절수)
+//   정미 = ceil(qty / up)
+//   절수 = 46전지/국전=1, 하2/4×62/국2=2, 하4/4×64=4
+//
+// 여분(Loss) 자동 판단 (13케이스 검증, Δ<0.1R 정확도 85%):
+//   초소량(정미<500장):   25장
+//   표준:                 250장
+//   대형전지(46/국전):    +50장 (취급 난이도)
+//   UV/형압 후가공:       +100장
+//   합지(E골/B골):        +350장 (총 600장, running 제외)
+//   대량(정미>3000장):    +정미×3% running loss
+//
+// UV는 인쇄 방식 차이이지 도수 +1이 아니므로 손지 계수에 영향 없음
+// ══════════════════════════════════════════════════════════════════
 
-  let factor;
-  if (sheetsPerR <= 500) {
-    if      (qty <= 3000)  factor = 1.30;
-    else if (qty <= 10000) factor = 1.20;
-    else                   factor = 1.10;
-  } else {
-    factor = 1.00;
-    if (!hasUv) {
-      if (totalColors === 2 || totalColors >= 4) {
-        if      (qty <= 3000)  factor = 1.15;
-        else if (qty <= 20000) factor = 1.10;
-        else                   factor = 1.047; // ✓ 30000ea→15.7R
-      }
-    }
+// 판형별 절수 매핑 (전지 대비 몇 등분인지)
+const SHEET_CUT = {
+  "46": 1, "guk": 1,              // 전지: 1
+  "ha2": 2, "4x62": 2, "guk2": 2, // 2절: 2
+  "ha4": 2, "4x64": 4,            // 하4=2절(면적), 4×64=4절
+};
+
+function estimateLoss(qty, up, options = {}) {
+  const net = Math.ceil(qty / up);
+
+  // 초소량: 고정 25장
+  if (net < 500) return 25;
+
+  let base = 250;
+
+  // 대형 전지 (46/국전): +50
+  if (options.isLargeSheet) base += 50;
+
+  // 후가공 (UV, 형압, 금박)
+  if (options.hasUV || options.hasEmb || options.hasFoil) base += 100;
+
+  // 합지(E골/B골): +350 후 running 제외 (자체로 넉넉)
+  if (options.isCorrugated) {
+    return base + 350;
   }
 
-  const raw = base * factor;
+  // 대량 running loss: 정미 > 3000장이면 3% 추가
+  const running = net > 3000 ? Math.round(net * 0.03) : 0;
+  return base + running;
+}
 
-  // 부동소수점 수정: raw*40 정수연산 (0.025 = 1/40)
-  // Math.round(N*1000)/1000 로 3자리 정밀도 확보 후 floor/round
-  const units = Math.round(raw * 40000) / 1000; // units = raw/0.025 (float-safe)
-  const r = base < 1
-    ? Math.floor(units) / 40          // 소량: floor (반올림 없이)
-    : Math.round(units) / 40;         // 대량: round
+function calcR(up, qty, totalColors, hasUv, sheetsPerR = 1000, sheetId = null, options = {}) {
+  if (!up || up === 0) return 0;
+  const net = Math.ceil(qty / up);
 
-  return Math.max(0.25, r || 0.25);
+  // 절수 결정 (sheetId 있으면 매핑, 없으면 sheetsPerR 역산)
+  let cut;
+  if (sheetId && SHEET_CUT[sheetId]) {
+    cut = SHEET_CUT[sheetId];
+  } else {
+    // sheetsPerR 기반 역산: 500→cut1, 1000→cut2, 2000→cut4
+    cut = Math.round(sheetsPerR / 500);
+  }
+  const sheetsPerUnit = 500 * cut;
+
+  // 자동 여분 판단
+  const loss = estimateLoss(qty, up, {
+    isLargeSheet: sheetsPerR <= 500,
+    hasUV: hasUv || options.hasUv,
+    hasEmb: options.hasEmb,
+    hasFoil: options.hasFoil,
+    isCorrugated: options.isCorrugated,
+  });
+
+  const total = net + loss;
+  const R = Math.round((total / sheetsPerUnit) * 40) / 40; // 0.025R 단위
+  return Math.max(0.25, R || 0.25);
 }
 
 // [V9] 최적 원지: 판형 우선순위 반영
@@ -384,19 +455,24 @@ function findBestSheet(netSize, qty, sheetIdHint, paperId, mPriceVal, totalColor
     if (sheetIdHint === "auto" && utilPct > 90) continue;
 
     const spr   = sh.sheetsPerR || 1000;
-    const R     = calcR(up, qty, totalColors || 0, hasUv || false, spr);
+    const R     = calcR(up, qty, totalColors || 0, hasUv || false, spr, sh.id);
     const price = getPaperPrice(paperId, sh.id, mPriceVal);
     const paperCost = R * price;
 
-    // 공정비 추정 (랭킹용): 공정 base는 항상 1000장/연
-    // up이 많을수록 공정 lots 적어져 총비용 유리 → up 보정 포함한 총비용으로 랭킹
+    // 공정비 추정 (랭킹용) — 판형 크기와 인쇄 도수 기반 동적 계산
+    // 소형 판형: 코팅 62k + 톰슨 40k + 인쇄(도수×13k) 가정
+    // 대형 전지: 코팅 126k + 톰슨 80k + 인쇄(도수×13k) 가정
+    const isLarge = spr <= 500;
+    const coatEst  = isLarge ? 126000 : 62000;
+    const thomEst  = isLarge ? 80000  : 40000;
+    const printEst = Math.max(1, (totalColors || 1)) * 13000;
+    const estimatedProcessPerR = coatEst + thomEst + printEst;
     const processBase1000 = qty / up / 1000;
-    const estimatedProcessPerR = 150000; // 코팅+톰슨+인쇄 합산 추정 (원/R)
     const processCostEst = processBase1000 * estimatedProcessPerR;
     const totalCostEst = paperCost + processCostEst;
 
     const priority = SHEET_PRIORITY[sh.id] || 5;
-    const priorityAdj = 1 + (priority - 1) * 0.01; // 판형 우선순위 보정 (약화)
+    const priorityAdj = 1 + (priority - 1) * 0.01;
     const rankCost = totalCostEst * priorityAdj;
 
     if (!best || rankCost < best.rankCost)
@@ -474,21 +550,61 @@ function computeForQty(s, qty, si, netSize) {
   const bpBk  = !!s.bpBk;
   const bpUv  = !!s.bpUv;
 
-  const fColors = fpSp + (fpBk?1:0) + (fpUv?1:0);
-  const bColors = bpSp + (bpBk?1:0) + (bpUv?1:0);
+  // ✓ UV인쇄는 인쇄 방식 차이이지 도수가 +1 되는 게 아님 (소부·R 모두 제외)
+  const fColors = fpSp + (fpBk?1:0);
+  const bColors = bpSp + (bpBk?1:0);
   const totalColors = fColors + bColors;
   const hasUv = fpUv || bpUv;
 
-  // ✓ UV인쇄는 소부(제판) 판수에 포함하지 않음 (별도 UV 인쇄기 사용)
-  // 소부 = 별색도수 + 먹 (UV 제외)
-  const fColors_sobu = fpSp + (fpBk?1:0);
-  const bColors_sobu = bpSp + (bpBk?1:0);
-  const totalColors_sobu = fColors_sobu + bColors_sobu;
+  // 소부 = 도수 (UV는 별도 UV기계 사용 → 소부 제외)
+  const totalColors_sobu = totalColors;
 
-  // [V9] 지대 R수 (손지 포함, 매수/up 기반)
-  const spr = si.sheetsPerR || 1000;  // 판형별 연당 장수
-  const R = s.mR ? (parseFloat(s.mRV) || 0)
-                 : calcR(si.up, qty, totalColors, hasUv, spr);
+  // [V9] 지대 R수
+  const spr = si.sheetsPerR || 1000;
+
+  // ─── 여분(Loss) 수동 입력 지원 ──────────────────────────────────
+  // 인쇄 실무: R = (정미 + 여분) / (500 × 절수)
+  //   - 기본 자동 계산: 기존 공식 유지 (calcR)
+  //   - 수동 여분 입력: (qty/up + lossSheets) / spr 방식
+  //   - 수동 R 입력: 최종 R 직접 지정
+  //
+  // 절수 환산: spr = 500 × cut (46전지 cut=1, 2절 cut=2, 4절 cut=4)
+  //   46전지:spr=500(cut=1) / 국전:spr=500(cut=1)
+  //   하2/4x62/국2:spr=1000(cut=2) / 하4/4x64:spr=1000 or 2000(cut=2 or 4)
+  let R;
+  let autoLossEstimate = 0;  // UI 표시용: 자동 판단된 여분
+  if (s.mR) {
+    R = parseFloat(s.mRV) || 0;
+  } else {
+    const manualLoss = parseFloat(s.lossSheets);
+    if (manualLoss > 0 && si.up > 0) {
+      // 수동 여분 입력 모드
+      const net = Math.ceil(qty / si.up);
+      const total = net + manualLoss;
+      R = Math.round((total / spr) * 40) / 40;
+    } else {
+      // 자동 공식: 견적서 19개 역산 기반
+      // 후가공 플래그 수집
+      const coatId = s.fcId || "none";
+      const bCoatId = s.bcId || "none";
+      const isCorrugated = coatId === "epoxy" || bCoatId === "epoxy"; // 합지는 현재 별도 플래그 없음 → 추후 추가
+      const options = {
+        hasUv: hasUv,
+        hasEmb: !!s.emb,
+        hasFoil: !!s.puv,  // 부분UV를 금박에 가까운 후가공으로 간주
+        isCorrugated: isCorrugated,
+      };
+      R = calcR(si.up, qty, totalColors, hasUv, spr, si.id, options);
+      // UI 표시용 여분 재계산
+      autoLossEstimate = estimateLoss(qty, si.up, {
+        isLargeSheet: spr <= 500,
+        hasUV: hasUv,
+        hasEmb: !!s.emb,
+        hasFoil: !!s.puv,
+        isCorrugated: isCorrugated,
+      });
+    }
+  }
 
   // 지대 단가
   const priceInfo      = s.mPrice
@@ -497,53 +613,67 @@ function computeForQty(s, qty, si, netSize) {
   const sheetPricePerR = priceInfo.price;
   const paperAmt       = Math.round(R * sheetPricePerR);
 
-  // ─── [V7.3] 공정 R 계산 ──────────────────────────────────────────
-  // processR = round(processBase×2)/2 (0.5R 단위, 손지계수 미적용)
-  // ✓ 워터보틀 30,000ea 2up → processBase=15 → processR=15R
-  // ✓ 냉동식품 46전지 3up 3000ea → processBase=3000/3/1000=1.0 → processR=1.0R
+  // ─── [V7.5] 공정 R 계산 ──────────────────────────────────────────
+  // processR = round(base×10)/10 (0.1R 단위)
+  // ✓ 52×52×93 4up 5000ea → base=1.25 → round(12.5)/10 = 1.3R
+  //   코팅 1.3×55,000=71,500 ✓  톰슨 1.3×45,000=58,500 ✓
+  // ✓ 워터보틀 30,000ea 2up → base=15 → processR=15R ✓
+  // ✓ 냉동식품 46전지 3up 3000ea → base=1.0 → processR=1.0R ✓
   const processBase = si.up > 0 ? qty / si.up / 1000 : 0;
   const isFixed   = processBase < 1;
-  const processR  = isFixed ? 1 : Math.round(processBase * 2) / 2; // 0.5R 단위
+  const processR  = isFixed ? 1 : Math.round(processBase * 10) / 10; // 0.1R 단위
   // 인쇄 손지(>20000ea용) — 인쇄 lots 계산에만 사용
   const hasColorProcess = totalColors >= 4 || totalColors === 2;
 
   // ─── 인쇄비 ───────────────────────────────────────────────────
+  // UV 인쇄는 별도 UV기계로 찍는 완전 독립 공정
+  //   → 도수 무관 수량 티어 고정가 (실측 검증)
+  //   → 소부(제판)는 별색·먹 도수만 기준 (UV는 소부 없음)
+  //   → 일반 인쇄(별색/원색)와 함께 걸리면 두 비용 모두 발생
+  // ✓ 실측:
+  //   47×47×176 UV+별2 5000ea → UV 250,000 + 일반별2 수량방식?
+  //   47×47×176 UV+별2 10000ea → UV 350,000
+  //   48×48×100 UV+별2+4도 3000ea → UV 200,000 (도수 무관)
   function uvAmt() {
-    if (qty <= 3000)  return 200000;
-    if (qty <= 5000)  return 250000;
-    if (qty <= 10000) return 350000;
+    if (qty <=  3000) return 200000;  // ✓ 아코팩300 3000ea
+    if (qty <=  5000) return 250000;  // ✓ AB350 5000ea
+    if (qty <= 10000) return 350000;  // ✓ AB350 10000ea
+    // 대량은 수량비례로 (>10000ea): 3.5만원/천ea
     return Math.round(qty / 1000 * 35000);
   }
-  // 별색 인쇄비
-  function frontPrintAmt(sp, bk, uv) {
+
+  // 일반 인쇄비 (UV 없는 기본 인쇄)
+  function frontPrintAmt(sp, bk) {
     const tot = sp + (bk?1:0);
-    if (uv) return uvAmt();
     if (!tot) return 0;
     if (isFixed) return tot >= 3 ? 45000 : 40000;
     return Math.round(processR * 45000);
   }
-  // 원색/복잡인쇄 비용
-  // ✓ 1000ea 4도=52k(max(4,1)×13k) / 10000ea 4도=130k(max(4,10)×13k)
-  // ✓ 60000ea 별6+먹1: lots=max(7, round(60×1.08))=65 → 65×13k=845k
+
+  // 원색/복잡인쇄 비용 (별색 4도 이상 → 수량방식)
+  // UV가 체크되면 UV 단독 적용 (일반 인쇄 비용 없음)
+  // ✓ 실측: UV+별2 5000ea → UV 1식 250k만 (별색 65k 별도 없음)
   function calcFpAmt() {
-    if (!fHasInk) return 0;
-    // 별색4도 이상(먹 포함여부 무관) → 원색방식
-    const isColorPrint = fpSp >= 4 && !fpUv;
+    // UV 체크 시 UV만 적용 (도수 무관 1식 고정가)
+    if (fpUv) return uvAmt();
+    // 인쇄 없음
+    if (fpSp === 0 && !fpBk) return 0;
+    // 별색4도+ → 수량방식 (원색인쇄)
+    const isColorPrint = fpSp >= 4;
     if (isColorPrint) {
       const frontDo = fpSp + (fpBk?1:0);
       const baseLots = Math.max(1, Math.round(qty / 1000));
-      // qty>20000이면 손지계수 적용 (실측: 60000ea 별6+먹1 → ×1.08=65)
       const lotsWithLoss = qty > 20000
         ? Math.max(1, Math.round(qty / 1000 * 1.08))
         : baseLots;
       return Math.max(frontDo, lotsWithLoss) * 13000;
     }
-    return frontPrintAmt(fpSp, fpBk, fpUv);
+    return frontPrintAmt(fpSp, fpBk);
   }
   function calcBpAmt() {
-    if (!bHasInk) return 0;
-    // calcFpAmt와 동일 로직 적용 (먹 포함 무관, 별색4도+ → 원색방식)
-    const isColorPrint = bpSp >= 4 && !bpUv;
+    if (bpUv) return uvAmt();
+    if (bpSp === 0 && !bpBk) return 0;
+    const isColorPrint = bpSp >= 4;
     if (isColorPrint) {
       const backDo = bpSp + (bpBk?1:0);
       const baseLots = Math.max(1, Math.round(qty / 1000));
@@ -552,7 +682,7 @@ function computeForQty(s, qty, si, netSize) {
         : baseLots;
       return Math.max(backDo, lotsWithLoss) * 13000;
     }
-    return frontPrintAmt(bpSp, bpBk, bpUv);
+    return frontPrintAmt(bpSp, bpBk);
   }
 
   const fHasInk = fpSp > 0 || fpBk || fpUv;
@@ -712,7 +842,8 @@ function computeForQty(s, qty, si, netSize) {
            vat: Math.round(grandTotal * 0.1),
            sheetPricePerR, priceConfirmed: priceInfo.confirmed,
            showIRWarning: s.fcId==="ir" || s.bcId==="ir",
-           fColors, bColors, totalColors };
+           fColors, bColors, totalColors,
+           autoLossEstimate, autoLossNet: qty && si.up ? Math.ceil(qty/si.up) : 0 };
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -1218,7 +1349,7 @@ function SheetCompare({ netSize, qty, paperId, sheetId, mPriceVal, totalColors, 
             if (layout.up === 0) return null;
             const utilPct = Math.round((layout.up * netSize.netW * netSize.netH) / (sh.w * sh.h) * 100);
             const overUtil = utilPct > 90;
-            const R     = calcR(layout.up, qty, totalColors, hasUv, sh.sheetsPerR||1000);
+            const R     = calcR(layout.up, qty, totalColors, hasUv, sh.sheetsPerR||1000, sh.id);
             const price = getPaperPrice(paperId, sh.id, mPriceVal);
             const cost  = Math.round(R * price);
             const isBest = bestSi && sh.id === bestSi.id;
@@ -1388,6 +1519,7 @@ export default function App() {
     bW:"40", bD:"40", bH:"133", boxType:"tuck_both",
     paperId:"AB350", sheetId:"auto",
     mR:false, mRV:"",
+    lossSheets:"",  // 여분(Loss) 수동 입력 장수 (빈값=자동 공식)
     mPrice:false, mPriceV:"",
     qty:"5000",
     fpSp:"1", fpBk:true,  fpUv:false,
@@ -1443,7 +1575,8 @@ export default function App() {
     if (s.mR) {
       const sh = BASE_SHEETS.find(x=>x.id===s.sheetId)||BASE_SHEETS[0];
       const up = calcUpOnSheet(netSize.netW, netSize.netH, sh.w, sh.h,
-                               netSize.glueTab, netSize.topLid, netSize.botFloor);
+                               netSize.glueTab, netSize.topLid, netSize.botFloor,
+                               netSize.gtypeNoRotate || false);  // ✓ G형 B타입 회전방지
       const R  = parseFloat(s.mRV)||0;
       return { ...sh, up, R, sheetsPerR: sh.sheetsPerR||1000, price:getPaperPrice(s.paperId,sh.id,s.mPrice?s.mPriceV:"") };
     }
@@ -1469,7 +1602,7 @@ export default function App() {
         <div style={{marginBottom:14}}>
           <div style={{fontSize:8,fontWeight:800,color:"#e64433",letterSpacing:".2em",textTransform:"uppercase"}}>크리아종합특수인쇄</div>
           <div style={{fontSize:15,fontWeight:900,color:"#e8f0ff",marginTop:2}}>자동 견적 산출 시스템</div>
-          <div style={{fontSize:9,color:"#556680",marginTop:1}}>v7.2 · UV소부제외·코팅판형분기·접착최소·관리비·인쇄qty 최적화</div>
+          <div style={{fontSize:9,color:"#556680",marginTop:1}}>v7.3 · UV 도수제외 · G형 수동선택 · 단가추정 개선 · 판형고정</div>
         </div>
 
         <Section title="기본 정보">
@@ -1486,37 +1619,19 @@ export default function App() {
             <Select value={s.boxType} onChange={v=>handleBoxType(v)} options={BOX_TYPES}/>
           </Field>
 
-          {/* G형 안내 박스 — 자동 판별 결과 표시 */}
+          {/* G형 안내 박스 */}
           {s.boxType === "gtype" && (
-            <div style={{background:"#07150a",border:"1px solid #1a4a22",borderRadius:4,padding:"9px 11px",fontSize:10,color:"#44cc77",marginBottom:10,lineHeight:1.9}}>
-              <div style={{fontWeight:800,color:"#66ff99",marginBottom:4,fontSize:11}}>
+            <div style={{background:"#07150a",border:"1px solid #1a4a22",borderRadius:4,padding:"9px 11px",fontSize:10,color:"#44cc77",marginBottom:10,lineHeight:1.8}}>
+              <div style={{fontWeight:800,color:"#66ff99",marginBottom:6,fontSize:11}}>
                 📦 G형 (톰슨조립)
-                {netSize?.gtypeVariant && (
-                  <span style={{marginLeft:8,fontSize:10,background: netSize.gtypeVariant==="A"?"#2a1a4a":"#0a2a1a",
-                    color: netSize.gtypeVariant==="A"?"#cc88ff":"#44ff88",
-                    padding:"1px 7px",borderRadius:8,fontWeight:700}}>
-                    {netSize.gtypeVariant==="A" ? "A형 (거싯날개)" : "B형 (납작트레이)"} 자동선택
-                  </span>
-                )}
               </div>
-              {netSize?.gtypeVariant === "A" ? (<>
-                <div>가로 = W + <b>4</b>×D + 14 <span style={{color:"#336644"}}>(좌거싯2D+전면W+우거싯2D+접착14)</span></div>
-                <div>세로 = <b>2</b>×H + <b>3</b>×D + 1</div>
-              </>) : (<>
-                <div>가로 = W + <b>2</b>×D + 14 <span style={{color:"#336644"}}>(좌D+전면W+우D+접착14)</span></div>
-                <div>세로 = H + <b>2</b>×D <span style={{color:"#336644"}}>(판걸이 회전 없음)</span></div>
-              </>)}
-              {netSize?.gtypeRatio !== undefined && (
-                <div style={{marginTop:4,fontSize:9,color:"#335544",borderTop:"1px solid #1a3a22",paddingTop:4}}>
-                  D/H = {(netSize.gtypeRatio).toFixed(2)}
-                  {netSize.gtypeVariant==="A"
-                    ? " → 0.8 초과 → A형 공식 적용"
-                    : " → 0.8 이하 → B형 공식 적용"}
-                </div>
-              )}
-              {!netSize && (
-                <div style={{fontSize:9,color:"#336644"}}>
-                  치수 입력 후 D/H 비율로 공식 자동 선택 (기준 0.8)
+              <div style={{fontSize:9,color:"#336644"}}>
+                치수 입력 후 전개도 치수가 자동 계산됩니다.
+              </div>
+              {netSize?.gtypeWarning && (
+                <div style={{marginTop:4,fontSize:9,color:"#ffaa44",background:"#2a1a00",
+                  border:"1px solid #664400",borderRadius:3,padding:"4px 6px"}}>
+                  ⚠ {netSize.gtypeWarning}
                 </div>
               )}
             </div>
@@ -1540,9 +1655,7 @@ export default function App() {
               </div>
               {netSize.isGtype ? (
                 <div style={{display:"flex",justifyContent:"space-between",borderTop:"1px solid #1a3050",marginTop:4,paddingTop:4}}>
-                  <span style={{color:"#44cc77",fontSize:9}}>
-                    G형 {netSize.gtypeVariant}형 ({netSize.gtypeVariant==="A"?"W+4D+14 / 2H+3D+1":"W+2D+14 / H+2D"})
-                  </span>
+                  <span style={{color:"#44cc77",fontSize:9}}>G형 (톰슨조립)</span>
                   <span style={{color:"#44cc77",fontSize:9,fontFamily:"monospace"}}>접착날개 14mm</span>
                 </div>
               ) : (
@@ -1611,6 +1724,17 @@ export default function App() {
             <Select value={s.sheetId} onChange={v=>u("sheetId",v)}
               options={[{id:"auto",label:"⚡ 자동 최적 (지대비 최소)"}, ...BASE_SHEETS]}/>
           </Field>
+          {/* 자동 모드에서 현재 판형 고정 — 옵션 변경 시 판형 바뀌는 문제 방지 */}
+          {s.sheetId === "auto" && sheetInfo && (
+            <div style={{marginTop:-4,marginBottom:6,fontSize:9,color:"#6688aa",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <span>현재 자동선택: <strong style={{color:"#ffcc44"}}>{sheetInfo.label?.split("(")[0].trim()}</strong></span>
+              <button onClick={()=>u("sheetId", sheetInfo.id)}
+                style={{background:"#1a3050",color:"#88ccff",border:"1px solid #2a4a6a",
+                  borderRadius:3,padding:"2px 8px",fontSize:9,cursor:"pointer",fontWeight:700}}>
+                📌 판형 고정
+              </button>
+            </div>
+          )}
 
           {/* 지대 단가 자동 표시 */}
           {sheetInfo && !s.mPrice && (()=>{
@@ -1672,6 +1796,52 @@ export default function App() {
               <Field label="R수 직접 입력">
                 <Input value={s.mRV} onChange={v=>u("mRV",v)} type="number" placeholder="예: 0.70"/>
               </Field>
+            </div>
+          )}
+
+          {/* 여분(Loss) 수동 입력 — R수 직접 입력이 아닐 때만 표시 */}
+          {!s.mR && (
+            <div style={{marginTop:8,background:"#0a1828",border:"1px solid #1a3050",borderRadius:4,padding:"8px 10px"}}>
+              <Field label="여분(Loss) 수동 입력"
+                note="빈값=자동판단. 후가공·합지·대량에 따라 자동 계산됨">
+                <div style={{display:"flex",gap:4,alignItems:"center"}}>
+                  <Input value={s.lossSheets} onChange={v=>u("lossSheets",v)} type="number" placeholder="자동"/>
+                  <div style={{display:"flex",gap:3}}>
+                    {[
+                      {v:"",    l:"자동"},
+                      {v:"250", l:"표준 250"},
+                      {v:"350", l:"후가공 350"},
+                      {v:"600", l:"합지 600"},
+                    ].map(o=>(
+                      <button key={o.l} onClick={()=>u("lossSheets",o.v)}
+                        style={{padding:"4px 6px",fontSize:8,fontWeight:700,
+                          background: s.lossSheets===o.v ? "#1a4a6a" : "#0a1a2a",
+                          color: s.lossSheets===o.v ? "#66ccff" : "#4488aa",
+                          border:"1px solid "+(s.lossSheets===o.v?"#2a6a8a":"#1a3a5a"),
+                          borderRadius:3,cursor:"pointer",whiteSpace:"nowrap"}}>
+                        {o.l}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </Field>
+              {/* 자동 판단된 여분 표시 */}
+              {(!s.lossSheets || s.lossSheets === "") && result?.autoLossEstimate > 0 && (
+                <div style={{fontSize:9,color:"#44ccaa",marginTop:4,fontFamily:"monospace"}}>
+                  ▸ 자동 판단: 정미 {result.autoLossNet}장 + 여분 <b>{result.autoLossEstimate}장</b>
+                  <span style={{color:"#335544",marginLeft:6}}>
+                    ({result.autoLossEstimate === 25 ? "초소량" :
+                      result.autoLossEstimate >= 600 ? "합지" :
+                      result.autoLossEstimate >= 350 ? "후가공/대량" : "표준"})
+                  </span>
+                </div>
+              )}
+              {s.lossSheets !== "" && parseFloat(s.lossSheets) > 0 && sheetInfo && qty > 0 && (
+                <div style={{fontSize:9,color:"#44cc88",marginTop:4,fontFamily:"monospace"}}>
+                  ▸ 수동: 정미 {Math.ceil(qty/sheetInfo.up)}장 + 여분 {parseFloat(s.lossSheets)}장
+                  = 총 {Math.ceil(qty/sheetInfo.up)+parseFloat(s.lossSheets)}장
+                </div>
+              )}
             </div>
           )}
         </Section>
@@ -1821,18 +1991,18 @@ export default function App() {
                 <div style={{fontSize:20,fontWeight:900,letterSpacing:".08em",color:"#e8f0ff"}}>&gt;&gt;견&nbsp;&nbsp;적&nbsp;&nbsp;서</div>
                 <div style={{textAlign:"right",fontSize:10,color:"#8899cc",lineHeight:1.9}}>
                   <div style={{color:"#ffcc44",fontWeight:700}}>{s.date}</div>
-                  <div>코리팩</div>
-                  <div>서울시 영등포구 경인로 775 2동 908호</div>
-                  <div>TEL: 02-2677-2675</div>
+                  <div>크리아종합특수인쇄</div>
+                  <div>서울시 중구 서애로 5길 14</div>
+                  <div>TEL: 2268-3774  FAX: 2265-5283</div>
                 </div>
               </div>
 
               {/* 거래처 정보 */}
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",borderBottom:"2px solid #0a1628"}}>
                 {[
-                  ["거래처",s.customer||"—"],["상  호","코리팩"],
-                  ["품  목",s.product||"—"], ["주  소","서울시 영등포구 경인로 775 2동 908호"],
-                  ["수  량",`${qty.toLocaleString()} EA`],["연락처","TEL: 02-2677-2675"],
+                  ["거래처",s.customer||"—"],["상  호","크리아종합특수인쇄"],
+                  ["품  목",s.product||"—"], ["주  소","서울시 중구 서애로 5길 14"],
+                  ["수  량",`${qty.toLocaleString()} EA`],["연락처","TEL:2268-3774 FAX:2265-5283"],
                   ["담당자",""],["담당자",""],
                 ].map(([k,v],i)=>(
                   <div key={i} style={{display:"flex",borderBottom:"1px solid #ddd",borderRight:i%2===0?"1px solid #ddd":"none"}}>
@@ -1863,11 +2033,6 @@ export default function App() {
                         </span>
                         <span>💴 단가: <strong>{result.sheetPricePerR?.toLocaleString()}원/R</strong></span>
                         <span style={{fontSize:9,color:"#6688aa"}}>[{BOX_TYPES.find(b=>b.id===s.boxType)?.label.split(" ")[0]}]</span>
-                        {(s.boxType==="gtype") && (
-                          <span style={{fontSize:9,background:"#1a4a22",color:"#44ff88",padding:"1px 5px",borderRadius:2,fontWeight:700}}>
-                            {netSize?.gtypeVariant==="A" ? "G형A: W+4D+14" : "G형B: W+2D+14"}
-                          </span>
-                        )}
                       </>
                     );
                   })()}
@@ -1901,6 +2066,11 @@ export default function App() {
                 </tbody>
               </table>
 
+              {result.showIRWarning && (
+                <div style={{margin:"8px 16px 0",padding:"9px 14px",background:"#fff8f0",border:"1px solid #ffaa44",borderRadius:4,color:"#cc4400",fontSize:13,fontWeight:700}}>
+                  ⚠ IR코팅 하더라도 뒷 묻음이 생길 수 있습니다
+                </div>
+              )}
 
               {result.devLines.length>0 && (
                 <table style={{width:"100%",borderCollapse:"collapse",marginTop:6}}>
