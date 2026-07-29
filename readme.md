@@ -542,9 +542,24 @@ npm run verify
 ```bash
 npm install
 npm run dev      # http://localhost:5173
+npm run verify   # 견적 공식 검증 (견적서·칼선 실측 대조)
 npm run build
-npm run deploy   # gh-pages
 ```
+
+**배포는 자동** — `main` 에 머지되면 GitHub Actions 가 처리한다.
+
+```
+main push → verify → build → gh-pages 브랜치 푸시
+```
+
+- `verify` 가 실패하면 배포 단계로 넘어가지 않는다
+- Pages 소스는 기존과 동일하게 `gh-pages 브랜치` (GitHub 설정 변경 없음)
+- 수동 배포도 그대로 가능: `npm run deploy`
+
+| 워크플로 | 트리거 | 하는 일 |
+|---|---|---|
+| `.github/workflows/ci.yml` | PR | verify + build |
+| `.github/workflows/deploy.yml` | main push | verify + build + gh-pages 배포 |
 
 ---
 
