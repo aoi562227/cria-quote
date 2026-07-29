@@ -1,0 +1,44 @@
+# main 에 머지되면 검증 → 빌드 → gh-pages 브랜치에 배포
+#
+# Pages 소스는 기존과 동일하게 `gh-pages 브랜치` 를 그대로 사용한다.
+# (GitHub 설정을 건드리지 않으므로 기존 배포와 충돌 없음)
+# verify 가 실패하면 배포 단계로 넘어가지 않는다.
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: deploy-gh-pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - run: npm install
+
+      - name: 견적 공식 검증 (실패 시 배포 중단)
+        run: npm run verify
+
+      - name: 빌드
+        run: npm run build
+
+      - name: gh-pages 브랜치에 배포
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./dist
+          publish_branch: gh-pages
+          commit_message: "deploy: ${{ github.event.head_commit.message }}"
