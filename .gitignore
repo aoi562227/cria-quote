@@ -1,0 +1,16 @@
+# 의존성
+node_modules/
+.vite/
+
+# 빌드 산출물 (gh-pages 브랜치로 배포)
+dist/
+
+# ⚠ 영업기밀 — 공개 저장소에 올리지 않음
+#   견적서 원본(거래처명·단가·총액), 역산 분석 문서
+docs/
+*.xlsx
+*.xlsm
+
+# 에디터·도구
+.claude/
+.DS_Store
