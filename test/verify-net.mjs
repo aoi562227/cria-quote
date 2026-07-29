@@ -115,15 +115,18 @@ console.log("\n═══ 행거탭(유로홀) 모델링 ════════
 // → 열 간격(피치)에는 안 더하고 **전체 외곽에 1회만** 더해야 함.
 {
   const netW = 2*(92+13) + TAB, netH = 140 + 2*(13+16.5);   // 224.3 × 199.0
+  const ilh  = 13 + 16.5;                                   // 세로 맞물림 = 바닥날개 29.5
   const pw = (636-20)*1.005, ph = (469-30)*1.005;           // 국2 유효판
   const mcc = (b,l,il) => (b<=0||l<b) ? 0 : (b>il ? Math.max(1,Math.floor((l-il)/(b-il))) : 99);
   const best = (ht, addToPitch) => {
     const nh = addToPitch ? netH + ht : netH;
     const ex = addToPitch ? 0 : ht;
     let u = 0, how = "";
-    let c = mcc(netW, pw, IL_W), r = mcc(nh, ph - ex, IL_H);
+    // 정방향: netW 반복 → IL_W / netH 반복 → ilh
+    let c = mcc(netW, pw, IL_W), r = mcc(nh, ph - ex, ilh);
     if (c*r > u) { u = c*r; how = `정 ${c}×${r}`; }
-    c = mcc(nh, pw - ex, IL_W); r = mcc(netW, ph, IL_H);
+    // 회전: netH 반복 → ilh / netW 반복 → IL_W
+    c = mcc(nh, pw - ex, ilh); r = mcc(netW, ph, IL_W);
     if (c*r > u) { u = c*r; how = `회 ${c}×${r}`; }
     return [u, how];
   };
@@ -134,9 +137,13 @@ console.log("\n═══ 행거탭(유로홀) 모델링 ════════
     console.log(`외곽에 1회만 더함 (채택)`.padEnd(34)+`${ht}mm`.padEnd(9)+String(u).padEnd(6)+how.padEnd(8)+(u===6?"✓":"✗"));
   }
   const [u2,how2] = best(15, true);
-  console.log(`netH 에 그냥 합산 (오답)`.padEnd(34)+`15mm`.padEnd(9)+String(u2).padEnd(6)+how2.padEnd(8)+(u2===6?"✓":"✗"));
+  console.log(`netH 에 그냥 합산 (비교)`.padEnd(34)+`15mm`.padEnd(9)+String(u2).padEnd(6)+how2.padEnd(8)+(u2===6?"✓":"✗"));
   console.log(`
-→ 행거탭을 netH 에 그냥 더하면 4up 으로 어긋남. 외곽 1회 가산이 맞음.
-  앱에서도 확인: 행거탭 ON(15mm) → 전개도 224.3×214.0 (몸판 199.0 + 15.0),
+→ 채택 모델(외곽 1회 가산)은 행거탭 0~20mm 전 구간에서 6up 유지 (견적서 일치).
+  ※ 세로 맞물림을 바닥날개(29.5mm)로 고친 뒤에는 이 건에서 두 모델이 같은 결과를 냄.
+    (고정 25mm 시절엔 netH 합산 모델이 4up 으로 어긋났음)
+    그래도 외곽 1회 가산을 쓰는 이유는 물리적으로 맞기 때문 —
+    행거탭은 위쪽 한 곳만 돌출해 옆 열 빈공간에 끼워지므로 피치를 늘리지 않는다.
+  앱 확인: 행거탭 ON(15mm) → 전개도 224.3×214.0 (몸판 199.0 + 15.0),
   판걸이 6up · 지대R 1.97 유지 (견적서 6up · 1.92R)`);
 }
