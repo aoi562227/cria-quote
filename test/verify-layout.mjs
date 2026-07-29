@@ -50,7 +50,7 @@ for (const [nm, nw, nh, sid, cut, realUp] of EXPLICIT) {
   );
 }
 
-console.log("\n═══ B. 재단크기 대비 원지 최대크기 — 협력사가 얼마나 잘라내나 ════════════");
+console.log("\n═══ B. 재단크기 대비 원지 최대크기 — 코리팩가 얼마나 잘라내나 ════════════");
 console.log("케이스".padEnd(22)+"판형   원지최대     재단크기     잘라낸양(가로/세로)   면적비");
 console.log("-".repeat(96));
 // [이름, 판형, 견적서 단위]
