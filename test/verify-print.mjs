@@ -122,3 +122,37 @@ const stable = newPicks.size === 1;
 console.log(`종전: 도수에 따라 ${oldPicks.size}종 판형으로 갈림  ${oldPicks.size>1?"✗":"✓"}`);
 console.log(`신  : 도수와 무관하게 ${newPicks.size}종  ${stable?"✓ (원지·판걸이·R수 일관)":"✗"}`);
 if (!stable) process.exitCode = 1;
+
+console.log("");
+console.log("═══ C. 하드롱 계열은 확실히 유리할 때만 ═══════════════════════════════════");
+// 실무: "하드롱은 왠만하면 안 쓴다. 국절이나 46절이 너무 수율이 안 좋을 때만 쓴다."
+// → 사륙·국전 최선안보다 6% 이상 저렴할 때만 하드롱 채택
+const EDGE = 0.06;
+const CASES2 = [
+  // [이름, 하드롱 총비용, 사륙·국전 총비용, 기대 선택, 근거]
+  ["조립형 324×428 · AB400 3,000ea", 935820, 1032310, "하드롱",
+   "하3 지대 673,320 + 공정 262,500  vs  4×62 769,810 + 262,500 → 9.3% 우위 (견적서 = 하3)"],
+  ["삼면 50×40×81 · 295L 1,000ea (별색1)", 218875, 226340, "사륙",
+   "하4 지대 70,375  vs  4×64 77,840 → 3.3% 우위 (부족)"],
+  ["삼면 50×40×81 (원색4+별색2)", 320375, 327840, "사륙",
+   "도수가 커지면 우위가 2.3% 로 더 줄어듦"],
+];
+console.log("케이스".padEnd(34)+"하드롱".padEnd(11)+"사륙·국전".padEnd(11)+"우위".padEnd(8)+"선택".padEnd(9)+"기대");
+console.log("-".repeat(96));
+let ok2 = 0;
+for (const [nm, h, m, exp] of CASES2) {
+  const edge = (m - h) / m;
+  const pick = h < m * (1 - EDGE) ? "하드롱" : "사륙";
+  const hit = pick === exp;
+  if (hit) ok2++;
+  console.log(nm.padEnd(34)+h.toLocaleString().padStart(9).padEnd(11)+m.toLocaleString().padStart(9).padEnd(11)+
+    ((edge*100).toFixed(1)+"%").padStart(6).padEnd(8)+pick.padEnd(9)+exp+(hit?" ✓":" ✗"));
+}
+console.log("-".repeat(96));
+console.log("하드롱 채택 규칙: " + ok2 + "/" + CASES2.length);
+for (const [nm,,,,why] of CASES2) console.log("  · " + nm + "\n      " + why);
+console.log("");
+console.log("⚠ 배수 페널티(총비용 × 1.12)로 구현하면 안 된다 —");
+console.log("  총비용에 판형과 무관한 공정추정이 섞여 지대 우위가 희석돼");
+console.log("  실제 견적서(하3)와 어긋난다. 명시적 우위 조건(6%)을 쓴다.");
+if (ok2 !== CASES2.length) process.exitCode = 1;

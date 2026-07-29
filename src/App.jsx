@@ -622,10 +622,26 @@ function customSheetOf(s) {
 // 최적 원지: 총비용 최소 + 판형 우선순위(동일 비용이면 실무 선호 판형)
 // 실무 선호: 4×64 → 국2 → 4×62 → 하4 → 하3 → 4×63 → 국전 → 46전 → 하2 → 하전지
 // 주문생산은 auto 추천 대상에서 제외 (코리팩 협의 필요 → 수동 선택 전용)
+// 실무 우선순위 — 사륙·국전 계열이 기본, 하드롱은 후순위
 const SHEET_PRIORITY = {
-  "4x64":1, "guk2":2, "4x62":3, "ha4":4, "ha3":5,
-  "4x63":6, "guk":7, "46":8, "ha2":9, "ha":10, "custom":99,
+  "4x64":1, "guk2":2, "4x62":3, "4x63":4, "guk":5, "46":6,
+  "ha4":7, "ha3":8, "ha2":9, "ha":10, "custom":99,
 };
+
+// 하드롱 계열은 후순위 — 실무 기준
+//   "하드롱은 왠만하면 안 쓴다. 국절이나 46절이 너무 수율이 안 좋을 때만 쓴다."
+// 즉 몇 % 저렴한 정도로는 부족하고, 확실히 유리해야 선택된다.
+// → 사륙·국전 최선안보다 **6% 이상 저렴할 때만** 하드롱을 쓴다.
+//   (사륙·국전에서 up=0 이면 하드롱만 남으므로 그때는 자동 선택)
+//
+// ⚠ 배수 페널티(총비용 × 1.12)로 하면 안 된다. 총비용에는 판형과 무관한
+//   공정추정이 섞여 있어 지대 우위가 희석된다. 실측으로 확인:
+//     조립형 324×428 · AB400 · 3,000ea (견적서 = 하3 2up)
+//       하3   지대 673,320 + 공정추정 262,500 = 935,820
+//       4×62 지대 769,810 + 공정추정 262,500 = 1,032,310
+//       하3 가 지대만 보면 12.5% 저렴하지만 총비용 기준으론 9.3%
+//       → 12% 배수 페널티면 4×62 가 이겨서 실제 견적서와 어긋났음
+const HADRONG_EDGE = 0.06;
 
 function findBestSheet(netSize, qty, sheetIdHint, paperId, mPriceVal, lossOpts = {}, customSheet = null) {
   if (!netSize || !qty) return null;
@@ -682,11 +698,28 @@ function findBestSheet(netSize, qty, sheetIdHint, paperId, mPriceVal, lossOpts =
   //     4×64 4up : 지대 77,840 (0.275R)
   //     별색1도 → 랭킹차 899원(0.4%)로 하4 선택 / 원색4도 → 4×64 선택
   //   같은 박스인데 인쇄 도수 때문에 원지·판걸이·R수가 통째로 바뀌었다.
+  //
+  // 위 예는 하드롱 페널티(12%) 적용 후 4×64 로 확정된다 — 하4 가 3.3% 저렴한
+  // 정도로는 "수율이 너무 안 좋을 때" 에 해당하지 않기 때문.
   const TIE_PCT = 0.015;
-  const minCost = Math.min(...pool.map(c => c.rankCost));
-  const near    = pool.filter(c => c.rankCost <= minCost * (1 + TIE_PCT));
-  near.sort((a, b) => a.priority - b.priority || a.rankCost - b.rankCost);
-  return near[0];
+  const pickFrom = list => {
+    const min  = Math.min(...list.map(c => c.rankCost));
+    const near = list.filter(c => c.rankCost <= min * (1 + TIE_PCT));
+    near.sort((a, b) => a.priority - b.priority || a.rankCost - b.rankCost);
+    return near[0];
+  };
+
+  // 하드롱은 사륙·국전 최선안보다 HADRONG_EDGE 이상 저렴할 때만
+  const main = pool.filter(c => c.family !== "하드롱");
+  const hadr = pool.filter(c => c.family === "하드롱");
+  if (!main.length) return hadr.length ? pickFrom(hadr) : null;
+
+  const bestMain = pickFrom(main);
+  if (!hadr.length) return bestMain;
+
+  const bestHadr = pickFrom(hadr);
+  return bestHadr.rankCost < bestMain.rankCost * (1 - HADRONG_EDGE)
+    ? bestHadr : bestMain;
 }
 
 // ══════════════════════════════════════════════════════════════════
