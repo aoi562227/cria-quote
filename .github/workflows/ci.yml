@@ -1,0 +1,23 @@
+# 견적 공식 검증 + 빌드
+# 배포는 기존 방식(gh-pages 브랜치, `npm run deploy`) 유지 — Pages 소스를 건드리지 않음
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install
+      - name: 견적 공식 검증 (견적서 실측 대조)
+        run: npm run verify
+      - name: 빌드
+        run: npm run build
