@@ -597,8 +597,9 @@ function calcProcessR(up, qty) {
 
 /** state → 여분 판단 옵션 (calcR / findBestSheet 공용) */
 function lossOptsOf(s) {
-  const fInk = (s.fpColor ? 4 : (parseInt(s.fpSp)||0)) + (s.fpBk?1:0) > 0 || !!s.fpUv;
-  const bInk = (s.bpColor ? 4 : (parseInt(s.bpSp)||0)) + (s.bpBk?1:0) > 0 || !!s.bpUv;
+  // 원색(CMYK 4도) 과 별색은 함께 쓸 수 있다 (예: 원색4도 + 별색2도 = 6도)
+  const fInk = (s.fpColor?4:0) + (parseInt(s.fpSp)||0) + (s.fpBk?1:0) > 0 || !!s.fpUv;
+  const bInk = (s.bpColor?4:0) + (parseInt(s.bpSp)||0) + (s.bpBk?1:0) > 0 || !!s.bpUv;
   const spot = (parseInt(s.fpSp)||0) + (parseInt(s.bpSp)||0);
   const flat = (s.fpColor?4:0) + (s.fpBk?1:0) + (s.bpColor?4:0) + (s.bpBk?1:0);
   return {
@@ -621,10 +622,26 @@ function customSheetOf(s) {
 // 최적 원지: 총비용 최소 + 판형 우선순위(동일 비용이면 실무 선호 판형)
 // 실무 선호: 4×64 → 국2 → 4×62 → 하4 → 하3 → 4×63 → 국전 → 46전 → 하2 → 하전지
 // 주문생산은 auto 추천 대상에서 제외 (코리팩 협의 필요 → 수동 선택 전용)
+// 실무 우선순위 — 사륙·국전 계열이 기본, 하드롱은 후순위
 const SHEET_PRIORITY = {
-  "4x64":1, "guk2":2, "4x62":3, "ha4":4, "ha3":5,
-  "4x63":6, "guk":7, "46":8, "ha2":9, "ha":10, "custom":99,
+  "4x64":1, "guk2":2, "4x62":3, "4x63":4, "guk":5, "46":6,
+  "ha4":7, "ha3":8, "ha2":9, "ha":10, "custom":99,
 };
+
+// 하드롱 계열은 후순위 — 실무 기준
+//   "하드롱은 왠만하면 안 쓴다. 국절이나 46절이 너무 수율이 안 좋을 때만 쓴다."
+// 즉 몇 % 저렴한 정도로는 부족하고, 확실히 유리해야 선택된다.
+// → 사륙·국전 최선안보다 **6% 이상 저렴할 때만** 하드롱을 쓴다.
+//   (사륙·국전에서 up=0 이면 하드롱만 남으므로 그때는 자동 선택)
+//
+// ⚠ 배수 페널티(총비용 × 1.12)로 하면 안 된다. 총비용에는 판형과 무관한
+//   공정추정이 섞여 있어 지대 우위가 희석된다. 실측으로 확인:
+//     조립형 324×428 · AB400 · 3,000ea (견적서 = 하3 2up)
+//       하3   지대 673,320 + 공정추정 262,500 = 935,820
+//       4×62 지대 769,810 + 공정추정 262,500 = 1,032,310
+//       하3 가 지대만 보면 12.5% 저렴하지만 총비용 기준으론 9.3%
+//       → 12% 배수 페널티면 4×62 가 이겨서 실제 견적서와 어긋났음
+const HADRONG_EDGE = 0.06;
 
 function findBestSheet(netSize, qty, sheetIdHint, paperId, mPriceVal, lossOpts = {}, customSheet = null) {
   if (!netSize || !qty) return null;
@@ -634,7 +651,7 @@ function findBestSheet(netSize, qty, sheetIdHint, paperId, mPriceVal, lossOpts =
     ? BASE_SHEETS.filter(s => s.id === sheetIdHint)
     : BASE_SHEETS.filter(s => !s.custom);
 
-  let best = null;
+  const pool = [];
   for (const base of candidates) {
     // 주문생산은 사용자가 입력한 크기·절수를 사용
     const sh = (base.custom && customSheet) ? { ...base, ...customSheet } : base;
@@ -662,14 +679,47 @@ function findBestSheet(netSize, qty, sheetIdHint, paperId, mPriceVal, lossOpts =
     const printEst  = Math.max(1, lossOpts.printUnits || 4) * PRINT_UNIT_DEFAULT;
     const processCostEst = calcProcessR(up, qty) * (coatEst + thomEst + printEst);
 
-    const priority   = SHEET_PRIORITY[base.id] || 20;
-    const rankCost   = (paperCost + processCostEst) * (1 + (priority - 1) * 0.01);
-
-    if (!best || rankCost < best.rankCost)
-      best = { ...sh, id: base.id, up, R, cost: paperCost, rankCost, price,
-               sheetsPerR: spr, tier, utilPct: Math.round(utilPct) };
+    const priority = SHEET_PRIORITY[base.id] || 20;
+    pool.push({ ...sh, id: base.id, up, R, cost: paperCost, price, priority,
+                rankCost: paperCost + processCostEst,
+                sheetsPerR: spr, tier, utilPct: Math.round(utilPct) });
   }
-  return best;
+  if (!pool.length) return null;
+
+  // ── 선택 규칙 ──────────────────────────────────────────────────
+  // 총비용(지대 + 공정추정) 이 최저값의 TIE_PCT 안에 들어오는 판형들은
+  // "실질적으로 같은 값"으로 보고 그 중 실무 우선순위가 높은 것을 쓴다.
+  //
+  // ⚠ 종전에는 우선순위를 총비용에 **곱했다**:  rankCost = 총비용 × (1 + (priority−1)×0.01)
+  //   그런데 공정추정에는 판형과 무관한 항(인쇄 도수 등)이 섞여 있어서,
+  //   도수만 바꿔도 곱해지는 밑값이 커지고 순위가 뒤집혔다.
+  //   실측 예) 삼면접착 50×40×81 · AB라이트295 · 1,000ea
+  //     하4  6up : 지대 70,375 (0.234R)   ← 지대가 7,465원 더 싸고 up 도 많다
+  //     4×64 4up : 지대 77,840 (0.275R)
+  //     별색1도 → 랭킹차 899원(0.4%)로 하4 선택 / 원색4도 → 4×64 선택
+  //   같은 박스인데 인쇄 도수 때문에 원지·판걸이·R수가 통째로 바뀌었다.
+  //
+  // 위 예는 하드롱 페널티(12%) 적용 후 4×64 로 확정된다 — 하4 가 3.3% 저렴한
+  // 정도로는 "수율이 너무 안 좋을 때" 에 해당하지 않기 때문.
+  const TIE_PCT = 0.015;
+  const pickFrom = list => {
+    const min  = Math.min(...list.map(c => c.rankCost));
+    const near = list.filter(c => c.rankCost <= min * (1 + TIE_PCT));
+    near.sort((a, b) => a.priority - b.priority || a.rankCost - b.rankCost);
+    return near[0];
+  };
+
+  // 하드롱은 사륙·국전 최선안보다 HADRONG_EDGE 이상 저렴할 때만
+  const main = pool.filter(c => c.family !== "하드롱");
+  const hadr = pool.filter(c => c.family === "하드롱");
+  if (!main.length) return hadr.length ? pickFrom(hadr) : null;
+
+  const bestMain = pickFrom(main);
+  if (!hadr.length) return bestMain;
+
+  const bestHadr = pickFrom(hadr);
+  return bestHadr.rankCost < bestMain.rankCost * (1 - HADRONG_EDGE)
+    ? bestHadr : bestMain;
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -793,8 +843,9 @@ function computeForQty(s, qty, si, netSize) {
   const bpColor = !!s.bpColor;
 
   // 소부는 도수 기준. UV인쇄는 별도 UV기계라 소부 없음 (견적서 전건 확인)
-  const fColors = (fpColor ? 4 : fpSp) + (fpBk ? 1 : 0);
-  const bColors = (bpColor ? 4 : bpSp) + (bpBk ? 1 : 0);
+  // 소부 도수 = 원색(4) + 별색 + 먹 — 원색과 별색은 병행 가능
+  const fColors = (fpColor ? 4 : 0) + fpSp + (fpBk ? 1 : 0);
+  const bColors = (bpColor ? 4 : 0) + bpSp + (bpBk ? 1 : 0);
   const totalColors = fColors + bColors;
   const hasUv    = fpUv || bpUv;
   const fHasInk  = fColors > 0 || fpUv;
@@ -847,7 +898,8 @@ function computeForQty(s, qty, si, netSize) {
   function printSide(sp, bk, uv, isColor) {
     if (uv) return { qtyN: 1, unitLabel: "식", up: uvAmt(), amt: uvAmt() };
     const flatDo = (isColor ? 4 : 0) + (bk ? 1 : 0);   // 원색·먹 (가중치 1)
-    const spotDo = isColor ? 0 : sp;                   // 별색 (가중치 3 또는 별도단가)
+    const spotDo = sp;                                 // 별색 (가중치 3 또는 별도단가)
+                                                       // 원색과 병행 가능 (원색4 + 별색2 = 6도)
     if (flatDo + spotDo === 0) return null;
 
     if (spotDo > 0 && spotMode === "rpr") {
@@ -909,7 +961,8 @@ function computeForQty(s, qty, si, netSize) {
   // ─── 표시용 규격 문자열 ─────────────────────────────────────────
   const sideSpec = (sp, bk, uv, isColor) => [
     uv ? "UV인쇄" : "",
-    isColor ? "원색 4도" : (sp > 0 ? `별색 ${sp}도${s.beda ? " 베다" : ""}` : ""),
+    isColor ? "원색 4도" : "",
+    sp > 0 ? `별색 ${sp}도${s.beda ? " 베다" : ""}` : "",
     bk ? "먹 1도" : "",
   ].filter(Boolean).join(" + ");
   const sheetName = si.label.split("(")[1]?.replace(")","") || si.label;
@@ -2114,7 +2167,7 @@ export default function App() {
             const isF = side === "f";
             const kSp=`${side}pSp`, kBk=`${side}pBk`, kUv=`${side}pUv`, kCol=`${side}pColor`;
             const sp = parseInt(s[kSp])||0, isColor = !!s[kCol];
-            const doN = (isColor?4:sp) + (s[kBk]?1:0);
+            const doN = (isColor?4:0) + sp + (s[kBk]?1:0);
             return (
               <div key={side} style={{background:"#080e1c",border:"1px solid #1a3050",borderRadius:4,padding:"10px",marginBottom:8}}>
                 <div style={{fontSize:9,color:isF?"#4aaeff":"#88aacc",fontWeight:700,marginBottom:8,letterSpacing:".08em"}}>
@@ -2122,11 +2175,10 @@ export default function App() {
                 </div>
                 <div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:8}}>
                   <Toggle checked={isColor} onChange={v=>u(kCol,v)} label="원색 4도 (CMYK)"/>
-                  {!isColor && (
-                    <Field label="별색 도수 (0~8)" note="별색 1도 = 인쇄 3회 환산">
-                      <Input value={s[kSp]} onChange={v=>u(kSp,Math.max(0,Math.min(8,parseInt(v)||0)).toString())} type="number" placeholder="0"/>
-                    </Field>
-                  )}
+                  <Field label="별색 도수 (0~8)"
+                    note={isColor ? "원색과 병행 가능 — 원색4도 + 별색2도 = 6도" : "별색 1도 = 인쇄 3회 환산"}>
+                    <Input value={s[kSp]} onChange={v=>u(kSp,Math.max(0,Math.min(8,parseInt(v)||0)).toString())} type="number" placeholder="0"/>
+                  </Field>
                   <div style={{display:"flex",gap:10}}>
                     <Toggle checked={!!s[kBk]} onChange={v=>u(kBk,v)} label="먹 1도"/>
                     <Toggle checked={!!s[kUv]} onChange={v=>u(kUv,v)} label="UV 인쇄"/>
@@ -2134,7 +2186,7 @@ export default function App() {
                 </div>
                 {(doN>0 || s[kUv]) && (
                   <div style={{fontSize:9,color:isF?"#44cc88":"#88aacc",padding:"3px 6px",background:isF?"#0a2a10":"#0a1828",borderRadius:3}}>
-                    {isF?"전면":"후면"} {[s[kUv]?"UV":"", isColor?"원색4도":(sp>0?`별색${sp}도`:""), s[kBk]?"먹1도":""].filter(Boolean).join("+")}
+                    {isF?"전면":"후면"} {[s[kUv]?"UV":"", isColor?"원색4도":"", sp>0?`별색${sp}도`:"", s[kBk]?"먹1도":""].filter(Boolean).join("+")}
                     &nbsp;— 소부 {doN}판{s[kUv] && <span style={{color:"#88ccff"}}> (UV별도)</span>}
                   </div>
                 )}
@@ -2143,7 +2195,7 @@ export default function App() {
           })}
 
           {/* ── 별색 인쇄 계산 방식 ────────────────────────────────── */}
-          {(((parseInt(s.fpSp)||0) > 0 && !s.fpColor) || ((parseInt(s.bpSp)||0) > 0 && !s.bpColor)) && (
+          {((parseInt(s.fpSp)||0) > 0 || (parseInt(s.bpSp)||0) > 0) && (
             <div style={{background:"#0a0f1e",border:"1px solid #3a2a1a",borderRadius:4,padding:"10px",marginBottom:8}}>
               <div style={{fontSize:9,color:"#ffaa44",fontWeight:700,marginBottom:8,letterSpacing:".08em"}}>별색 인쇄 계산</div>
               <Field label="계산 방식">
