@@ -597,8 +597,9 @@ function calcProcessR(up, qty) {
 
 /** state → 여분 판단 옵션 (calcR / findBestSheet 공용) */
 function lossOptsOf(s) {
-  const fInk = (s.fpColor ? 4 : (parseInt(s.fpSp)||0)) + (s.fpBk?1:0) > 0 || !!s.fpUv;
-  const bInk = (s.bpColor ? 4 : (parseInt(s.bpSp)||0)) + (s.bpBk?1:0) > 0 || !!s.bpUv;
+  // 원색(CMYK 4도) 과 별색은 함께 쓸 수 있다 (예: 원색4도 + 별색2도 = 6도)
+  const fInk = (s.fpColor?4:0) + (parseInt(s.fpSp)||0) + (s.fpBk?1:0) > 0 || !!s.fpUv;
+  const bInk = (s.bpColor?4:0) + (parseInt(s.bpSp)||0) + (s.bpBk?1:0) > 0 || !!s.bpUv;
   const spot = (parseInt(s.fpSp)||0) + (parseInt(s.bpSp)||0);
   const flat = (s.fpColor?4:0) + (s.fpBk?1:0) + (s.bpColor?4:0) + (s.bpBk?1:0);
   return {
@@ -634,7 +635,7 @@ function findBestSheet(netSize, qty, sheetIdHint, paperId, mPriceVal, lossOpts =
     ? BASE_SHEETS.filter(s => s.id === sheetIdHint)
     : BASE_SHEETS.filter(s => !s.custom);
 
-  let best = null;
+  const pool = [];
   for (const base of candidates) {
     // 주문생산은 사용자가 입력한 크기·절수를 사용
     const sh = (base.custom && customSheet) ? { ...base, ...customSheet } : base;
@@ -662,14 +663,30 @@ function findBestSheet(netSize, qty, sheetIdHint, paperId, mPriceVal, lossOpts =
     const printEst  = Math.max(1, lossOpts.printUnits || 4) * PRINT_UNIT_DEFAULT;
     const processCostEst = calcProcessR(up, qty) * (coatEst + thomEst + printEst);
 
-    const priority   = SHEET_PRIORITY[base.id] || 20;
-    const rankCost   = (paperCost + processCostEst) * (1 + (priority - 1) * 0.01);
-
-    if (!best || rankCost < best.rankCost)
-      best = { ...sh, id: base.id, up, R, cost: paperCost, rankCost, price,
-               sheetsPerR: spr, tier, utilPct: Math.round(utilPct) };
+    const priority = SHEET_PRIORITY[base.id] || 20;
+    pool.push({ ...sh, id: base.id, up, R, cost: paperCost, price, priority,
+                rankCost: paperCost + processCostEst,
+                sheetsPerR: spr, tier, utilPct: Math.round(utilPct) });
   }
-  return best;
+  if (!pool.length) return null;
+
+  // ── 선택 규칙 ──────────────────────────────────────────────────
+  // 총비용(지대 + 공정추정) 이 최저값의 TIE_PCT 안에 들어오는 판형들은
+  // "실질적으로 같은 값"으로 보고 그 중 실무 우선순위가 높은 것을 쓴다.
+  //
+  // ⚠ 종전에는 우선순위를 총비용에 **곱했다**:  rankCost = 총비용 × (1 + (priority−1)×0.01)
+  //   그런데 공정추정에는 판형과 무관한 항(인쇄 도수 등)이 섞여 있어서,
+  //   도수만 바꿔도 곱해지는 밑값이 커지고 순위가 뒤집혔다.
+  //   실측 예) 삼면접착 50×40×81 · AB라이트295 · 1,000ea
+  //     하4  6up : 지대 70,375 (0.234R)   ← 지대가 7,465원 더 싸고 up 도 많다
+  //     4×64 4up : 지대 77,840 (0.275R)
+  //     별색1도 → 랭킹차 899원(0.4%)로 하4 선택 / 원색4도 → 4×64 선택
+  //   같은 박스인데 인쇄 도수 때문에 원지·판걸이·R수가 통째로 바뀌었다.
+  const TIE_PCT = 0.015;
+  const minCost = Math.min(...pool.map(c => c.rankCost));
+  const near    = pool.filter(c => c.rankCost <= minCost * (1 + TIE_PCT));
+  near.sort((a, b) => a.priority - b.priority || a.rankCost - b.rankCost);
+  return near[0];
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -793,8 +810,9 @@ function computeForQty(s, qty, si, netSize) {
   const bpColor = !!s.bpColor;
 
   // 소부는 도수 기준. UV인쇄는 별도 UV기계라 소부 없음 (견적서 전건 확인)
-  const fColors = (fpColor ? 4 : fpSp) + (fpBk ? 1 : 0);
-  const bColors = (bpColor ? 4 : bpSp) + (bpBk ? 1 : 0);
+  // 소부 도수 = 원색(4) + 별색 + 먹 — 원색과 별색은 병행 가능
+  const fColors = (fpColor ? 4 : 0) + fpSp + (fpBk ? 1 : 0);
+  const bColors = (bpColor ? 4 : 0) + bpSp + (bpBk ? 1 : 0);
   const totalColors = fColors + bColors;
   const hasUv    = fpUv || bpUv;
   const fHasInk  = fColors > 0 || fpUv;
@@ -847,7 +865,8 @@ function computeForQty(s, qty, si, netSize) {
   function printSide(sp, bk, uv, isColor) {
     if (uv) return { qtyN: 1, unitLabel: "식", up: uvAmt(), amt: uvAmt() };
     const flatDo = (isColor ? 4 : 0) + (bk ? 1 : 0);   // 원색·먹 (가중치 1)
-    const spotDo = isColor ? 0 : sp;                   // 별색 (가중치 3 또는 별도단가)
+    const spotDo = sp;                                 // 별색 (가중치 3 또는 별도단가)
+                                                       // 원색과 병행 가능 (원색4 + 별색2 = 6도)
     if (flatDo + spotDo === 0) return null;
 
     if (spotDo > 0 && spotMode === "rpr") {
@@ -909,7 +928,8 @@ function computeForQty(s, qty, si, netSize) {
   // ─── 표시용 규격 문자열 ─────────────────────────────────────────
   const sideSpec = (sp, bk, uv, isColor) => [
     uv ? "UV인쇄" : "",
-    isColor ? "원색 4도" : (sp > 0 ? `별색 ${sp}도${s.beda ? " 베다" : ""}` : ""),
+    isColor ? "원색 4도" : "",
+    sp > 0 ? `별색 ${sp}도${s.beda ? " 베다" : ""}` : "",
     bk ? "먹 1도" : "",
   ].filter(Boolean).join(" + ");
   const sheetName = si.label.split("(")[1]?.replace(")","") || si.label;
@@ -2114,7 +2134,7 @@ export default function App() {
             const isF = side === "f";
             const kSp=`${side}pSp`, kBk=`${side}pBk`, kUv=`${side}pUv`, kCol=`${side}pColor`;
             const sp = parseInt(s[kSp])||0, isColor = !!s[kCol];
-            const doN = (isColor?4:sp) + (s[kBk]?1:0);
+            const doN = (isColor?4:0) + sp + (s[kBk]?1:0);
             return (
               <div key={side} style={{background:"#080e1c",border:"1px solid #1a3050",borderRadius:4,padding:"10px",marginBottom:8}}>
                 <div style={{fontSize:9,color:isF?"#4aaeff":"#88aacc",fontWeight:700,marginBottom:8,letterSpacing:".08em"}}>
@@ -2122,11 +2142,10 @@ export default function App() {
                 </div>
                 <div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:8}}>
                   <Toggle checked={isColor} onChange={v=>u(kCol,v)} label="원색 4도 (CMYK)"/>
-                  {!isColor && (
-                    <Field label="별색 도수 (0~8)" note="별색 1도 = 인쇄 3회 환산">
-                      <Input value={s[kSp]} onChange={v=>u(kSp,Math.max(0,Math.min(8,parseInt(v)||0)).toString())} type="number" placeholder="0"/>
-                    </Field>
-                  )}
+                  <Field label="별색 도수 (0~8)"
+                    note={isColor ? "원색과 병행 가능 — 원색4도 + 별색2도 = 6도" : "별색 1도 = 인쇄 3회 환산"}>
+                    <Input value={s[kSp]} onChange={v=>u(kSp,Math.max(0,Math.min(8,parseInt(v)||0)).toString())} type="number" placeholder="0"/>
+                  </Field>
                   <div style={{display:"flex",gap:10}}>
                     <Toggle checked={!!s[kBk]} onChange={v=>u(kBk,v)} label="먹 1도"/>
                     <Toggle checked={!!s[kUv]} onChange={v=>u(kUv,v)} label="UV 인쇄"/>
@@ -2134,7 +2153,7 @@ export default function App() {
                 </div>
                 {(doN>0 || s[kUv]) && (
                   <div style={{fontSize:9,color:isF?"#44cc88":"#88aacc",padding:"3px 6px",background:isF?"#0a2a10":"#0a1828",borderRadius:3}}>
-                    {isF?"전면":"후면"} {[s[kUv]?"UV":"", isColor?"원색4도":(sp>0?`별색${sp}도`:""), s[kBk]?"먹1도":""].filter(Boolean).join("+")}
+                    {isF?"전면":"후면"} {[s[kUv]?"UV":"", isColor?"원색4도":"", sp>0?`별색${sp}도`:"", s[kBk]?"먹1도":""].filter(Boolean).join("+")}
                     &nbsp;— 소부 {doN}판{s[kUv] && <span style={{color:"#88ccff"}}> (UV별도)</span>}
                   </div>
                 )}
@@ -2143,7 +2162,7 @@ export default function App() {
           })}
 
           {/* ── 별색 인쇄 계산 방식 ────────────────────────────────── */}
-          {(((parseInt(s.fpSp)||0) > 0 && !s.fpColor) || ((parseInt(s.bpSp)||0) > 0 && !s.bpColor)) && (
+          {((parseInt(s.fpSp)||0) > 0 || (parseInt(s.bpSp)||0) > 0) && (
             <div style={{background:"#0a0f1e",border:"1px solid #3a2a1a",borderRadius:4,padding:"10px",marginBottom:8}}>
               <div style={{fontSize:9,color:"#ffaa44",fontWeight:700,marginBottom:8,letterSpacing:".08em"}}>별색 인쇄 계산</div>
               <Field label="계산 방식">
