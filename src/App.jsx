@@ -1389,7 +1389,16 @@ function LayoutViz({ si, netSize, W, D, H, boxType }) {
         stroke="rgba(255,200,60,0.55)" strokeWidth={0.8} strokeDasharray="3,2"/>,
     ];
 
-    return <g>{rects}{lines}{bodyLines}</g>;
+    // ── 반전(180° 회전) ────────────────────────────────────────────
+    // ⚠ 종전에는 flipped 를 파라미터로 받기만 하고 **본문에서 쓰지 않았다**.
+    //   그래서 반전 플래그가 켜져도 모든 박스가 같은 방향으로 그려졌고,
+    //   맞물림 배치가 "같은 방향 박스들이 그냥 겹친 그림" 으로 보였다.
+    // 박스 중심 기준 180° 회전 = 머리-꼬리 뒤집기.
+    //   뚜껑이 반대쪽으로 가면서 옆 박스의 뚜껑과 엇갈려 물린다.
+    const g = <g>{rects}{lines}{bodyLines}</g>;
+    return flipped
+      ? <g transform={`rotate(180, ${bx + bw / 2}, ${by + bh / 2})`}>{g}</g>
+      : g;
   }
 
   return (
