@@ -10,6 +10,7 @@ const PAPERS = [
   { id:"AB350",   label:"AB 350g",           group:"아트보드" },
   { id:"AB400",   label:"AB 400g",           group:"아트보드" },
   // ── 라이트 ────────────────────────────────────────────────────
+  { id:"AB250L",  label:"AB라이트 250g",     group:"라이트"   },
   { id:"AB295L",  label:"AB라이트 295g",     group:"라이트"   },
   { id:"ABL270",  label:"A라이트 270g",      group:"라이트"   },
   { id:"ABL325",  label:"AB라이트 325g",     group:"라이트"   },
@@ -50,6 +51,7 @@ const PRICE_TABLE = {
   "AB300":   { "4x64":323454 },                                                                   // 26-07-06 스타킹
   "AB350":   { "ha4":492286,  "4x62":378612, "4x64":399651, "guk2":292530 },                      // 26-04-15 / 26-03-13 / 26-04-22
   "AB400":   { "ha3":561100,  "4x62":427672, "4x64":431272, "guk2":300888, "46":455232 },         // 26-06-09 / 26-04-06 / 26-07-28 / 26-03-16
+  "AB250L":  { "4x62":196560 },                                                                   // 26-07-30 실무 제공
   "AB295L":  { "ha4":300747,  "4x62":318438, "4x63":300747, "4x64":283056 },                      // 26-03-18 / 26-03-12 / 26-05-28
   "ABL270":  { "ha2":319600 },                                                                    // 26-04-06
   "ABL325":  { "46":351036,   "4x62":312032, "guk":243216 },                                      // 26-04-06
@@ -110,6 +112,22 @@ const BASE_SHEETS = [
   // ── 주문생산 (코리팩 재단 — 크기·절수 직접 입력) ─────────────────
   { id:"custom", label:"주문생산 (직접입력)", w:890, h:670, cut:2, family:"주문", custom:true },
 ];
+
+/**
+ * 이 지종×판형 조합에 「확인된」 지대 단가가 있는가.
+ * auto / custom 은 항상 허용 (auto 는 추정치까지 써서 탐색, custom 은 직접입력 전제).
+ * UI 에서 추정 조합을 회색·비활성으로 막는 데 사용.
+ */
+function paperSheetConfirmed(paperId, sheetId) {
+  if (!paperId || !sheetId) return false;
+  if (sheetId === "auto" || sheetId === "custom") return true;
+  return PRICE_TABLE[paperId]?.[sheetId] > 0;
+}
+
+/** 이 지종에 확인 단가가 있는 판형 id 목록 */
+function confirmedSheetsFor(paperId) {
+  return Object.keys(PRICE_TABLE[paperId] || {}).filter(k => k !== "custom");
+}
 
 /** 1R(1연) 장수 = 500 × 절수 */
 function sheetsPerR(sheet) { return 500 * (sheet?.cut || 2); }
@@ -1289,116 +1307,119 @@ function LayoutViz({ si, netSize, W, D, H, boxType }) {
   // 패널 색상 (index 0=측면, 1=전면, 2=측면, 3=후면, 4=접착)
   const PCOL = ['#0f766e','#1e40af','#0f766e','#1e40af','#92400e'];
 
-  // ── 핵심: 패널별 실루엣 그리기 ─────────────────────────────────
-  // 각 박스(bx,by,bw,bh)에서 패널별로 올바른 높이의 rect을 그려
-  // 실제 전개도 윤곽이 나타나게 함
+  // ── 전개도(칼선) 렌더러 ─────────────────────────────────────────
+  // mm 좌표계(0..netW, 0..netH)에서 폴리곤으로 도면을 그린 뒤,
+  // SVG transform 으로 배치 위치·회전·반전을 한 번에 적용한다.
+  //   · 회전 배치는 좌표를 다시 계산하지 않고 rotate(90) 으로 처리 → 축 불일치 원천 차단
+  //   · 반전은 mm 공간에서 rotate(180, netW/2, netH/2) — 전개도 bbox 중심 대칭이라 정확
+  // 날개는 패널 폭 통사각형이 아니라 어깨가 깎인 사다리꼴(실제 목형 형태),
+  // 접착날개는 위아래가 좁아지는 쐐기꼴로 그린다.
   function BoxNet({ bx, by, bw, bh, rotated, flipped, color }) {
     if (!W || !D) return null;
 
     const nW = netSize.netW, nH = netSize.netH;
-    const maxTop = netSize.topLid || 0;
+    if (!(nW > 0 && nH > 0)) return null;
+
+    const maxTop = netSize.topLid  || 0;
     const maxBot = netSize.botFloor || 0;
+    const bodyY0 = maxTop;             // 몸통 상단 (접는선)
+    const bodyY1 = maxTop + (H || 0);  // 몸통 하단 (접는선)
 
-    // rotated: netH가 가로(bw), netW가 세로(bh)
-    const sw = rotated ? nH : nW; // net 가로 (SVG bw 방향)
-    const sh = rotated ? nW : nH; // net 세로 (SVG bh 방향)
-    const scX = bw / sw;
-    const scY = bh / sh;
+    // 접착날개는 날개가 없다 (몸통 높이만)
+    const topOf = i => (i >= 4 ? 0 : (topHmm[i] ?? maxTop));
+    const botOf = i => (i >= 4 ? 0 : (botHmm[i] ?? maxBot));
 
-    // 몸체 영역 y 좌표 (SVG)
-    // rotated: 가로 방향이 netH → 몸체는 maxBot에서 netH-maxTop까지
-    const bodyStart = rotated
-      ? by + maxBot * scX   // rotated: botFloor가 왼쪽에
-      : by + maxTop * scY;
-    const bodyEnd = rotated
-      ? by + bh - maxTop * scX
-      : by + bh - maxBot * scY;
+    // 큰 날개(뚜껑/바닥)와 작은 날개(더스트)를 구분해 어깨 깎임 폭을 다르게
+    const bigFlap = Math.max(maxTop, maxBot, 1);
+    const chamfer = (flapH, panelW) => {
+      if (flapH <= 0) return 0;
+      const major = flapH >= bigFlap * 0.6;        // 뚜껑·바닥 등 주요 날개
+      return major
+        ? Math.min(2.5, panelW * 0.06, flapH * 0.3)
+        : Math.min(panelW * 0.22, flapH * 0.45, 10);
+    };
 
-    const rects = [];
-    const lines = [];
+    const cut  = [];   // 칼선 (실선 · 바깥 윤곽)
+    const fold = [];   // 접는선 (점선)
+    const fills = [];
 
-    // 패널 루프
     const nPanels = xEdges_mm.length - 1;
     for (let i = 0; i < nPanels; i++) {
-      const x0mm = xEdges_mm[i];
-      const x1mm = xEdges_mm[i+1];
-      const tH   = (topHmm[i] ?? maxTop);
-      const bH   = (botHmm[i] ?? maxBot);
+      const x0 = xEdges_mm[i], x1 = xEdges_mm[i + 1];
+      const pw = x1 - x0;
+      if (pw <= 0) continue;
+      const isTab  = i === 4;
       const pColor = PCOL[i] || PCOL[4];
+      const key    = `p${i}`;
 
-      if (!rotated) {
-        // 일반 배치: 패널이 세로로 나열
-        // 각 패널의 실제 높이: topFlap + body + botFlap
-        const px = bx + x0mm * scX;
-        const pw = (x1mm - x0mm) * scX;
-        const pTopY = by + (maxTop - tH) * scY;  // 짧은 날개는 아래서 시작
-        const pBotY = by + (maxTop + (H||0) + bH) * scY;
-        rects.push(
-          // 날개 영역 (위)
-          tH > 0 && <rect key={`tp${i}`} x={px} y={pTopY} width={pw-0.5} height={tH*scY}
-            fill={pColor} opacity={0.45}/>,
-          // 몸체 영역
-          <rect key={`bd${i}`} x={px} y={bodyStart} width={pw-0.5}
-            height={bodyEnd-bodyStart}
-            fill={pColor} opacity={0.72}/>,
-          // 날개 영역 (아래)
-          bH > 0 && <rect key={`bt${i}`} x={px} y={bodyEnd} width={pw-0.5} height={bH*scY}
-            fill={pColor} opacity={0.45}/>
-        );
-        // 패널 구분선 (body 영역)
-        if (i > 0) {
-          lines.push(<line key={`pv${i}`} x1={px+0.3} y1={pTopY}
-            x2={px+0.3} y2={pBotY}
-            stroke="rgba(255,255,255,0.22)" strokeWidth={0.6} strokeDasharray="2,2"/>);
-        }
+      // 몸통 — 접착날개는 위아래가 좁아지는 쐐기꼴
+      if (isTab) {
+        const tc = Math.min(pw * 0.55, (H || 0) * 0.12, 8);
+        fills.push(
+          <polygon key={`bd${key}`} fill={pColor} opacity={0.7}
+            points={`${x0},${bodyY0} ${x1},${bodyY0 + tc} ${x1},${bodyY1 - tc} ${x0},${bodyY1}`}/>);
+        cut.push(
+          <polyline key={`ct${key}`} fill="none"
+            points={`${x0},${bodyY0} ${x1},${bodyY0 + tc} ${x1},${bodyY1 - tc} ${x0},${bodyY1}`}/>);
       } else {
-        // 회전 배치: 패널이 가로로 나열 (x축이 netH 방향)
-        // x0mm/x1mm 은 원래 패널 경계 → 회전 후 y 방향
-        const py2 = by + x0mm * scY;
-        const ph2 = (x1mm - x0mm) * scY;
-        // 날개는 bw의 좌/우
-        const lFlapX = bx + (maxBot - bH) * scX;  // 왼쪽(bot) 날개 시작
-        const rFlapX = bx + bw - (maxTop - tH) * scX; // 오른쪽(top) 날개 끝
-        rects.push(
-          bH > 0 && <rect key={`lf${i}`} x={lFlapX} y={py2} width={bH*scX} height={ph2-0.5}
-            fill={pColor} opacity={0.45}/>,
-          <rect key={`bd${i}`} x={bx+maxBot*scX} y={py2}
-            width={bw-(maxBot+maxTop)*scX} height={ph2-0.5}
-            fill={pColor} opacity={0.72}/>,
-          tH > 0 && <rect key={`rf${i}`} x={rFlapX} y={py2} width={tH*scX} height={ph2-0.5}
-            fill={pColor} opacity={0.45}/>
-        );
-        if (i > 0) {
-          lines.push(<line key={`ph${i}`} x1={bx} y1={py2+0.3}
-            x2={bx+bw} y2={py2+0.3}
-            stroke="rgba(255,255,255,0.22)" strokeWidth={0.6} strokeDasharray="2,2"/>);
-        }
+        fills.push(
+          <rect key={`bd${key}`} x={x0} y={bodyY0} width={pw} height={bodyY1 - bodyY0}
+            fill={pColor} opacity={0.7}/>);
       }
+
+      // 위 날개 (사다리꼴 — 위로 갈수록 좁아짐)
+      const tH = topOf(i);
+      if (tH > 0) {
+        const c = chamfer(tH, pw), yT = bodyY0 - tH;
+        const pts = `${x0},${bodyY0} ${x0 + c},${yT} ${x1 - c},${yT} ${x1},${bodyY0}`;
+        fills.push(<polygon key={`tf${key}`} points={pts} fill={pColor} opacity={0.4}/>);
+        cut.push(<polyline key={`tc${key}`} points={pts} fill="none"/>);
+        fold.push(<line key={`tl${key}`} x1={x0} y1={bodyY0} x2={x1} y2={bodyY0}/>);
+      }
+
+      // 아래 날개
+      const bH = botOf(i);
+      if (bH > 0) {
+        const c = chamfer(bH, pw), yB = bodyY1 + bH;
+        const pts = `${x0},${bodyY1} ${x0 + c},${yB} ${x1 - c},${yB} ${x1},${bodyY1}`;
+        fills.push(<polygon key={`bf${key}`} points={pts} fill={pColor} opacity={0.4}/>);
+        cut.push(<polyline key={`bc${key}`} points={pts} fill="none"/>);
+        fold.push(<line key={`bl${key}`} x1={x0} y1={bodyY1} x2={x1} y2={bodyY1}/>);
+      }
+
+      // 패널 사이 접는선 (몸통 구간 — 날개가 있는 쪽은 날개 끝까지)
+      if (i > 0) {
+        const yA = bodyY0 - Math.min(topOf(i - 1), topOf(i));
+        const yB = bodyY1 + Math.min(botOf(i - 1), botOf(i));
+        fold.push(<line key={`vl${key}`} x1={x0} y1={yA} x2={x0} y2={yB}/>);
+      }
+
+      // 날개가 없는 구간의 몸통 위/아래는 칼선
+      if (tH <= 0 && !isTab) cut.push(<line key={`tk${key}`} x1={x0} y1={bodyY0} x2={x1} y2={bodyY0}/>);
+      if (bH <= 0 && !isTab) cut.push(<line key={`bk${key}`} x1={x0} y1={bodyY1} x2={x1} y2={bodyY1}/>);
     }
 
-    // 몸체 경계선 (골드)
-    const bodyLines = !rotated ? [
-      <line key="tbl" x1={bx} y1={bodyStart} x2={bx+bw} y2={bodyStart}
-        stroke="rgba(255,200,60,0.55)" strokeWidth={0.8} strokeDasharray="3,2"/>,
-      <line key="bbl" x1={bx} y1={bodyEnd} x2={bx+bw} y2={bodyEnd}
-        stroke="rgba(255,200,60,0.55)" strokeWidth={0.8} strokeDasharray="3,2"/>,
-    ] : [
-      <line key="lbl" x1={bx+maxBot*scX} y1={by} x2={bx+maxBot*scX} y2={by+bh}
-        stroke="rgba(255,200,60,0.55)" strokeWidth={0.8} strokeDasharray="3,2"/>,
-      <line key="rbl" x1={bx+bw-maxTop*scX} y1={by} x2={bx+bw-maxTop*scX} y2={by+bh}
-        stroke="rgba(255,200,60,0.55)" strokeWidth={0.8} strokeDasharray="3,2"/>,
-    ];
+    // 좌우 최외곽 칼선
+    cut.push(
+      <line key="lft" x1={0} y1={bodyY0} x2={0} y2={bodyY1}/>,
+      <line key="rgt" x1={xEdges_mm[nPanels]} y1={bodyY0} x2={xEdges_mm[nPanels]} y2={bodyY1}/>);
 
-    // ── 반전(180° 회전) ────────────────────────────────────────────
-    // ⚠ 종전에는 flipped 를 파라미터로 받기만 하고 **본문에서 쓰지 않았다**.
-    //   그래서 반전 플래그가 켜져도 모든 박스가 같은 방향으로 그려졌고,
-    //   맞물림 배치가 "같은 방향 박스들이 그냥 겹친 그림" 으로 보였다.
-    // 박스 중심 기준 180° 회전 = 머리-꼬리 뒤집기.
-    //   뚜껑이 반대쪽으로 가면서 옆 박스의 뚜껑과 엇갈려 물린다.
-    const g = <g>{rects}{lines}{bodyLines}</g>;
-    return flipped
-      ? <g transform={`rotate(180, ${bx + bw / 2}, ${by + bh / 2})`}>{g}</g>
-      : g;
+    // mm → SVG 변환 (회전 배치는 rotate(90) 으로 처리)
+    const tf = rotated
+      ? `translate(${bx},${by}) scale(${bw / nH},${bh / nW}) translate(${nH},0) rotate(90)`
+      : `translate(${bx},${by}) scale(${bw / nW},${bh / nH})`;
+    // 반전(180°) — 뚜껑이 반대편으로 가면서 옆 박스 뚜껑과 엇갈려 물린다
+    const flipTf = flipped ? ` rotate(180,${nW / 2},${nH / 2})` : "";
+
+    return (
+      <g transform={tf + flipTf}>
+        {fills}
+        <g fill="none" stroke="rgba(255,255,255,0.30)" strokeWidth={0.7}
+           strokeDasharray="3,2.2" vectorEffect="non-scaling-stroke">{fold}</g>
+        <g fill="none" stroke={color || "rgba(120,220,255,0.85)"} strokeWidth={0.9}
+           strokeLinejoin="round" vectorEffect="non-scaling-stroke">{cut}</g>
+      </g>
+    );
   }
 
   return (
@@ -1701,7 +1722,12 @@ function Input({ value, onChange, placeholder, type="text", small }) {
 }
 function Select({ value, onChange, options }) {
   return <select value={value} onChange={e=>onChange(e.target.value)} style={sel}>
-    {options.map(o=><option key={o.id??o} value={o.id??o}>{o.label??o}</option>)}
+    {options.map(o=>(
+      <option key={o.id??o} value={o.id??o} disabled={!!o.disabled}
+              style={o.disabled?{color:"#5a6a80"}:undefined}>
+        {o.label??o}
+      </option>
+    ))}
   </select>;
 }
 function Toggle({ checked, onChange, label }) {
@@ -2041,13 +2067,26 @@ export default function App() {
 
         {/* ══ [V6] 지대 섹션 — 판형별 단가 표시 + 직접입력 ══ */}
         <Section title="지대 (원지)">
-          <Field label="지종 선택" note="단가는 견적서 최근값 기준 ｜ 미등록 조합은 장당 단가 × 면적비로 추정">
+          <Field label="지종 선택" note={s.mPrice ? "단가 직접입력 중 — 모든 조합 선택 가능"
+                : s.sheetId==="auto" || s.sheetId==="custom"
+                  ? "단가는 견적서 최근값 기준 ｜ 회색 = 확인 단가 없음"
+                  : `${BASE_SHEETS.find(x=>x.id===s.sheetId)?.label ?? ""} 확인 단가가 있는 지종만 선택 가능`}>
             <Select value={s.paperId} onChange={v=>u("paperId",v)}
-              options={PAPERS.map(p=>({id:p.id,label:`[${p.group}] ${p.label}`}))}/>
+              options={PAPERS.map(p=>{
+                const ok = !!s.mPrice || paperSheetConfirmed(p.id, s.sheetId);
+                return { id:p.id, disabled: !ok && p.id!==s.paperId,
+                         label:`${ok?"":"· "}[${p.group}] ${p.label}${ok?"":"  (추정)"}` };
+              })}/>
           </Field>
-          <Field label="판형 선택" note="1R = 500 × 절수 장">
+          <Field label="판형 선택" note={s.mPrice ? "1R = 500 × 절수 장 ｜ 단가 직접입력 중"
+                : `1R = 500 × 절수 장 ｜ ${PAPERS.find(x=>x.id===s.paperId)?.label ?? ""} 확인 단가가 있는 판형만 선택 가능`}>
             <Select value={s.sheetId} onChange={v=>u("sheetId",v)}
-              options={[{id:"auto",label:"⚡ 자동 최적 (총비용 최소)"}, ...BASE_SHEETS]}/>
+              options={[{id:"auto",label:"⚡ 자동 최적 (총비용 최소)"},
+                ...BASE_SHEETS.map(sh=>{
+                  const ok = !!s.mPrice || sh.custom || paperSheetConfirmed(s.paperId, sh.id);
+                  return { id:sh.id, disabled: !ok && sh.id!==s.sheetId,
+                           label:`${ok?"":"· "}${sh.label}${ok?"":"  (추정)"}` };
+                })]}/>
           </Field>
           {s.sheetId === "custom" && (
             <div style={{background:"#0a0f20",border:"1px solid #3a2a5a",borderRadius:4,padding:"8px 10px",marginBottom:8}}>
