@@ -477,19 +477,33 @@ function getLayoutInfo(netW, netH, sheetW0, sheetH0, glueTab = 14.3, topLid = 0,
   // (엑셀 모델: n번째 열의 시작점 = (n-1) × (base − IL))
   const boxes = [];
   // 맞물림 절감은 축별로 다름: netW 반복 → IL_W, netH 반복 → ih
-  const ilX = best.rotated ? ih : IL_W;
-  const ilY = best.rotated ? IL_W : ih;
+  //   정방향: 가로=netW(IL_W) / 세로=netH(ih)
+  //   회전  : 가로=netH(ih)   / 세로=netW(IL_W)
+  const ilX = best.rotated ? ih    : IL_W;
+  const ilY = best.rotated ? IL_W  : ih;
   const stepX = best.interlocked ? best.boxW - ilX : best.boxW;
   const stepY = best.interlocked ? best.boxH - ilY : best.boxH;
 
+  // 반전은 **netH 를 반복하는 축**에 걸어야 한다.
+  //   netH = 뚜껑 + 몸통 + 바닥 이므로, 이 축으로 겹칠 때만 날개가 물린다.
+  // 실무 확인: **뚜껑↔뚜껑** 으로 맞물리는 경우가 가장 많다.
+  //   (2번 박스를 좌우/상하 반전시켜 두 박스의 뚜껑이 마주보게 앉힌다)
+  //   ✓ 실제 대지 250423 삼면E 90×70×130: 4×64절(545×394) 에 2up 회전,
+  //     겹침 20.8mm — test/verify-imposition.mjs 참조
+  // ⚠ 종전에는 회전 여부와 무관하게 홀수 **행**만 반전시켰다.
+  //   회전 배치(맞물림이 열 방향)에서는 반전이 전혀 안 걸려
+  //   두 박스의 몸판이 그대로 겹치는 — 물리적으로 불가능한 배치가 그려졌다.
+  const flipAxis = best.rotated ? "col" : "row";
+
   for (let r = 0; r < best.rows; r++) {
     for (let c = 0; c < best.cols; c++) {
+      const alt = flipAxis === "col" ? c : r;
       boxes.push({
         x: BITE_MM + c * stepX,
         y: BITE_MM + r * stepY,
         w: best.boxW, h: best.boxH,
-        // 맞물림 열은 방향을 번갈아 뒤집어 날개끼리 물리게 함
-        flipped: best.interlocked && (r % 2 === 1),
+        flipped: best.interlocked && (alt % 2 === 1),
+        rotated: best.rotated,
         idx: r * best.cols + c,
       });
     }
@@ -622,9 +636,14 @@ function customSheetOf(s) {
 // 최적 원지: 총비용 최소 + 판형 우선순위(동일 비용이면 실무 선호 판형)
 // 실무 선호: 4×64 → 국2 → 4×62 → 하4 → 하3 → 4×63 → 국전 → 46전 → 하2 → 하전지
 // 주문생산은 auto 추천 대상에서 제외 (코리팩 협의 필요 → 수동 선택 전용)
-// 실무 우선순위 — 사륙·국전 계열이 기본, 하드롱은 후순위
+// 실무 우선순위 — 실무 확인 사항 반영
+//   · 사륙(46)은 **절지**를 많이 쓰고, 전지는 **국전**을 많이 쓴다
+//   · 4×63(사륙 3절)은 쓰긴 하지만 거의 안 봄 → 사륙 계열 중 최후순위
+//   · 하드롱 계열은 후순위 (아래 HADRONG_EDGE 참조)
 const SHEET_PRIORITY = {
-  "4x64":1, "guk2":2, "4x62":3, "4x63":4, "guk":5, "46":6,
+  "4x64":1, "guk2":2, "4x62":3,   // 절지 (4절·2절) 우선
+  "guk":4,                        // 전지는 국전
+  "46":5, "4x63":6,               // 46전지, 그리고 거의 안 쓰는 4×63
   "ha4":7, "ha3":8, "ha2":9, "ha":10, "custom":99,
 };
 
@@ -1436,15 +1455,23 @@ function LayoutViz({ si, netSize, W, D, H, boxType }) {
 
           return (
             <g key={i}>
-              <rect x={bx} y={by} width={bw-0.5} height={bh-0.5}
-                fill={box.flipped ? color+"1a" : color+"28"}
-                stroke={color} strokeWidth={box.flipped?1:1.5} rx={1}/>
-              {/* 전개도 패널 구조 오버레이 — 패널별 실루엣 */}
+              {/* 전개도 실루엣이 있으면 바운딩 박스는 점선 외곽만 —
+                  맞물림 배치에서 사각형을 채우면 서로 겹쳐 보여 실제 앉힘이 안 보인다 */}
+              {flaps ? (
+                <rect x={bx} y={by} width={bw-0.5} height={bh-0.5}
+                  fill="none" stroke={color} strokeWidth={0.5} strokeDasharray="2 3"
+                  opacity={.35} rx={1}/>
+              ) : (
+                <rect x={bx} y={by} width={bw-0.5} height={bh-0.5}
+                  fill={box.flipped ? color+"1a" : color+"28"}
+                  stroke={color} strokeWidth={box.flipped?1:1.5} rx={1}/>
+              )}
+              {/* 전개도 패널 구조 오버레이 — 패널별 실루엣 (실제 날개 높이) */}
               {flaps && <BoxNet bx={bx} by={by} bw={bw} bh={bh}
                 rotated={box.rotated} flipped={box.flipped} color={color}/>}
               {box.flipped && (
                 <text x={bx+bw/2} y={by+9} textAnchor="middle" fontSize={7} fill={color} opacity={.8}>
-                  ▽ 반전
+                  ▽ 반전 (뚜껑 맞물림)
                 </text>
               )}
               {/* 첫 번째 박스에만 뚜껑/바닥 영역 표시 */}
@@ -1494,8 +1521,8 @@ function LayoutViz({ si, netSize, W, D, H, boxType }) {
       <div style={{display:"flex",gap:12,marginTop:8,flexWrap:"wrap",fontSize:9.5,color:"#8899bb"}}>
         {[
           {bg:"#ff000033",bd:"1px dashed #ff4444",txt:"물림 30mm"},
-          {bg:"#3b82f628",bd:"1px solid #3b82f6",txt:"정방향"},
-          {bg:"#3b82f618",bd:"1px solid #3b82f6",txt:"반전(인터로킹)"},
+          {bg:"none",bd:"1px dashed #3b82f6aa",txt:"전개도 외곽(바운딩)"},
+          {bg:"#3b82f628",bd:"1px solid #3b82f6",txt:"반전 = 맞물림"},
           {bg:"#1e40afcc",bd:"none",txt:"■ 전·후면"},
             {bg:"#0f766ecc",bd:"none",txt:"■ 측면"},
             {bg:"rgba(255,200,60,0.55)",bd:"1px dashed rgba(255,200,60,0.7)",txt:"몸통경계"},
