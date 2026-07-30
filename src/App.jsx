@@ -484,9 +484,12 @@ function getLayoutInfo(netW, netH, sheetW0, sheetH0, glueTab = 14.3, topLid = 0,
   const stepX = best.interlocked ? best.boxW - ilX : best.boxW;
   const stepY = best.interlocked ? best.boxH - ilY : best.boxH;
 
-  // 반전(머리-꼬리)은 **netH 를 반복하는 축**에 걸어야 한다.
-  //   netH = 뚜껑 + 몸통 + 바닥 이므로, 이 축으로 겹칠 때만
-  //   한쪽 뚜껑 혀가 상대 바닥날개 사이로 파고든다.
+  // 반전은 **netH 를 반복하는 축**에 걸어야 한다.
+  //   netH = 뚜껑 + 몸통 + 바닥 이므로, 이 축으로 겹칠 때만 날개가 물린다.
+  // 실무 확인: **뚜껑↔뚜껑** 으로 맞물리는 경우가 가장 많다.
+  //   (2번 박스를 좌우/상하 반전시켜 두 박스의 뚜껑이 마주보게 앉힌다)
+  //   ✓ 실제 대지 250423 삼면E 90×70×130: 4×64절(545×394) 에 2up 회전,
+  //     겹침 20.8mm — test/verify-imposition.mjs 참조
   // ⚠ 종전에는 회전 여부와 무관하게 홀수 **행**만 반전시켰다.
   //   회전 배치(맞물림이 열 방향)에서는 반전이 전혀 안 걸려
   //   두 박스의 몸판이 그대로 겹치는 — 물리적으로 불가능한 배치가 그려졌다.
@@ -1468,7 +1471,7 @@ function LayoutViz({ si, netSize, W, D, H, boxType }) {
                 rotated={box.rotated} flipped={box.flipped} color={color}/>}
               {box.flipped && (
                 <text x={bx+bw/2} y={by+9} textAnchor="middle" fontSize={7} fill={color} opacity={.8}>
-                  ▽ 반전
+                  ▽ 반전 (뚜껑 맞물림)
                 </text>
               )}
               {/* 첫 번째 박스에만 뚜껑/바닥 영역 표시 */}
