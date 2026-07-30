@@ -1253,15 +1253,28 @@ function LayoutViz({ si, netSize, W, D, H, boxType }) {
   const glue = netSize.glueTab || 14.3;
   const flaps = (!netSize.isGtype && W && D && H) ? getFlaps(W, D, H, boxType) : null;
 
-  // 패널별 날개 높이 배열 [측면1, 전면, 측면2, 후면] (mm)
+  // 패널별 날개 높이 배열 [측면1(D), 전면(W), 측면2(D), 후면(W)] (mm)
+  //
+  // ⚠ 종전에는 [dust, topLid, dust, topLid] 로 **뚜껑을 2개** 그렸다.
+  //   삼면접착·십자조립은 뚜껑(텍 혀)이 **한 패널에만** 있고 나머지는
+  //   어깨날개(dust) 뿐이다. 뚜껑을 2개 그리면 폭 전체가 막혀서
+  //   반전시킨 옆 박스의 뚜껑이 파고들 빈 공간이 사라진다
+  //   → 맞물림이 그림상 불가능해 보이는 원인이었다.
+  //   실제 대지(250423 삼면E 4×64절 2up)에서 뚜껑 1개 확인.
+  //
+  //   맞뚜껑(tuck_both)은 상·하 각각 뚜껑 1개 + 어깨날개 2개.
   let topHmm = [], botHmm = [];
   if (flaps) {
     if (flaps.type === 'tuck') {
-      topHmm = [flaps.dust, flaps.topLid, flaps.dust, flaps.topLid];
-      botHmm = [flaps.botDust, flaps.botLid, flaps.botDust, flaps.botLid];
+      // 상단: 전면(1)에 뚜껑 / 측면(0,2)에 어깨날개 / 후면(3) 없음
+      // 하단: 후면(3)에 뚜껑 (상하 반대쪽) / 측면에 어깨날개
+      topHmm = [flaps.dust,    flaps.topLid, flaps.dust,    0];
+      botHmm = [flaps.botDust, 0,            flaps.botDust, flaps.botLid];
     } else {
-      topHmm = [flaps.dust, flaps.topLid, flaps.dust, flaps.topLid];
-      botHmm = [flaps.botShort, flaps.botLong, flaps.botShort, flaps.botLong];
+      // 삼면접착·십자조립: 상단 뚜껑 1개(전면) + 측면 어깨날개
+      //                    하단 자동바닥 — 4패널 모두 날개(긴/짧은 교대)
+      topHmm = [flaps.dust,      flaps.topLid, flaps.dust,      0];
+      botHmm = [flaps.botShort,  flaps.botLong, flaps.botShort, flaps.botLong];
     }
   } else if (W && D) {
     // 날개 정보 없으면 bounding box 절반으로 균등 분배
