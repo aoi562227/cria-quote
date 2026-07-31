@@ -277,6 +277,10 @@ export function verifyNoOverlap(part, cells, flipFn) {
 export function solveLayout(rawPieces, printW, printH, opts = {}) {
   const clearance = opts.clearance ?? 0.5;
   const maxUp     = opts.maxUp ?? 200;
+  // 맞물림 금지 모드 — 피치를 전개도 크기로 고정해 '칼선 공유'만 허용한다.
+  // 실무에서 맞물림 목형은 드물다(측면 풀발이 등 특수 케이스). 기본 배치가
+  // 무엇인지 판정하기 위한 스위치.
+  const noIL      = !!opts.noInterlock;
   const base = preparePart(rawPieces);
   if (!base) return null;
 
@@ -300,15 +304,18 @@ export function solveLayout(rawPieces, printW, printH, opts = {}) {
           if (iv) dyForbid.push(iv);
         }
       }
-      const dyCands = freeCandidates(dyForbid, 0, 4)
-        .map(d => Math.max(d, PITCH_QUANT) + clearance)
-        .filter(d => d <= netH + EPS);
-      if (!dyCands.includes(netH)) dyCands.push(netH);   // 겹침 0 배치도 항상 후보
+      const dyCands = noIL ? [netH] : (() => {
+        const c = freeCandidates(dyForbid, 0, 4)
+          .map(d => Math.max(d, PITCH_QUANT) + clearance)
+          .filter(d => d <= netH + EPS);
+        if (!c.includes(netH)) c.push(netH);   // 겹침 0 배치도 항상 후보
+        return c;
+      })();
 
       for (const dy of dyCands) {
         // maxUp 은 행에도 걸어야 한다 — 열만 깎으면 행이 단독으로 한도를 넘는다
         const R = Math.max(1, Math.min(maxUp, Math.floor((printH - netH) / dy + 1e-7) + 1));
-        for (const sxMode of ['none', 'half']) {
+        for (const sxMode of (noIL ? ['none'] : ['none', 'half'])) {
           // ── dx 후보: Δ=(Δi,Δj), t = (Δi·dx + Δj·sx, Δj·dy)
           //    sx = dx/2 이면 t.x 가 dx 에 대해 (Δi + Δj/2)·dx → v.x 계수에 반영
           const dxForbid = [];
@@ -333,10 +340,13 @@ export function solveLayout(rawPieces, printW, printH, opts = {}) {
             }
           }
           if (dxForbid.some(iv => iv[0] === -Infinity)) continue;
-          const dxCands = freeCandidates(dxForbid, 0, 3)
-            .map(d => Math.max(d, PITCH_QUANT) + clearance)
-            .filter(d => d <= netW + EPS);
-          if (!dxCands.includes(netW)) dxCands.push(netW);
+          const dxCands = noIL ? [netW] : (() => {
+            const c = freeCandidates(dxForbid, 0, 3)
+              .map(d => Math.max(d, PITCH_QUANT) + clearance)
+              .filter(d => d <= netW + EPS);
+            if (!c.includes(netW)) c.push(netW);
+            return c;
+          })();
 
           for (const dx of dxCands) {
             const sx = sxMode === 'half' ? dx / 2 : 0;

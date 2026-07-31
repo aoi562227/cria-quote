@@ -37,7 +37,12 @@ const C=[
  ["탈취제A 75×37.5×186",   75,37.5,186,"glue3",[788,545],4],
  ["LUXEN 130×130×55",    130,130,55,"glue3",[480,788],2],
 ];
-for (const [label,gL,gS] of [["물림 없음(단위=인쇄영역)",0,0],["물림 적용(긴변−20/짧은변−30)",20,30]]) {
+// 맞물림 허용 여부를 바꿔가며 — 실무에서 맞물림이 기본인지 예외인지 판정
+for (const [label,gL,gS,noIL] of [
+  ["A. 물림없음 · 맞물림 허용",0,0,false],
+  ["B. 물림없음 · 맞물림 금지(칼선공유만)",0,0,true],
+  ["C. 물림적용 · 맞물림 허용",20,30,false],
+]) {
   console.log(`\n═══ ${label} ═══════════════════════════════════════════`);
   console.log("케이스".padEnd(24)+"단위".padEnd(12)+"전개도".padEnd(15)+"견적 NFP  판정   배치");
   console.log("─".repeat(94));
@@ -45,7 +50,7 @@ for (const [label,gL,gS] of [["물림 없음(단위=인쇄영역)",0,0],["물림
   for(const [nm,W,D,H,t,cut,up] of C){
     const {pieces:P,net}=pieces(W,D,H,t);
     const A=Math.max(...cut)-gL, B=Math.min(...cut)-gS;
-    const r=solveLayout(P,A,B,{clearance:0.5});
+    const r=solveLayout(P,A,B,{clearance:0.5,noInterlock:noIL});
     const got=r?r.up:0;
     if(got===up)hit++;
     const how=r?`${r.cols}×${r.rows}${r.rotated?" 회전":""}${r.interlocked?` 물림x${r.overlapX.toFixed(0)}y${r.overlapY.toFixed(0)}`:" 칼선공유"}`:"-";
