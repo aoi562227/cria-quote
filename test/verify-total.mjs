@@ -123,6 +123,14 @@ const CASES = [
     sobooDo:2, sobooUnit:11000, coat:[60000], thom:50000, glueEa:15, admin:130000,
     real:{ R:1.15, paper:595925, soboo:22000, print:100000, total:1187925, perEA:148 } },
 
+  // 26-08-04 소스코 소스패키지 140×43×130 — 접착 20원·IR 40,000 의 근거 견적서
+  //   4up · 정미 1,000 + 여분 300 = 1,300장 / (500×2) = 1.3R
+  //   합계 817,969 / 4,000ea = 204.49 → 204원
+  { name:"소스코 140×43×130 · 295AB 4×62 4up 4,000ea (원색4·IR·단면접착)", src:"소스코_삼면접착140x43x130",
+    up:4, qty:4000, cut:2, paperR:318438, spot:0, flat:4, printUnit:14000,
+    sobooDo:4, sobooUnit:12000, coat:[40000], thom:50000, glueEa:20, admin:130000,
+    real:{ R:1.3, paper:413969, soboo:48000, print:56000, total:817969, perEA:204 } },
+
   { name:"슬리브 646×258 · 마니라300 4×64 1up 1,000ea (원색4+별1)", src:"슬리브_전체크기646x258",
     up:1, qty:1000, cut:4, paperR:163236, spot:1, flat:4, printUnit:14000,
     printOverride:84000, sobooDo:5, sobooUnit:12000, coat:[40000], thom:45000,

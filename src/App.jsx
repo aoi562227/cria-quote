@@ -803,7 +803,7 @@ const COAT_OPTS = [
   { id:"matte",  label:"무광코팅",     small:55000,  mid:65000,  large:112000, min:55000  },
   { id:"gloss",  label:"유광코팅",     small:55000,  mid:65000,  large:112000, min:55000  },
   { id:"hg",     label:"글로스코팅",   small:65000,  mid:65000,  large:140000, min:65000  },
-  { id:"ir",     label:"IR코팅",       small:48000,  mid:30000,  large:60000,  min:30000  },
+  { id:"ir",     label:"IR코팅",       small:48000,  mid:40000,  large:60000,  min:40000  },  // mid: 30,000 → 40,000 (26-08-04 소스코)
   { id:"lami",   label:"무광라미",     small:85000,  mid:85000,  large:115000, min:85000  },
   { id:"velvet", label:"벨벳코팅",     small:241722, mid:241722, large:241722, min:241722 },
   { id:"epoxy",  label:"에폭시",       small:95000,  mid:95000,  large:120000, min:95000  },
@@ -812,12 +812,14 @@ const COAT_OPTS = [
 ];
 
 // ── 접착 (원/EA) ──────────────────────────────────────────────────
-// 실측: 단면 15 / 삼면 25~30 / 손잡이형 30 / 슬리브 80 / PP 70
+// 실측: 단면 15→20 / 삼면 25~30 / 손잡이형 30 / 슬리브 80 / PP 70
 //       소량 1식 45,000~50,000 (최근 견적서 50,000)
+// 단면 20 근거: 26-08-04 소스코 140×43×130 4,000ea 견적서 (4,000 × 20 = 80,000)
+//   종전 15 는 그 이전 견적서 기준. 접착·코팅이 함께 올랐다(IR 30,000→40,000).
 const GLUE_MIN_LOT = 50000;
 const GLUE_OPTS = [
   { id:"none",   label:"없음",         ea:0  },
-  { id:"dan",    label:"단면",         ea:15 },
+  { id:"dan",    label:"단면",         ea:20 },
   { id:"sam",    label:"삼면",         ea:30 },
   { id:"pull",   label:"풀발이",       ea:22 },
   { id:"handle", label:"손잡이형",     ea:30 },
