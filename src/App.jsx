@@ -202,7 +202,7 @@ const BOX_TYPES = [
 // → 짧은변 −30mm, 긴변 −20mm (국이절만 −33). 균일값이 아니라 비대칭.
 const BITE_SHORT = 30;   // 짧은변(가로) 물림
 const BITE_LONG  = 20;   // 긴변(세로) 물림
-const BITE_MM    = BITE_LONG;   // 시각화 여백 표시용
+// BITE_MM 별칭은 제거했다 — 축을 구분하지 않아 y축 물림을 20 으로 쓰게 만든 원인이었다.
 
 // 배치 판정 허용오차 — 전개도 공식 자체가 ±5mm 정확도이므로 임계점에서
 // up 이 한 단계 튀는 것을 막는다.
@@ -517,8 +517,11 @@ function getLayoutInfo(netW, netH, sheetW0, sheetH0, glueTab = 14.3, topLid = 0,
     for (let c = 0; c < best.cols; c++) {
       const alt = flipAxis === "col" ? c : r;
       boxes.push({
-        x: BITE_MM + c * stepX,
-        y: BITE_MM + r * stepY,
+        // 물림은 축마다 다르다 — printW 는 긴변에서 20, printH 는 짧은변에서 30 을 뺀다.
+        // 종전에는 양축 모두 BITE_MM(=BITE_LONG=20) 을 썼다. y 축은 30 을 뺐는데
+        // 20 에서 시작하므로 배치가 상단 물림 영역을 10mm 침범해 그려졌다.
+        x: BITE_LONG  + c * stepX,
+        y: BITE_SHORT + r * stepY,
         w: best.boxW, h: best.boxH,
         flipped: best.interlocked && (alt % 2 === 1),
         rotated: best.rotated,
@@ -1260,7 +1263,10 @@ function LayoutViz({ si, netSize, W, D, H, boxType }) {
   const svgH    = drawH * scale + PAD_SVG * 2;
 
   const COLORS  = ["#3b82f6","#10b981","#f59e0b","#8b5cf6","#06b6d4","#ec4899"];
-  const biteS   = BITE_MM * scale;
+  // 가로축(drawW)은 긴변이라 물림 20, 세로축(drawH)은 짧은변이라 물림 30.
+  // 종전에는 둘 다 20 으로 그려서 범례('물림 20mm')와 실제 감산(30)이 어긋났다.
+  const biteX   = BITE_LONG  * scale;   // 좌측 띠 폭
+  const biteY   = BITE_SHORT * scale;   // 상단 띠 높이
 
   const usedArea  = layout.up * netSize.netW * netSize.netH;
   const totalArea = drawW * drawH;
@@ -1471,23 +1477,23 @@ function LayoutViz({ si, netSize, W, D, H, boxType }) {
           fill="url(#lossHatch)" rx={2}/>
 
         {/* 물림 — 상단 */}
-        <rect x={PAD_SVG} y={PAD_SVG} width={drawW*scale} height={biteS}
+        <rect x={PAD_SVG} y={PAD_SVG} width={drawW*scale} height={biteY}
           fill="#ff000018"/>
-        <rect x={PAD_SVG} y={PAD_SVG} width={drawW*scale} height={biteS}
+        <rect x={PAD_SVG} y={PAD_SVG} width={drawW*scale} height={biteY}
           fill="url(#biteHatch)"/>
-        <line x1={PAD_SVG} y1={PAD_SVG+biteS} x2={PAD_SVG+drawW*scale} y2={PAD_SVG+biteS}
+        <line x1={PAD_SVG} y1={PAD_SVG+biteY} x2={PAD_SVG+drawW*scale} y2={PAD_SVG+biteY}
           stroke="#ff4444" strokeWidth={1} strokeDasharray="4 3" opacity={.8}/>
-        <text x={PAD_SVG+drawW*scale/2} y={PAD_SVG+biteS/2}
+        <text x={PAD_SVG+drawW*scale/2} y={PAD_SVG+biteY/2}
           textAnchor="middle" dominantBaseline="middle" fontSize={8} fill="#ff6666" fontWeight="700">
-          ← 물림 {BITE_MM}mm →
+          ← 물림 {BITE_SHORT}mm (짧은변) →
         </text>
 
         {/* 물림 — 좌측 */}
-        <rect x={PAD_SVG} y={PAD_SVG+biteS} width={biteS} height={drawH*scale-biteS}
+        <rect x={PAD_SVG} y={PAD_SVG+biteY} width={biteX} height={drawH*scale-biteY}
           fill="#ff000012"/>
-        <rect x={PAD_SVG} y={PAD_SVG+biteS} width={biteS} height={drawH*scale-biteS}
+        <rect x={PAD_SVG} y={PAD_SVG+biteY} width={biteX} height={drawH*scale-biteY}
           fill="url(#biteHatch)"/>
-        <line x1={PAD_SVG+biteS} y1={PAD_SVG} x2={PAD_SVG+biteS} y2={PAD_SVG+drawH*scale}
+        <line x1={PAD_SVG+biteX} y1={PAD_SVG} x2={PAD_SVG+biteX} y2={PAD_SVG+drawH*scale}
           stroke="#ff4444" strokeWidth={1} strokeDasharray="4 3" opacity={.8}/>
 
         {/* 배치된 전개도 */}
@@ -1852,8 +1858,12 @@ export default function App() {
     return (W&&D&&H) ? calcNetSize(W, D, H, s.boxType, hangTabMM) : null;
   }, [s.sizeMode, s.nW, s.nH, W, D, H, s.boxType, hangTabMM]);
 
+  // ⚠ 의존성 배열은 lossOptsOf 가 읽는 필드를 전부 담아야 한다.
+  //   s.beda 가 빠져 있었다 — 베다는 여분 +100장을 만들고, 그 여분이 findBestSheet
+  //   랭킹에 들어간다. 즉 베다를 토글해도 여분·판형선택이 갱신되지 않았다.
   const lossOpts    = useMemo(()=>lossOptsOf(s),
-    [s.lossSheets, s.fpSp, s.fpBk, s.fpUv, s.fpColor, s.bpSp, s.bpBk, s.bpUv, s.bpColor, s.emb, s.foil]);
+    [s.lossSheets, s.fpSp, s.fpBk, s.fpUv, s.fpColor, s.bpSp, s.bpBk, s.bpUv, s.bpColor,
+     s.beda, s.emb, s.foil]);
   const customSheet = useMemo(()=>customSheetOf(s), [s.cusW, s.cusH, s.cusCut]);
 
   const sheetInfo = useMemo(()=>{
