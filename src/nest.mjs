@@ -293,29 +293,39 @@ export function solveLayout(rawPieces, printW, printH, opts = {}) {
     if (netW > printW + EPS || netH > printH + EPS) continue;
 
     for (const [ruleName, flipFn] of Object.entries(FLIP_RULES)) {
-      // ── dy 후보: t = (0, k·dy) → o=(0,0), v=(0,k) 로 클리핑
-      const Rcap = Math.max(1, Math.min(16, Math.floor(printH / Math.max(netH * 0.15, 1)) + 1));
-      const dyForbid = [];
-      for (let k = 1; k <= Rcap; k++) {
-        const same = flipFn(0, 0) === flipFn(0, k);
-        const set = same ? part.N_same : part.N_op;
-        for (const N of set) {
-          const iv = lineInsideInterval(N, [0, 0], [0, k]);
-          if (iv) dyForbid.push(iv);
+      // ⚠ 엇갈림(sx) 루프가 dy 루프 **밖**에 있어야 한다.
+      //   종전에는 dy 후보를 sx=0 으로 먼저 구하고 나서 sx 를 적용했다.
+      //   그래서 '엇갈려야만 가능한 dy' 가 후보에 아예 없었다.
+      //   웨이크버니B 36×36×168: sx=0 이면 겹침 9.0mm 뿐인데
+      //   sx=netW/2 면 32.0mm 가 되어 필요값 25.8mm 를 넘는다.
+      //   깊은 날개(패널2)가 자기 거울상과 겹치는 폭이 netW−2D−2W = 접착탭 폭
+      //   밖에 안 되므로, 엇갈림 없이는 깊은 혀끼리 항상 충돌한다.
+      for (const sxMode of (noIL ? ['none'] : ['none', 'half'])) {
+        // dx 가 정해지기 전이므로 sx ≈ netW/2 로 근사해 dy 후보를 만든다.
+        // 맞물림 배치에서 dx 는 netW 근처이고, 최종 판정은 완전탐색이 한다.
+        const sxEst = sxMode === 'half' ? netW / 2 : 0;
+        // ── dy 후보: t = (k·sx, k·dy) → o=(k·sxEst, 0), v=(0,k)
+        const Rcap = Math.max(1, Math.min(16, Math.floor(printH / Math.max(netH * 0.15, 1)) + 1));
+        const dyForbid = [];
+        for (let k = 1; k <= Rcap; k++) {
+          const same = flipFn(0, 0) === flipFn(0, k);
+          const set = same ? part.N_same : part.N_op;
+          for (const N of set) {
+            const iv = lineInsideInterval(N, [k * sxEst, 0], [0, k]);
+            if (iv) dyForbid.push(iv);
+          }
         }
-      }
-      const dyCands = noIL ? [netH] : (() => {
-        const c = freeCandidates(dyForbid, 0, 4)
-          .map(d => Math.max(d, PITCH_QUANT) + clearance)
-          .filter(d => d <= netH + EPS);
-        if (!c.includes(netH)) c.push(netH);   // 겹침 0 배치도 항상 후보
-        return c;
-      })();
+        const dyCands = noIL ? [netH] : (() => {
+          const c = freeCandidates(dyForbid, 0, 4)
+            .map(d => Math.max(d, PITCH_QUANT) + clearance)
+            .filter(d => d <= netH + EPS);
+          if (!c.includes(netH)) c.push(netH);   // 겹침 0 배치도 항상 후보
+          return c;
+        })();
 
-      for (const dy of dyCands) {
-        // maxUp 은 행에도 걸어야 한다 — 열만 깎으면 행이 단독으로 한도를 넘는다
-        const R = Math.max(1, Math.min(maxUp, Math.floor((printH - netH) / dy + 1e-7) + 1));
-        for (const sxMode of (noIL ? ['none'] : ['none', 'half'])) {
+        for (const dy of dyCands) {
+          // maxUp 은 행에도 걸어야 한다 — 열만 깎으면 행이 단독으로 한도를 넘는다
+          const R = Math.max(1, Math.min(maxUp, Math.floor((printH - netH) / dy + 1e-7) + 1));
           // ── dx 후보: Δ=(Δi,Δj), t = (Δi·dx + Δj·sx, Δj·dy)
           //    sx = dx/2 이면 t.x 가 dx 에 대해 (Δi + Δj/2)·dx → v.x 계수에 반영
           const dxForbid = [];

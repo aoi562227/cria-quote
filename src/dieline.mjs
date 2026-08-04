@@ -91,17 +91,28 @@ export function getFlaps(W, D, H, type) {
       return { type: "cross", ns,
         top: [dust, ns.topLid, dust, 0],
         bot: [ns.botFloor * 0.55, ns.botFloor, ns.botFloor * 0.55, ns.botFloor] };
-    default:
-      // 실측 날개 패턴 (웨이크버니 A·B 동일)
-      //   작은 띠(위)  : 4패널 전폭 균일 — 빈 구멍 없음
-      //   큰 띠(아래)  : [0, 0.36b, b, b] — 한쪽에 몰려 있고 패널0 이 완전히 비어 있다
-      //     A: [0, 23, 61, 61] / 61 → [0, 0.377, 1, 1]
-      //     B: [0, 18, 51, 51] / 51 → [0, 0.353, 1, 1]
-      // 종전 모델은 짧은/긴 날개가 교대([short,long,short,long])한다고 봤고
-      // 빈 구멍을 위 띠(패널3)에 뒀다. 실측은 그 반대다.
+    default: {
+      // ── 자동바닥 날개 깊이 (웨이크버니 A·B y레벨 절단 실측) ─────────
+      // 아래 날개대를 깊이별로 자르면 살아남는 구간이 줄어든다:
+      //   0%   4구간 전부  /  15% 패널0 소멸  /  30% 3구간  /  50% 패널2 만
+      // ⟹ 깊이 = [0.10b, 0.40b, b, 0.40b]
+      //   패널0 은 15% 전에 끝나고, 패널1·3 은 30~50% 사이에 끝나고,
+      //   패널2 만 밑바닥까지 내려간다.
+      //
+      // 왜 이 패턴이어야 맞물림이 성립하는가 (이론 검산)
+      //   반전(rowAlt) 배치의 무겹침 조건은
+      //       dy ≥ s + H + max_x[ bot(x) + bot_mirror(x) ] − b
+      //   거울상은 깊은 패널2 를 다른 x 로 보내므로 합의 최대가 1.4b 가 되고
+      //       겹침 = netH − dy = 0.6b
+      //   삼면A 45.2 / 삼면B 68.6 / 웨이크버니B 30.7 / LUXEN 85.4mm
+      //   필요 겹침 9.0 / 21.8 / 25.8 / 70.2mm 를 모두 덮는다.
+      //   깊은 패널이 둘 붙어 있으면(종전 [0,0.36b,b,b]) 거울상과 항상 충돌해
+      //   합의 최대가 2b 가 되고 겹침이 0 이 된다 — 그게 종전 실패 원인이었다.
+      const b = ns.botFloor;
       return { type: "glue3", ns,
         top: [ns.topLid, ns.topLid, ns.topLid, ns.topLid],
-        bot: [0, ns.botFloor * 0.36, ns.botFloor, ns.botFloor] };
+        bot: [b * 0.10, b * 0.40, b, b * 0.40] };
+    }
   }
 }
 
@@ -117,28 +128,42 @@ export const xEdges = (W, D, netW) => [0, D, D + W, 2 * D + W, 2 * D + 2 * W, ne
  *   좁은 혀 옆의 빈 공간이 맞물림 공간이다. 한 덩어리로 그리면 그 공간이 사라진다.
  */
 export function dielinePieces(W, D, H, type, opt = {}) {
-  const inset = opt.tongueInset ?? TONGUE_INSET;
-  const twoStage = opt.twoStage !== false;
+  const taper = opt.taper !== false;
   const f = getFlaps(W, D, H, type), ns = f.ns;
   const y0 = ns.topLid, y1 = ns.topLid + H;
   const xE = xEdges(W, D, ns.netW);
   const out = [];
 
-  const addFlap = (x0, x1, base, h, dir) => {      // dir = -1 위, +1 아래
-    if (h <= 0) return;
+  // 날개 폭 테이퍼 — 웨이크버니 실측
+  //   깊은 날개(패널2) 끝 폭:  A 46.0→25.6  B 36.0→15.6
+  //   한쪽 인셋으로 환산하면 A (46−25.6)/2 = 10.2,  B (36−15.6)/2 = 10.2
+  //   ⟹ 비율이 아니라 **한쪽 10.2mm 고정**이다 (두 케이스 완전 일치)
+  //   얕은 날개는 사선 기울기 dx/dy ≈ 0.30 (A 0.284 / B 0.32) 로 좁아진다
+  //   ⟹ 인셋 = min(10.2, 0.30·깊이, 패널폭·0.30)
+  // 위 띠(작은 띠)도 강하게 테이퍼된다 — 웨이크버니 y레벨 절단 실측
+  //   B 위 띠 28.0mm:  접는선 [15.0-50.4] 거의 전폭
+  //                    70%   [17.1-32.5][34.6-48.6]  ← 가운데 슬릿으로 갈라짐
+  //                    100%  [17.9-23.2][42.5-48.0]  ← 혀 폭 5.4mm 씩 2개
+  //   끝단 재료가 패널당 10.8mm 뿐이고 A(46mm 패널)도 10.8mm — **상수**다.
+  //   두 혀 사이 슬릿은 메워서(보수적으로) 사다리꼴 하나로 근사한다.
+  const TIP_W = 10.8;
+  const TAPER_MAX = 10.2, TAPER_SLOPE = 0.30, FULL_FRAC = 0.7;
+  const addFlap = (x0, x1, base, h, dir, tipW) => {
+    if (h <= 0.05) return;
     const pw = x1 - x0;
-    const panelH = twoStage ? Math.min(D, h) : h;   // 전폭 구간
-    const tongueH = h - panelH;                     // 좁은 혀
-    const yP = base + dir * panelH;
-    if (panelH > 0.05) {
-      const c = Math.min(2.0, pw * 0.05);           // 전폭 구간은 거의 안 깎인다
-      out.push([[x0, base], [x0 + c, yP], [x1 - c, yP], [x1, base]]);
+    const ins = tipW != null
+      ? Math.max(0, (pw - tipW) / 2)                       // 끝단 폭 고정형 (위 띠)
+      : Math.min(TAPER_MAX, TAPER_SLOPE * h, pw * 0.30);   // 사선 기울기형 (아래 띠)
+    if (!taper || ins <= 0.05) {                    // 테이퍼 없음 = 종전 전폭 사각형
+      out.push([[x0, base], [x0, base + dir * h], [x1, base + dir * h], [x1, base]]);
+      return;
     }
-    if (tongueH > 0.05) {
-      const ins = Math.min(inset, pw * 0.35);       // 혀는 양쪽으로 확실히 좁다
-      const yT = yP + dir * tongueH;
-      out.push([[x0 + ins, yP], [x0 + ins + 1.2, yT], [x1 - ins - 1.2, yT], [x1 - ins, yP]]);
-    }
+    // 실측은 깊이 70% 까지 전폭을 유지하다 끝에서 급히 좁아진다.
+    // 밑변부터 선형으로 좁히면 중간이 실물보다 얇아져 up 을 과대평가한다 →
+    // 안전측으로 [전폭 0~70%] + [사다리꼴 70~100%] 두 조각으로 나눈다.
+    const yF = base + dir * h * FULL_FRAC, yT = base + dir * h;
+    out.push([[x0, base], [x0, yF], [x1, yF], [x1, base]]);
+    out.push([[x0, yF], [x0 + ins, yT], [x1 - ins, yT], [x1, yF]]);
   };
 
   for (let i = 0; i < 5; i++) {
@@ -150,7 +175,7 @@ export function dielinePieces(W, D, H, type, opt = {}) {
       continue;
     }
     out.push([[x0, y0], [x1, y0], [x1, y1], [x0, y1]]);   // 몸통
-    addFlap(x0, x1, y0, f.top[i] ?? 0, -1);
+    addFlap(x0, x1, y0, f.top[i] ?? 0, -1, f.type === 'glue3' ? TIP_W : null);
     addFlap(x0, x1, y1, f.bot[i] ?? 0, +1);
   }
   return { pieces: out, net: ns, flaps: f };
