@@ -355,27 +355,36 @@ export function solveLayout(rawPieces, printW, printH, opts = {}) {
             C = Math.min(C, Math.max(1, Math.floor(maxUp / R)));
             if (C < 1) continue;
 
-            const cells = [];
-            for (let j = 0; j < R; j++) for (let i = 0; i < C; i++)
-              cells.push({ i, j, x: i * dx + j * sx, y: j * dy, flip: flipFn(i, j) });
-
-            const bb = { w: (C - 1) * dx + (R - 1) * sx + netW, h: (R - 1) * dy + netH };
-            if (bb.w > printW + EPS || bb.h > printH + EPS) continue;
-
-            const v = verifyNoOverlap(part, cells, flipFn);
-            if (!v.ok) continue;                            // 후보 폐기 (설계 버그 신호)
-
-            const up = C * R;
-            const foot = (bb.w * bb.h) / (printW * printH);
-            const cand = {
-              up, cols: C, rows: R, dx, dy, sx, rotated: g === 90, flipRule: ruleName,
-              netW, netH, bbox: bb, footprint: foot,
-              interlocked: dx < netW - 0.05 || dy < netH - 0.05,
-              overlapX: Math.max(0, netW - dx), overlapY: Math.max(0, netH - dy),
-              cells, part,
-            };
-            if (!best || cand.up > best.up ||
-                (cand.up === best.up && cand.footprint < best.footprint)) best = cand;
+            // 1D 반사선으로 구한 최소 피치는 열/행 방향만 보장한다. 대각쌍은
+            // 별개 제약이므로 완전검증에서 떨어질 수 있다. 종전에는 그때 후보를
+            // 통째로 버렸는데, 열이나 행을 하나 줄이면 통과하는 경우가 많다.
+            // (웨이크버니 36x36x168: 38mm 물림을 찾아놓고도 3열x2행 을 놓쳤다)
+            // → 격자를 축소해 가며 통과하는 최대 배치를 찾는다.
+            for (let CC = C; CC >= 1; CC--) {
+              let placed = false;
+              for (let RR = R; RR >= 1; RR--) {
+                if (CC * RR <= (best ? best.up : 0)) break;   // 이미 더 좋은 해가 있다
+                const bb = { w: (CC - 1) * dx + (RR - 1) * sx + netW, h: (RR - 1) * dy + netH };
+                if (bb.w > printW + EPS || bb.h > printH + EPS) continue;
+                const cells = [];
+                for (let j = 0; j < RR; j++) for (let i = 0; i < CC; i++)
+                  cells.push({ i, j, x: i * dx + j * sx, y: j * dy, flip: flipFn(i, j) });
+                if (!verifyNoOverlap(part, cells, flipFn).ok) continue;
+                const cand = {
+                  up: CC * RR, cols: CC, rows: RR, dx, dy, sx,
+                  rotated: g === 90, flipRule: ruleName, netW, netH,
+                  bbox: bb, footprint: (bb.w * bb.h) / (printW * printH),
+                  interlocked: dx < netW - 0.05 || dy < netH - 0.05,
+                  overlapX: Math.max(0, netW - dx), overlapY: Math.max(0, netH - dy),
+                  cells, part,
+                };
+                if (!best || cand.up > best.up ||
+                    (cand.up === best.up && cand.footprint < best.footprint)) best = cand;
+                placed = true;
+                break;                                       // 이 열수에서 최대 행수를 찾았다
+              }
+              if (!placed && CC === 1) break;
+            }
           }
         }
       }

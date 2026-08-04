@@ -13,6 +13,8 @@ const C=[
  ["삼면F 90×90×250",       90,90,250,"glue_3side",[760,480],2],
  ["탈취제A 75×37.5×186",   75,37.5,186,"glue_3side",[788,545],4],
  ["LUXEN 130×130×55",    130,130,55,"glue_3side",[480,788],2],
+ ["웨이크버니A 46×46×138", 46,46,138,"glue_3side",[636,469],6],
+ ["웨이크버니B 36×36×168", 36,36,168,"glue_3side",[636,469],6],
 ];
 // ── 불변식: 폴리곤 bbox === netW × netH
 console.log("\n═══ 불변식 검사 — 폴리곤 bbox = netW × netH ═══════════════════");
@@ -39,5 +41,5 @@ for(const [lbl,opt] of [["구공식(1단 날개)",{twoStage:false}],["신공식(
     console.log(nm.padEnd(22)+`${cut[0]}×${cut[1]}`.padEnd(11)+`${net.netW.toFixed(0)}×${net.netH.toFixed(0)}`.padEnd(15)+
       String(up).padStart(4)+String(got).padStart(4)+"  "+(got===up?"✓   ":`${got>up?"+":""}${got-up}   `)+how);
   }
-  console.log("─".repeat(88)+`\n일치 ${hit}/12  (${(hit/12*100).toFixed(0)}%)`);
+  console.log("─".repeat(88)+`\n일치 ${hit}/${C.length}  (${(hit/C.length*100).toFixed(0)}%)`);
 }

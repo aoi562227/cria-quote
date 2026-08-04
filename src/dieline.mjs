@@ -51,7 +51,25 @@ export function calcNetSize(W, D, H, type) {
   switch (type) {
     case "tuck_both":  topLid = D + 16.5;                     botFloor = D + 16.5; break;
     case "cross":      topLid = D * 7 / 8 + 5.5;              botFloor = D * 7 / 8 + 5.5; break;
-    default:           topLid = 0.88 * D + 0.09 * W + 20.6;   botFloor = 0.33 * D + 0.15 * W + 11.0;
+    // ── 삼면접착 ──────────────────────────────────────────────
+    // 2026-07-31 웨이크버니 칼선 2건 실측으로 재보정. 두 가지가 틀려 있었다.
+    //
+    // (1) 큰 날개와 작은 날개가 **뒤바뀌어** 있었다.
+    //     실측 A(46×46×138): 위 띠 35.0 / 아래 띠 61.0
+    //     실측 B(36×36×168): 위 띠 28.0 / 아래 띠 51.0
+    //     종전 공식은 topLid(=0.88D+0.09W+20.6) 를 위, botFloor 를 아래로 뒀다.
+    //     실측 아래 띠가 종전 topLid 와, 실측 위 띠가 종전 botFloor 와 대응한다.
+    //     합이 비슷해 netH 로는 티가 안 났지만, **어느 띠에 빈 구멍이 있는지**가
+    //     뒤집혀서 맞물림 계산이 통째로 틀렸다.
+    //     (몸통은 정확했다 — A 173.0−35.0=138.0=H, B 196.0−28.0=168.0=H)
+    //
+    // (2) 큰 날개가 4.4mm 크게 나왔다. 상수만 내리면 실측과 0.2mm 이내로 맞는다.
+    //     A 0.88(46)+0.09(46)+16.2 = 60.82  실측 61.0
+    //     B 0.88(36)+0.09(36)+16.2 = 51.12  실측 51.0
+    //     작은 띠 공식(0.33D+0.15W+11)은 A −1.9 / B +0.3 로 기존 회귀 오차 범위라 유지.
+    //     (W=D 인 2건뿐이라 D·W 계수를 재분리하면 과적합이 된다)
+    default:           topLid = 0.33 * D + 0.15 * W + 11.0;    // 작은 띠 (위)
+                       botFloor = 0.88 * D + 0.09 * W + 16.2;  // 큰 띠 = 뚜껑 (아래)
   }
   return { netW, netH: H + topLid + botFloor, topLid, botFloor };
 }
@@ -74,11 +92,16 @@ export function getFlaps(W, D, H, type) {
         top: [dust, ns.topLid, dust, 0],
         bot: [ns.botFloor * 0.55, ns.botFloor, ns.botFloor * 0.55, ns.botFloor] };
     default:
+      // 실측 날개 패턴 (웨이크버니 A·B 동일)
+      //   작은 띠(위)  : 4패널 전폭 균일 — 빈 구멍 없음
+      //   큰 띠(아래)  : [0, 0.36b, b, b] — 한쪽에 몰려 있고 패널0 이 완전히 비어 있다
+      //     A: [0, 23, 61, 61] / 61 → [0, 0.377, 1, 1]
+      //     B: [0, 18, 51, 51] / 51 → [0, 0.353, 1, 1]
+      // 종전 모델은 짧은/긴 날개가 교대([short,long,short,long])한다고 봤고
+      // 빈 구멍을 위 띠(패널3)에 뒀다. 실측은 그 반대다.
       return { type: "glue3", ns,
-        top: [Math.min(D / 2 - 1, ns.topLid * 0.85), ns.topLid,
-              Math.min(D / 2 - 1, ns.topLid * 0.85), 0],
-        bot: [Math.min(D / 2, ns.botFloor * 0.9), ns.botFloor,
-              Math.min(D / 2, ns.botFloor * 0.9), ns.botFloor] };
+        top: [ns.topLid, ns.topLid, ns.topLid, ns.topLid],
+        bot: [0, ns.botFloor * 0.36, ns.botFloor, ns.botFloor] };
   }
 }
 
