@@ -3,6 +3,22 @@
 // 출처: 250423 삼면E 환패키지 디자인 PDF
 //   mediabox = 545.0 × 394.0mm = **정확히 4×64절**
 //   4×64 대지 위에 2up 으로 앉힌 실제 모습 (실제 목형도 이대로 파짐)
+//
+// 이 파일은 src/domain/dieline/index.mjs 의 calcNetSize 를 **직접 import** 한다.
+// 종전에는 netW/netH 공식을 이 파일이 복제해서, 앱 공식을 바꿔도 여기 「공식」 열은
+// 옛 값을 계속 보여줬다. 그리고 pass/fail 카운터가 없어 몇 건이 틀려도 exit 0 이었다.
+import { calcNetSize } from "../src/domain/dieline/index.mjs";
+
+// ── 판정 집계 ──────────────────────────────────────────────────────
+// known:"이유" 를 붙인 항목은 이미 문서화된 공식 오차다 (verify-total 의 knownDiff 와 같은 규약).
+let PASS = 0; const KNOWN = [], FAIL = [];
+function check(label, real, calc, tol, known) {
+  const hit = Math.abs(calc - real) <= tol;
+  if (hit) PASS++;
+  else if (known) KNOWN.push([label, known, real, calc]);
+  else FAIL.push([label, real, calc]);
+  return hit;
+}
 
 const D = {
   name: "삼면E 90×70×130 · 삼면접착 자동바닥",
@@ -33,36 +49,40 @@ console.log(`  겹침(맞물림)   ${overlap} mm      = 2×${D.netH} − ${span}
 console.log(`  전체 점유      ${span} mm`);
 console.log(`  좌우 여백      ${marginL} / ${marginR} mm  → 물림 ≈ 30mm`);
 
-// ── 공식 대조 ──────────────────────────────────────────────────────
-const TAB = 14.3;
-const netW_f = 2*(D.W + D.D) + TAB;
-const lid_f  = D.D*0.88 + D.W*0.09 + 20.6;
-const bot_f  = D.D*0.33 + D.W*0.15 + 11.0;
-const netH_f = D.H + lid_f + bot_f;
+// ── 공식 대조 (실코드 calcNetSize) ─────────────────────────────────
+const NS     = calcNetSize(D.W, D.D, D.H, "glue_3side");
+const netW_f = NS.netW, netH_f = NS.netH;
+const lid_f  = NS.topLid, bot_f = NS.botFloor;
 
 console.log("\n═══ 현재 공식과 대조 ═════════════════════════════════════════════════════");
 console.log("항목".padEnd(16)+"실측".padEnd(12)+"공식".padEnd(12)+"Δ");
 console.log("-".repeat(56));
 const rows = [
-  ["전개도 가로(netW)", D.netW, netW_f],
-  ["전개도 세로(netH)", D.netH, netH_f],
+  ["전개도 가로(netW)", D.netW, netW_f, null],
+  // netH 는 알려진 공식 오차다 — 삼면접착 세로는 칼선 벡터 실측 3건으로 세웠고
+  // 이 대지(접는선 추출)는 그 3건에 포함되지 않는다.
+  ["전개도 세로(netH)", D.netH, netH_f, "삼면접착 netH 공식이 이 대지보다 크다"],
 ];
-for (const [k,a,b] of rows)
+for (const [k,a,b,known] of rows) {
+  const hit = check(k, a, b, 2, known);
   console.log(k.padEnd(16)+a.toFixed(1).padEnd(12)+b.toFixed(1).padEnd(12)+
-    ((b-a>0?"+":"")+(b-a).toFixed(1)) + (Math.abs(b-a)<=2 ? "  ✓" : "  ⚠"));
+    ((b-a>0?"+":"")+(b-a).toFixed(1)) + (hit ? "  ✓" : "  ⚠"));
+}
 console.log(`뚜껑 / 바닥      ─           ${lid_f.toFixed(1)} / ${bot_f.toFixed(1)}   (실측 분리 불가)`);
 
+// 대지가 물림 30mm 양쪽 안에 들어가는지 — 좌우 여백 33.1/28.9 의 근거
+const fitReal = check("삼면E 대지 물림 30 이내", D.sheet[0] - 60, span, 3, null);
+
 console.log(`
-▶ netW 는 0.7mm 오차로 정확 (접착날개 14.3 확인)
-▶ netH 는 공식이 ${(netH_f - D.netH).toFixed(1)}mm 크다 (−6%)
+▶ netW 는 ${Math.abs(netW_f - D.netW).toFixed(1)}mm 오차로 정확 (접착날개 14.3 확인)
+▶ netH 는 공식이 ${(netH_f - D.netH).toFixed(1)}mm 크다
 
-▶ 맞물림 ${overlap}mm 이 실측값. 현재 코드는 IL_H = 바닥날개(${bot_f.toFixed(0)}mm) 를 쓴다.
-  견적서 up 재현(8/10)으로 역산한 값이라 실제 대지보다 후하다.
-  ⚠ netH 공식 오차(+16mm)와 맞물림 과대(+27mm)가 서로 상쇄되어
-    결과적으로 2up 은 맞게 나오지만, 두 값 모두 실측과 다르다.
+▶ 맞물림 ${overlap}mm 이 실측값 — netH 의 ${(overlap/D.netH*100).toFixed(1)}% 다.
+  종전 코드는 IL_H = 바닥날개(${bot_f.toFixed(0)}mm) 를 썼다. 견적서 up 재현(8/10)으로
+  역산한 값이고, verify-nest §5 가 그 값이 기하 위반임을 증명했다.
+  현행 nest 엔진은 폴리곤에서 실제로 피할 수 있는 만큼만 물린다.
 
-  검산 — 실측값으로:  2 × ${D.netH} − ${overlap} = ${(2*D.netH-overlap).toFixed(1)} ≤ ${D.sheet[0]} − 60(물림 30×2) = ${D.sheet[0]-60}  ✓
-        공식값으로:  2 × ${netH_f.toFixed(1)} − ${bot_f.toFixed(0)} = ${(2*netH_f-bot_f).toFixed(1)} ≤ ${D.sheet[0]-60}  ✓
+  검산 — 실측값으로:  2 × ${D.netH} − ${overlap} = ${(2*D.netH-overlap).toFixed(1)} ≤ ${D.sheet[0]} − 60(물림 30×2) = ${D.sheet[0]-60}  ${fitReal?"✓":"✗"}
 
 ▶ 실무 확인: 맞물림은 **바닥이 아니라 뚜껑쪽**으로 물리는 경우가 가장 많음.
   → 반전 방향을 뚜껑↔뚜껑 으로 두어야 하고, 맞물림 크기도 재검토 필요.
@@ -89,10 +109,11 @@ console.log("대지".padEnd(30)+"netH".padEnd(9)+"겹침".padEnd(9)+"겹침/netH
 console.log("-".repeat(80));
 for (const d of IMPOSITIONS) {
   const calc = +(d.up*d.netH - d.overlap).toFixed(1);
+  const hit = check(`대지 정합 ${d.name}`, d.span, calc, 1, null);
   console.log(d.name.padEnd(30)+d.netH.toFixed(1).padEnd(9)+d.overlap.toFixed(1).padEnd(9)+
     ((d.overlap/d.netH*100).toFixed(1)+"%").padEnd(11)+
     `${d.up}×${d.netH} − ${d.overlap} = ${calc} (실측 ${d.span})` +
-    (Math.abs(calc-d.span)<=1 ? " ✓" : " ✗"));
+    (hit ? " ✓" : " ✗"));
 }
 console.log(`
 ▶ 겹침이 8.3% ~ 22.7% 로 갈린다 → 고정 비율도 아니다.
@@ -225,3 +246,16 @@ console.log(`
 //  이 보정으로 삼면A 120×55×180 이 2up 으로 맞았다 —
 //  netH 302.6 → 293.25 로 내려가 597 에 2열(회전)이 들어간다.
 // ══════════════════════════════════════════════════════════════════
+
+// ══════════════════════════════════════════════════════════════════
+//  집계 — 종전에는 카운터가 없어 몇 건이 틀려도 항상 exit 0 이었다
+// ══════════════════════════════════════════════════════════════════
+const TOTAL = PASS + KNOWN.length + FAIL.length;
+console.log(`\n${"=".repeat(74)}`);
+console.log(`실측 대조: ${PASS}/${TOTAL}` +
+            (KNOWN.length ? `  (+ 알려진 공식 오차 ${KNOWN.length}건)` : ""));
+for (const [label, why, real, calc] of KNOWN)
+  console.log(`  ⚠ ${label}: 실측 ${real} → 공식 ${calc.toFixed(1)}  — ${why}`);
+for (const [label, real, calc] of FAIL)
+  console.log(`  ✗ ${label}: 실측 ${real} → 계산 ${typeof calc === "number" ? calc.toFixed(1) : calc}`);
+if (FAIL.length) process.exitCode = 1;

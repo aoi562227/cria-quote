@@ -5,10 +5,14 @@
 //  그래서 **격자 샘플링으로 겹침 면적을 직접 재는 독립 검사기**를 만들어
 //  그것으로 판정한다. 해석해가 있는 단순 도형(직사각형·L·T)은 손검산과 대조한다.
 // ══════════════════════════════════════════════════════════════════
+//  이 파일은 src/nest.mjs 와 src/domain/dieline/index.mjs 를 **직접 import** 한다.
+//  종전에는 전개도 조각 생성(getFlaps·calcNet·dielinePieces)을 이 파일이 복제했고,
+//  그래서 앱의 전개도 모델을 바꿔도 §3·§5 는 옛 도형을 계속 검사했다.
 import {
   canonicalize, hull, minkowski, strictlyInside, lineInsideInterval,
   firstFree, preparePart, overlaps, solveLayout, verifyNoOverlap, bboxOf, rot90,
 } from "../src/nest.mjs";
+import { dielinePieces } from "../src/domain/dieline/index.mjs";
 
 let pass = 0, fail = 0;
 const ok  = (c, m) => { if (c) { pass++; console.log(`  ✓ ${m}`); } else { fail++; console.log(`  ✗ ${m}`); } };
@@ -45,52 +49,6 @@ function overlapAreaSampled(A, B, step = 0.4) {
 }
 
 const shiftP = (pieces, dx, dy) => pieces.map(p => p.map(([x, y]) => [x + dx, y + dy]));
-
-// ══ 전개도 조각 생성 (App.jsx BoxNet 기하 미러) ════════════════════
-function getFlaps(W, D, H, t) {
-  const dust = 0.43 * D + 7;
-  if (t === "tuck_both") { const L = Math.round(0.03 * D + 10.6);
-    return { type:"tuck", topLid:L, dust, botLid:L, botDust:dust }; }
-  if (t === "cross")     return { type:"cross", topLid:0.08*D+9, dust, botLong:0.7*D, botShort:0.4*D+6 };
-  if (t === "glue_3side")return { type:"glue3", topLid:0.88*D+0.09*W+20.6, dust:D/2-1,
-                                  botLong:0.33*D+0.15*W+11.0, botShort:D/2 };
-  return null;
-}
-function calcNet(W, D, H, t) {
-  const netW = 2*(W+D) + 14.3;
-  let topLid, botFloor;
-  if (t === "tuck_both") { topLid = D + 16.5; botFloor = D + 16.5; }
-  else if (t === "cross") { topLid = D*7/8 + 5.5; botFloor = D*7/8 + 5.5; }
-  else { topLid = 0.88*D + 0.09*W + 20.6; botFloor = 0.33*D + 0.15*W + 11.0; }
-  return { netW, netH: H + topLid + botFloor, topLid, botFloor };
-}
-/** BoxNet 과 동일한 볼록조각 4종 */
-function dielinePieces(W, D, H, type) {
-  const ns = calcNet(W, D, H, type), f = getFlaps(W, D, H, type);
-  const bodyY0 = ns.topLid, bodyY1 = ns.topLid + H;
-  const xE = [0, D, D+W, 2*D+W, 2*D+2*W, ns.netW];
-  let topH, botH;
-  if (f && f.type === "tuck") { topH = [f.dust, f.topLid, f.dust, 0]; botH = [f.botDust, 0, f.botDust, f.botLid]; }
-  else if (f)                 { topH = [f.dust, f.topLid, f.dust, 0]; botH = [f.botShort, f.botLong, f.botShort, f.botLong]; }
-  else                        { topH = [ns.topLid,ns.topLid,ns.topLid,ns.topLid]; botH = [ns.botFloor,ns.botFloor,ns.botFloor,ns.botFloor]; }
-  const bigFlap = Math.max(ns.topLid, ns.botFloor, 1);
-  const cham = (fh, pw) => fh <= 0 ? 0
-    : (fh >= bigFlap*0.6 ? Math.min(2.5, pw*0.06, fh*0.3) : Math.min(pw*0.22, fh*0.45, 10));
-  const out = [];
-  for (let i = 0; i < 5; i++) {
-    const x0 = xE[i], x1 = xE[i+1], pw = x1 - x0;
-    if (pw <= 0) continue;
-    if (i === 4) { const tc = Math.min(pw*0.55, H*0.12, 8);
-      out.push([[x0,bodyY0],[x1,bodyY0+tc],[x1,bodyY1-tc],[x0,bodyY1]]); continue; }
-    out.push([[x0,bodyY0],[x1,bodyY0],[x1,bodyY1],[x0,bodyY1]]);
-    const tH = topH[i] ?? 0, bH = botH[i] ?? 0;
-    if (tH > 0) { const c = cham(tH, pw), yT = bodyY0 - tH;
-      out.push([[x0,bodyY0],[x0+c,yT],[x1-c,yT],[x1,bodyY0]]); }
-    if (bH > 0) { const c = cham(bH, pw), yB = bodyY1 + bH;
-      out.push([[x0,bodyY1],[x0+c,yB],[x1-c,yB],[x1,bodyY1]]); }
-  }
-  return { pieces: out, net: ns };
-}
 
 // ══════════════════════════════════════════════════════════════════
 console.log("\n════ 1. 기하 프리미티브 (해석해 대조) ════");

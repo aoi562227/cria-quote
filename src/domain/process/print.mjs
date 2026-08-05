@@ -1,4 +1,4 @@
-import { SPOT_WEIGHT, uvAmount } from "../data/print-prices.mjs";
+import { SPOT_WEIGHT, uvAmount, sideFlat } from "../data/print-prices.mjs";
 
 /**
  * 한 면의 인쇄.
@@ -19,8 +19,8 @@ export function printSide(side, { processR, printUnit, spotMode, spotRpr, qty })
     const a = uvAmount(qty);
     return { qty: 1, unit: "식", unitPrice: a, amount: a };
   }
-  const flatDo = (side.color ? 4 : 0) + (side.black ? 1 : 0);   // 원색·먹 (가중치 1)
-  const spotDo = side.spot;                                     // 별색 (가중치 3 또는 별도단가)
+  const flatDo = sideFlat(side);   // 원색·먹 (가중치 1)
+  const spotDo = side.spot;        // 별색 (가중치 3 또는 별도단가)
   if (flatDo + spotDo === 0) return null;
 
   if (spotDo > 0 && spotMode === "rpr") {

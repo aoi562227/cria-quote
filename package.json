@@ -4,7 +4,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "verify": "node test/verify-total.mjs && node test/verify-r.mjs && node test/verify-print.mjs && node test/verify-layout.mjs && node test/verify-interlock.mjs && node test/verify-net.mjs && node test/verify-imposition.mjs",
+    "verify": "node test/verify-dieline.mjs && node test/verify-nest.mjs && node test/verify-r.mjs && node test/verify-print.mjs && node test/verify-total.mjs && node test/verify-net.mjs && node test/verify-imposition.mjs && node test/verify-interlock.mjs && node test/verify-layout.mjs && node test/scorecard2.mjs && node test/scorecard-nest.mjs && node test/scorecard-unit.mjs",
     "predeploy": "npm run build",
     "deploy": "gh-pages -d dist"
   },

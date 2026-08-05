@@ -15,7 +15,9 @@ import {
   BASE_SHEETS, sheetsPerR, sheetTier, effectiveSheet, resolveSheet, findSheetBase,
 } from "./data/sheets.mjs";
 import { PAPERS, DEFAULT_PAPER } from "./data/papers.mjs";
-import { printUnitFor, SPOT_RPR_BEDA, SPOT_RPR_PLAIN } from "./data/print-prices.mjs";
+import {
+  printUnitFor, SPOT_RPR_BEDA, SPOT_RPR_PLAIN, sideColors,
+} from "./data/print-prices.mjs";
 import { coatById, glueById, thomsonById } from "./data/process-prices.mjs";
 import { calcR, calcProcessR, estimateLoss, lossOptionsOf } from "./reams.mjs";
 import { getPaperPriceInfo, getPaperPrice } from "./paper-repo.mjs";
@@ -146,8 +148,7 @@ export function buildContext(input) {
                         sheet.custom ? { w: sheet.w, h: sheet.h, cut: sheet.cut } : null);
 
   // ─── 인쇄 도수 파생 ────────────────────────────────────────────
-  const fColors = (front.color ? 4 : 0) + front.spot + (front.black ? 1 : 0);
-  const bColors = (back.color  ? 4 : 0) + back.spot  + (back.black  ? 1 : 0);
+  const fColors = sideColors(front), bColors = sideColors(back);
   const fHasInk = fColors > 0 || front.uv;
   const bHasInk = bColors > 0 || back.uv;
 

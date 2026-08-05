@@ -39,7 +39,7 @@
 // ══════════════════════════════════════════════════════════════════
 
 import { sheetsPerR } from "./data/sheets.mjs";
-import { SPOT_WEIGHT } from "./data/print-prices.mjs";
+import { SPOT_WEIGHT, sideColors, sideFlat } from "./data/print-prices.mjs";
 import { ceil1, ceil3 } from "./units.mjs";
 
 export const LOSS_BASE      = 300;   // 기본 여분(장)
@@ -96,12 +96,11 @@ export function calcProcessR(up, qty) {
  * 박은 여분 가산 없음이 확정 정책이다(조립형 금박 2건 여분 300).
  */
 export function lossOptionsOf(print, finish, lossSheets) {
-  // 원색(CMYK 4도) 과 별색은 함께 쓸 수 있다 (예: 원색4도 + 별색2도 = 6도)
-  const ink  = sd => (sd.color ? 4 : 0) + sd.spot + (sd.black ? 1 : 0) > 0 || !!sd.uv;
+  // UV 는 도수가 0 이어도 인쇄한 것이다 (별도 UV기계) — 여분 판단에서 무인쇄가 아니다
+  const ink  = sd => sideColors(sd) > 0 || !!sd.uv;
   const fInk = ink(print.front), bInk = ink(print.back);
   const spot = print.front.spot + print.back.spot;
-  const flat = (print.front.color ? 4 : 0) + (print.front.black ? 1 : 0)
-             + (print.back.color  ? 4 : 0) + (print.back.black  ? 1 : 0);
+  const flat = sideFlat(print.front) + sideFlat(print.back);
   return {
     manual:     lossSheets,
     bothSides:  fInk && bInk,
