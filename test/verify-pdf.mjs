@@ -243,6 +243,28 @@ BI /W 1 /H 1 /CS /G /BPC 8 ID \u0000 EI
 // Form 안: 베지어(최대 y = t=0.5 에서 22.5) + 직선. bbox = 30 × 37.5
 const FORM = `0 0 m 0 30 30 30 30 0 c 30 -15 l 0 -15 l h S`;
 
+/** xref 스트림 본문 바이트를 만든다 — W=[1,4,2] + PNG 예측자 12(Up).
+ *  rows[i] = [type, f2, f3]. 두 빌더가 같은 포장을 쓰므로 한 곳에 둔다. */
+const XREF_W = [1, 4, 2], XREF_ROW = 7;
+async function xrefStreamBody(rows) {
+  const raw = new Uint8Array(rows.length * XREF_ROW);
+  rows.forEach(([type, f2, f3], i) => {
+    const p = i * XREF_ROW;
+    raw[p] = type;
+    raw[p + 1] = (f2 >>> 24) & 255; raw[p + 2] = (f2 >>> 16) & 255;
+    raw[p + 3] = (f2 >>> 8) & 255;  raw[p + 4] = f2 & 255;
+    raw[p + 5] = (f3 >>> 8) & 255;  raw[p + 6] = f3 & 255;
+  });
+  // PNG 예측자 12(Up): 행마다 필터바이트 2 + (현재 − 이전)
+  const pred = new Uint8Array(rows.length * (XREF_ROW + 1));
+  for (let r = 0; r < rows.length; r++) {
+    pred[r * (XREF_ROW + 1)] = 2;
+    for (let i = 0; i < XREF_ROW; i++)
+      pred[r * (XREF_ROW + 1) + 1 + i] = (raw[r * XREF_ROW + i] - (r ? raw[(r - 1) * XREF_ROW + i] : 0)) & 255;
+  }
+  return deflate(pred);
+}
+
 /** xref 스트림 PDF 를 만든다. objStm=true 면 type 2 항목을 하나 넣는다. */
 async function buildXrefStreamPdf({ objStm = false } = {}) {
   const parts = []; let len = 0;

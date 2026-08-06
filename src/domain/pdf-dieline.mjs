@@ -303,7 +303,8 @@ class Doc {
   constructor(bytes) {
     this.b = bytes;
     this.offsets = new Map();     // objNum → byte offset
-    this.objStm = new Set();      // /ObjStm 안에 압축돼 있다고 xref 가 말하는 객체번호
+    this.objStm = new Map();      // objNum → { stm: 컨테이너 객체번호, idx: 컨테이너 안 순번 }
+    this.objStmData = new Map();  // 컨테이너 객체번호 → { objs: Map(objNum→값) } | { err: 이유 }
     this.cache = new Map();
     this.trailer = {};
     this.scanned = false;
@@ -323,15 +324,91 @@ class Doc {
     if (this.cache.has(n)) return this.cache.get(n);
     this.cache.set(n, null);                      // 순환 방지
     let v = this._parseAt(this.offsets.get(n), n);
+    // 압축 객체(/ObjStm)는 loadObjStms 가 미리 풀어둔 컨테이너에서 꺼낸다.
+    // 평문 오프셋을 **먼저** 보는 순서는 종전과 같다 — 하이브리드 파일에서 xref 가
+    // 같은 번호를 평문(type 1)으로도 가리키면 그 쪽이 계속 이긴다(무회귀).
+    if (v === undefined) v = this._fromObjStm(n);
     if (v === undefined && !this.scanned) { this._scanAll(); v = this._parseAt(this.offsets.get(n), n); }
-    // 압축 객체(/ObjStm)는 풀지 않는다. 다만 **실제로 필요할 때만** 실패한다 —
-    // 하이브리드 파일은 메타데이터만 ObjStm 에 넣고 페이지·칼선은 평문으로 두는 경우가 있고,
-    // 그걸 미리 걷어차면 읽을 수 있는 파일을 못 읽는다. 대신 조용히 null 로 넘기지 않는다.
-    if (v === undefined && this.objStm.has(n))
-      throw new Error(`이 PDF 는 객체 ${n} 을 객체 스트림(/ObjStm)에 압축해 넣었다 — 이 추출기는 압축 객체를 읽지 않는다. ` +
+    // 지원해도 못 꺼내는 경우(컨테이너 해제 실패·암호화·컨테이너에 그 번호가 없음)는
+    // **실제로 필요할 때만** 실패한다 — 하이브리드 파일은 메타데이터만 ObjStm 에 넣고
+    // 페이지·칼선은 평문으로 두는 경우가 있고, 그걸 미리 걷어차면 읽을 수 있는 파일을
+    // 못 읽는다. 대신 조용히 null 로 넘기지 않는다.
+    if (v === undefined && this.objStm.has(n)) {
+      const loc = this.objStm.get(n), c = this.objStmData.get(loc.stm);
+      throw new Error(`객체 ${n} 은 객체 스트림(/ObjStm) ${loc.stm} 안에 있다고 xref 가 말하는데 꺼내지 못했다 — ` +
+        (c?.err ? `${c.err}. ` : `그 스트림에 객체 ${n} 이 없다. `) +
         `Illustrator/Acrobat 에서 「호환성: Acrobat 4 (PDF 1.3)」로 다시 저장하면 읽힌다.`);
+    }
     const out = v === undefined ? null : v;
     this.cache.set(n, out);
+    return out;
+  }
+
+  /** 미리 풀어둔 /ObjStm 컨테이너에서 객체 n 을 꺼낸다. 못 꺼내면 undefined.
+   *  왜 여기서 풀지 않나: inflate 가 DecompressionStream 이라 **비동기**인데 get/resolve/
+   *  dict/arr 는 도메인 전역에서 동기로 쓰인다. 그래서 해제는 async 인 loadObjStms 가
+   *  미리 해두고, 이 함수는 조회만 한다. */
+  _fromObjStm(n) {
+    const loc = this.objStm.get(n);
+    if (!loc) return undefined;
+    const c = this.objStmData.get(loc.stm);
+    if (!c || !c.objs) return undefined;
+    return c.objs.has(n) ? c.objs.get(n) : undefined;
+  }
+
+  /** /ObjStm 컨테이너 1개를 풀어 안의 객체를 전부 파싱한다.
+   *
+   *  구조 (PDF 32000-1 §7.5.7): 스트림 앞쪽에 `objnum offset` 정수쌍이 /N 개 있고,
+   *  각 offset 은 /First 부터의 상대 위치다. 안에 든 객체는 **스트림일 수 없다** —
+   *  그래서 여기서는 "N G obj"·"stream" 을 볼 필요가 없고 parseObj 하나로 끝난다.
+   *
+   *  ⚠ 실패해도 던지지 않는다. 이유만 적어두고 Doc.get 이 그 객체를 **실제로 꺼낼 때**
+   *    실패하게 한다. 참조되지 않은 압축객체 하나 때문에 읽을 수 있는 파일을 못 읽으면
+   *    후퇴다(하이브리드 파일 대응 — 종전 lazy 규약을 그대로 유지한다). */
+  async _loadObjStm(stmNum) {
+    if (this.objStmData.has(stmNum)) return this.objStmData.get(stmNum);
+    this.objStmData.set(stmNum, { err: "재진입" });   // ObjStm 이 자기를 가리키는 순환 방지
+    let out;
+    try {
+      // 컨테이너 자체는 평문 객체다 — ObjStm 안에 ObjStm 을 넣는 것은 규격이 금지한다.
+      if (!this.offsets.has(stmNum) && !this.scanned) this._scanAll();
+      const s = this._parseAt(this.offsets.get(stmNum), stmNum);
+      if (!s || s._s === undefined) throw new Error(`객체 스트림 ${stmNum} 을 파일에서 찾지 못했다`);
+      const ty = this.resolve(s.dict?.Type);
+      if (ty !== "/ObjStm") throw new Error(`객체 ${stmNum} 의 /Type 이 /ObjStm 이 아니다 (${ty ?? "없음"})`);
+      const data = await this.streamData(s);
+      if (!data) throw new Error(`객체 스트림 ${stmNum} 의 데이터를 읽지 못했다`);
+      const N = this.numAt(s.dict.N, -1), first = this.numAt(s.dict.First, -1);
+      if (!(N > 0) || first < 0 || first > data.length)
+        throw new Error(`객체 스트림 ${stmNum} 의 /N(${N})·/First(${first}) 가 올바르지 않다`);
+      // 머리쪽 정수쌍. parseObj 를 쓰면 "12 0 R" 참조 선행판독이 끼어들어 쌍이 어긋나므로
+      // readToken 으로 정수만 읽는다.
+      const H = new Cur(data, 0);
+      const pairs = [];
+      for (let k = 0; k < N; k++) {
+        skipWs(H); const a = parseInt(readToken(H), 10);
+        skipWs(H); const o = parseInt(readToken(H), 10);
+        if (!Number.isFinite(a) || !Number.isFinite(o) || H.i > first) break;
+        pairs.push([a, o]);
+      }
+      if (!pairs.length) throw new Error(`객체 스트림 ${stmNum} 의 (객체번호, 위치) 쌍을 읽지 못했다`);
+      const objs = new Map();
+      for (const [onum, ooff] of pairs) {
+        const q = first + ooff;
+        if (!(q >= 0) || q >= data.length) continue;
+        const v = parseObj(new Cur(data, q));
+        // { kw } 는 파서가 "숫자도 키워드도 아닌 토큰" 을 만났다는 뜻 = 깨진 항목이다.
+        if (v === undefined || v === END || (v && typeof v === "object" && "kw" in v)) continue;
+        if (!objs.has(onum)) objs.set(onum, v);
+      }
+      if (!objs.size) throw new Error(`객체 스트림 ${stmNum} 에서 객체를 하나도 파싱하지 못했다`);
+      out = { objs, n: pairs.length };
+      if (objs.size < pairs.length)
+        this.warnings.push(`객체 스트림 ${stmNum} 의 ${pairs.length}개 중 ${pairs.length - objs.size}개를 파싱하지 못했다.`);
+    } catch (e) {
+      out = { err: e.message };
+    }
+    this.objStmData.set(stmNum, out);
     return out;
   }
 
@@ -441,6 +518,9 @@ async function loadXref(doc) {
 
   if (doc.trailer.Encrypt)
     throw new Error("암호화된 PDF 다 (/Encrypt) — 암호를 풀지 않으면 칼선을 읽을 수 없다. 보안 해제 후 다시 올려라.");
+  // 압축 객체를 여기서 풀어둔다 — /Root 조차 /ObjStm 안에 있는 파일(순수 xref 스트림)이
+  // 실재하므로 아래 Root 검사보다 **먼저** 와야 한다.
+  await loadObjStms(doc);
   if (!doc.trailer.Root) {
     doc._scanAll();
     // ⚠ 여기서 암호화를 한 번 더 본다. startxref 가 깨진 암호화 PDF 는 trailer 를 못 읽어
@@ -449,13 +529,49 @@ async function loadXref(doc) {
     if (looksEncrypted(doc))
       throw new Error("암호화된 PDF 다 (/Encrypt — xref 가 깨져 trailer 대신 본문에서 찾았다) — " +
         "암호를 풀지 않으면 칼선을 읽을 수 없다. 보안 해제 후 다시 올려라.");
-    // trailer 를 못 찾았으면 /Type /Catalog 객체를 직접 찾는다
-    for (const n of doc.offsets.keys()) {
+    // trailer 를 못 찾았으면 /Type /Catalog 객체를 직접 찾는다.
+    // ⚠ 압축 객체(/ObjStm)도 같이 훑는다 — 순수 xref 스트림 파일은 /Catalog 가 거기 있다.
+    for (const n of [...doc.offsets.keys(), ...doc.objStm.keys()]) {
       const d = doc.dict(mkRef(n));
       if (d?.Type === "/Catalog") { doc.trailer.Root = mkRef(n); break; }
     }
     if (!doc.trailer.Root) throw new Error("PDF trailer 의 /Root(카탈로그)를 찾지 못했다 — PDF 가 아니거나 손상됐다.");
   }
+}
+
+/** xref 가 type 2 로 가리킨 /ObjStm 컨테이너를 전부 풀어둔다.
+ *
+ *  왜 미리(eager) 푸나: Doc.get 은 **동기**다(resolve/dict/arr 이 이 파일 전역에서 동기로
+ *  쓰인다). 그런데 inflate 는 DecompressionStream 이라 비동기다 — get 안에서는 풀 수 없다.
+ *  그래서 async 인 xref 적재 단계에서 컨테이너만 미리 풀고, get 은 조회만 한다.
+ *  비용은 작다: ObjStm 은 객체 **정의**만 담고 스트림은 담을 수 없어(§7.5.7) 컨테이너가
+ *  수 KB 급이다 (실측 /ObjStm PDF 351건 전건 합계 0.7초, 최대 30ms).
+ *
+ *  ⚠ 컨테이너 해제 실패를 여기서 던지지 않는다. Doc.get 이 그 객체를 **실제로 꺼낼 때**
+ *    실패한다 — 참조 안 된 압축객체 때문에 읽히던 파일을 못 읽게 되면 후퇴다. */
+async function loadObjStms(doc) {
+  if (!doc.objStm.size) return;
+  const stms = new Set();
+  for (const { stm } of doc.objStm.values()) if (Number.isFinite(stm) && stm > 0) stms.add(stm);
+  // 2패스로 돈다. 컨테이너 A 의 /Length·/N 이 컨테이너 B 안의 객체를 간접참조하면
+  // A 를 먼저 풀 때는 B 가 아직 없어 실패한다 — 순서에 결과가 달라지면 안 된다.
+  // 패스 끝에 cache 를 비우는 것도 같은 이유다: 1패스에서 못 꺼낸 참조가 null 로 굳으면
+  // 2패스에서 풀린 객체를 영원히 못 본다.
+  for (let pass = 0; pass < 2; pass++) {
+    for (const s of stms) {
+      const prev = doc.objStmData.get(s);
+      if (pass) { if (prev && !prev.err) continue; doc.objStmData.delete(s); }
+      await doc._loadObjStm(s);
+    }
+    doc.cache.clear();
+  }
+  const failed = [];
+  for (const s of stms) { const c = doc.objStmData.get(s); if (c?.err) failed.push(c.err); }
+  // 조용히 넘기지 않는다. 여기서 실패한 컨테이너의 객체가 페이지·칼선 경로에 없으면
+  // 읽기는 성공하는데, 그때도 「무엇을 못 읽었다」는 사실은 화면에 남아야 한다.
+  if (failed.length)
+    doc.warnings.push(`객체 스트림 ${failed.length}/${stms.size}개를 풀지 못했다 — ${failed.slice(0, 2).join(" · ")}` +
+      `${failed.length > 2 ? ` (외 ${failed.length - 2}건)` : ""}. 그 안의 객체가 필요하면 읽기가 실패한다.`);
 }
 
 /** trailer 를 못 읽은 파일에서 「암호화된 파일인가」를 본문으로 판정한다.
@@ -514,10 +630,13 @@ async function readXrefStream(doc, off) {
       let q = p;
       const rd = w => { let v = 0; for (let i = 0; i < w; i++) v = v * 256 + data[q++]; return v; };
       const type = W[0] === 0 ? 1 : rd(W[0]);
-      const f2 = rd(W[1]); rd(W[2]);
+      const f2 = rd(W[1]); const f3 = rd(W[2]);
       const n = index[sec] + k;
       if (type === 1) { if (!doc.offsets.has(n)) doc.offsets.set(n, f2); }
-      else if (type === 2 && !doc.offsets.has(n)) doc.objStm.add(n);   // Doc.get 이 필요할 때 실패시킨다
+      // type 2 = 압축 객체. f2 = 담고 있는 /ObjStm 객체번호, f3 = 그 안의 순번.
+      // 종전에는 번호만 Set 에 넣고 버려서 「어느 컨테이너에 있나」를 잃었다 — 그래서
+      // 풀 수 없었다. 컨테이너 번호를 남기면 loadObjStms 가 실제로 풀 수 있다.
+      else if (type === 2 && !doc.offsets.has(n) && !doc.objStm.has(n)) doc.objStm.set(n, { stm: f2, idx: f3 });
     }
   }
   return d;
@@ -548,9 +667,10 @@ function collectPages(doc) {
   };
   walk(pagesRef ?? doc.trailer.Root, {}, 0);
   if (!out.length) {
-    // /Pages 가 깨진 파일 — /Type /Page 를 전수 조사
+    // /Pages 가 깨진 파일 — /Type /Page 를 전수 조사.
+    // ⚠ 압축 객체도 같이 훑는다 — 순수 xref 스트림 파일은 페이지 딕셔너리가 /ObjStm 안에 있다.
     doc._scanAll();
-    for (const n of doc.offsets.keys()) {
+    for (const n of [...doc.offsets.keys(), ...doc.objStm.keys()]) {
       const d = doc.dict(mkRef(n));
       if (d?.Type === "/Page") out.push({ d, inh: { MediaBox: d.MediaBox, Resources: d.Resources, Rotate: d.Rotate } });
     }
@@ -865,6 +985,9 @@ export async function readDieline(bytes, opt = {}) {
   }
   const doc = new Doc(b);
   await loadXref(doc);
+  // 컨테이너 파싱 단계의 경고(풀지 못한 /ObjStm 등)를 화면까지 올린다 — 읽기가 성공해도
+  // 「무엇을 못 읽었다」는 사실은 사용자가 봐야 한다.
+  for (const w of doc.warnings) warnings.push(w);
   const pages = collectPages(doc);
   if (!pages.length) throw new Error(`페이지를 찾지 못했다: ${source}`);
   const pi = Math.min(Math.max(0, opt.page | 0), pages.length - 1);
