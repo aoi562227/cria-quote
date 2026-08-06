@@ -1,21 +1,93 @@
 // ══════════════════════════════════════════════════════════════════
-//  BoxSpec.jsx — 규격 입력(W·D·H 또는 전개도 직접) + 구조 선택 + 그 결과 표시.
+//  BoxSpec.jsx — 규격 입력(W·D·H / 전개도 직접 / 칼선 PDF) + 구조 선택 + 그 결과 표시.
 //
 //  전개도 치수·판걸이·수율·R수를 **읽어서만** 보여준다. netSize/layout/sheetInfo 는
 //  buildQuote 가 준 값이고, 여기서 다시 재면 화면과 청구가 갈린다.
-//  전개도·배치·판형비교 그림은 토글로 감싸 자식 컴포넌트에 넘긴다.
+//  전개도·배치·판형캔버스·판형비교 그림은 토글로 감싸 자식 컴포넌트에 넘긴다.
+//
+//  칼선 PDF 는 **새 도메인 경로를 만들지 않는다** — 「전개도 전체크기 직접입력」
+//  (sizeMode="net" → dieline/direct.mjs)이 이미 있으므로, 추출한 실측 bbox 를 그
+//  입력(nW/nH)에 넣는 것이 전부다. 도메인은 PDF 를 모른다.
 // ══════════════════════════════════════════════════════════════════
-import { PRESS_MAX_LONG, PRESS_MAX_SHORT, MAX_FOOT_PCT } from "../../domain/data/sheets.mjs";
+import { useRef, useState } from "react";
+import { PRESS_MAX_LONG, PRESS_MAX_SHORT, MAX_FOOT_PCT, findSheetBase, resolveSheet } from "../../domain/data/sheets.mjs";
+import { readDielineFile } from "../../domain/pdf-dieline.mjs";
 import { Section, Field, Row2, Row3, Input, Select, Toggle } from "../primitives.jsx";
 import { BOX_TYPES } from "../box-types.mjs";
 import { fmtR, fmtMM } from "../format.mjs";
+// 「지금 고른 후보 → 그 후보의 polygons」 규칙은 state.mjs 가 소유한다 (두 벌 중
+// 어느 쪽이 정답인지 아는 곳이 한 군데여야 3단계가 다른 걸 읽지 않는다).
+import { pdfPickOf, customSheetOf } from "../state.mjs";
 import NetDiagram from "../viz/NetDiagram.jsx";
 import LayoutViz from "../viz/LayoutViz.jsx";
 import SheetCompare from "../viz/SheetCompare.jsx";
+import SheetCanvas from "../viz/SheetCanvas.jsx";
 
 export default function BoxSpec({
   s, u, handleBoxType, input, netSize, dieline, sheetInfo, layout, result, H,
 }) {
+  // 파싱 진행·드래그 하이라이트만 로컬 상태다 — 값이 아니라 순간 UI 라서 s 에 넣지 않는다
+  const [busy, setBusy] = useState(false);
+  const [drag, setDrag] = useState(false);
+  const fileRef = useRef(null);
+  // 페이지를 바꿔 다시 읽기 위한 File 손잡이. **값이 아니라 원본 핸들**이라 s 에 넣지 않는다
+  // (브라우저가 디스크 핸들만 들고 있어 메모리 비용도 거의 없다).
+  const keptFile = useRef(null);
+
+  const pdf     = s.pdfDl;
+  const pdfPick = pdfPickOf(s);
+
+  /** 후보 하나를 규격 입력에 적용. u() 는 함수형 setState 라 4번 불러도 순서가 안전하다. */
+  const applyPick = (r, idx) => {
+    const bb = (r.candidates?.[idx] ?? { bbox: r.bbox }).bbox;
+    u("sizeMode", "net");                     // 기존 경로 재사용 — 새 모드를 만들지 않는다
+    u("nW", String(bb.w));
+    u("nH", String(bb.h));
+    u("pdfDl", { ...r, pickIdx: idx });       // polygons 까지 통째로 — 3단계 입력이다
+  };
+
+  /** page: 여러 판이 한 파일에 든 「2종」 도면이 실무에 있다 (웨이크버니 2종 =
+   *  p0 198.3×234 / p1 158.3×247). readDieline 이 이미 opt.page 를 받으므로
+   *  다시 읽기만 하면 된다 — 추출을 손댈 필요가 없다. */
+  const loadPdf = async (file, page = 0) => {
+    if (!file || busy) return;
+    setBusy(true);
+    try {
+      const r = await readDielineFile(file, { page });
+      keptFile.current = file;
+      // 1순위(chosen)를 기본 선택으로. 사용자는 아래 드롭다운에서 바꿀 수 있다.
+      applyPick({ ...r, page }, Math.max(0, (r.candidates || []).findIndex(c => c.chosen)));
+    } catch (e) {
+      // 조용히 무시하면 사용자는 "드롭이 안 먹었다" 로 읽는다. 이유를 그대로 남긴다
+      // (암호화·/ObjStm 압축객체·이미지만 있는 PDF 는 전부 서로 다른 대처가 필요하다).
+      u("pdfDl", { error: e?.message || String(e), source: file.name });
+    } finally { setBusy(false); }
+  };
+
+  const pdfSheet   = pdf?.sheetId ? findSheetBase(pdf.sheetId) : null;
+  // 사용자가 판형을 직접 고른 경우(auto 아님)의 그 판. 주문생산은 cusW/cusH 를 얹는다.
+  const fixedSheet = s.sheetId !== "auto"
+    ? resolveSheet(findSheetBase(s.sheetId), customSheetOf(s)) : null;
+  // 판형 캔버스가 그릴 판: ① 견적이 고른 판형 ② PDF 페이지에서 인식한 판형
+  //   ③ 사용자가 직접 고른 판형
+  // ③ 이 필요한 이유: 전개도가 **어떤 판에도 안 들어가면** 견적이 판형을 못 골라
+  //   sheetInfo 가 null 이 되고, 그러면 판걸이 정보 블록과 함께 캔버스 토글까지 통째로
+  //   사라졌다. 큰 대지 PDF 를 넣은 사용자는 그때 화면에서 아무 신호도 못 받는다 —
+  //   가장 진단이 필요한 순간에 화면이 비는 셈이다. SheetCanvas 는 이 판 위에 전개도 1개를
+  //   판 밖으로 걸쳐 그려서 「안 들어간다」를 눈으로 보여준다.
+  const canvasSheet = sheetInfo || pdfSheet || fixedSheet;
+  // 지금 그리는 판이 견적이 고른 판이 아니면 그 사실을 캔버스 밑에 적는다 (조용히 다른
+  // 판을 보여주면 사용자가 그 판으로 견적이 났다고 읽는다).
+  const canvasNote = sheetInfo ? null
+    : pdfSheet ? "판형은 PDF 페이지 크기에서 인식한 값이다 (견적 판형이 아직 없음)."
+    : fixedSheet ? `판형은 위에서 직접 고른 ${fixedSheet.label} 이다 — 견적은 아직 판형을 못 골랐다.`
+    : null;
+  // PDF 칼선을 판 위에 얹을지 — **지금 계산에 쓰이는 전개도와 같은 도형일 때만** 얹는다.
+  // (박스 치수 모드로 되돌렸거나 nW/nH 를 손으로 고쳤으면 칸 크기와 폴리곤이 어긋난다)
+  const pdfOverlay = (pdfPick && netSize &&
+    Math.abs(netSize.netW - pdfPick.bbox.w) < 0.05 &&
+    Math.abs(netSize.netH - pdfPick.bbox.h) < 0.05) ? pdfPick : null;
+
   return (
     <Section title="박스 규격 및 구조">
       <Field label="규격 입력 방식">
@@ -24,6 +96,133 @@ export default function BoxSpec({
           {id:"net", label:"전개도 전체크기 직접입력"},
         ]}/>
       </Field>
+
+      {/* ── 칼선 PDF 드롭 ───────────────────────────────────────────────
+          왜: W·D·H 회귀식은 변종(뚜껑 위치가 다르고 날개가 짧은 삼면접착 등)을
+          못 잡는다. iSHAP 120×150×80 은 netW 는 맞는데 netH 실측 324.2 가 어느 구조
+          공식으로도 안 나온다. 협력사 PDF 의 실측 bbox 를 넣으면 추측이 사라진다. */}
+      <div
+        onDragOver={e=>{ e.preventDefault(); setDrag(true); }}
+        onDragLeave={()=>setDrag(false)}
+        onDrop={e=>{ e.preventDefault(); setDrag(false); loadPdf(e.dataTransfer?.files?.[0]); }}
+        style={{border:`1px dashed ${drag?"#4aaeff":"#2a3a5a"}`,background:drag?"#0d2440":"#0a0f20",
+                borderRadius:4,padding:"6px 8px",marginBottom:8,display:"flex",alignItems:"center",
+                justifyContent:"space-between",gap:6,fontSize:9,color:"#7799bb",lineHeight:1.5}}>
+        <span>{busy ? "칼선 PDF 읽는 중…" : "칼선 PDF 드롭 → 실측 전개도"}</span>
+        {/* 드래그가 안 되는 상황(원격·터치)도 있으므로 파일 선택 버튼을 같이 둔다 */}
+        <button type="button" onClick={()=>fileRef.current?.click()} disabled={busy}
+          style={{background:"#16283f",border:"1px solid #2a3a5a",borderRadius:3,color:"#a8c8e8",
+                  fontSize:9,padding:"3px 7px",cursor:busy?"default":"pointer",whiteSpace:"nowrap"}}>
+          파일 선택
+        </button>
+        <input ref={fileRef} type="file" accept="application/pdf,.pdf" style={{display:"none"}}
+          onChange={e=>{ const f = e.target.files?.[0]; e.target.value = ""; loadPdf(f); }}/>
+      </div>
+
+      {/* ── PDF 읽기 실패 ── 왜 실패했는지 보여준다. 조용히 넘기지 않는다 ── */}
+      {pdf?.error && (
+        <div style={{marginBottom:8,fontSize:9,color:"#ff8877",background:"#2a0a06",
+                     border:"1px solid #663322",borderRadius:4,padding:"6px 9px",lineHeight:1.7}}>
+          <div style={{fontWeight:700}}>✕ PDF 를 읽지 못했다 — {pdf.source}</div>
+          <div style={{color:"#ffbbaa",marginTop:2}}>{pdf.error}</div>
+          <button type="button" onClick={()=>u("pdfDl",null)}
+            style={{marginTop:4,background:"none",border:"none",color:"#886666",fontSize:8.5,
+                    cursor:"pointer",padding:0,textDecoration:"underline"}}>지우기</button>
+        </div>
+      )}
+
+      {/* ── PDF 읽기 성공 ─────────────────────────────────────────────
+          ⚠ 값을 조용히 견적에 넣지 마라. 칼선이 아닌 PDF(견적서 표 괘선 등)도
+            그럴듯한 숫자를 낸다 — 도구가 원리적으로 구분할 수 없다. 그래서 후보와
+            경고를 같이 띄우고 사용자가 확인하게 한다. */}
+      {pdf && !pdf.error && pdfPick && (
+        <div style={{marginBottom:8,fontSize:9,background:"#041a12",border:"1px solid #1a5038",
+                     borderRadius:4,padding:"7px 9px",color:"#7fd0a8",lineHeight:1.8}}>
+          <div style={{display:"flex",justifyContent:"space-between",gap:6}}>
+            <span style={{color:"#aee8cc",fontWeight:700,wordBreak:"break-all"}}>📄 {pdf.source}</span>
+            <button type="button" onClick={()=>u("pdfDl",null)}
+              style={{background:"none",border:"none",color:"#557766",fontSize:8.5,cursor:"pointer",
+                      padding:0,textDecoration:"underline",whiteSpace:"nowrap",flexShrink:0}}>지우기</button>
+          </div>
+          <div style={{display:"flex",justifyContent:"space-between"}}>
+            <span>실측 전개도</span>
+            <strong style={{color:"#e8f0ff",fontFamily:"monospace"}}>
+              {fmtMM(pdfPick.bbox.w)} × {fmtMM(pdfPick.bbox.h)} mm
+            </strong>
+          </div>
+          <div style={{display:"flex",justifyContent:"space-between",color:"#5a9f80"}}>
+            <span>페이지 {pdf.pageCount > 1 ? `${(pdf.page ?? 0)+1}/${pdf.pageCount}` : ""}</span>
+            <span style={{fontFamily:"monospace"}}>{fmtMM(pdf.pageSize.w)} × {fmtMM(pdf.pageSize.h)}</span>
+          </div>
+
+          {/* 「2종」 도면 — 한 파일에 판이 여러 개다. 페이지를 바꾸면 그 페이지를 다시 읽는다 */}
+          {pdf.pageCount > 1 && (
+            <div style={{marginTop:4}}>
+              <div style={{fontSize:8.5,color:"#5a9f80",marginBottom:2}}>
+                판이 {pdf.pageCount}장 — 다른 판을 쓰려면 페이지를 바꿔라
+              </div>
+              <Select value={String(pdf.page ?? 0)}
+                onChange={v=>loadPdf(keptFile.current, Number(v))}
+                options={Array.from({length: pdf.pageCount}, (_,i)=>({
+                  id: String(i), label: `${i+1} 페이지`,
+                }))}/>
+            </div>
+          )}
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",color:"#5a9f80"}}>
+            <span>인식 판형</span>
+            <span>
+              {pdfSheet ? (
+                <>
+                  <strong style={{color:"#aee8cc"}}>{pdfSheet.label}</strong>
+                  {s.sheetId !== pdf.sheetId && (
+                    <button type="button" onClick={()=>u("sheetId", pdf.sheetId)}
+                      style={{marginLeft:5,background:"#16283f",border:"1px solid #2a4a3a",borderRadius:3,
+                              color:"#88ccaa",fontSize:8,padding:"1px 5px",cursor:"pointer"}}>판형 적용</button>
+                  )}
+                </>
+              ) : <span style={{color:"#66887a"}}>표준 판형과 안 맞음 (±3mm)</span>}
+            </span>
+          </div>
+
+          {/* 후보가 2개 이상이면 바꿀 수 있게 — 「가장 그럴듯한 것」이 늘 맞지는 않다.
+              도솔메디 2up 대지는 아트보드 밖에 있어서 7순위로 들어온다. */}
+          {pdf.candidates?.length > 1 && (
+            <div style={{marginTop:4}}>
+              <div style={{fontSize:8.5,color:"#5a9f80",marginBottom:2}}>
+                도형 후보 {pdf.candidates.length}개 — 다르면 바꿔라
+              </div>
+              {/* ⚠ 라벨에 위치(@x0,y0)를 넣는다. 크기·점수·선분만 쓰면 서로 다른 후보가
+                    **완전히 같은 문자열**로 보인다 — iSHAP 무제-3 실측에서
+                    "1. 569.0×335.7 (점수 0.4982 · 선분 425)" 가 1·2번 동일, 3·4번 동일이라
+                    2up 대지의 좌판/우판을 화면에서 구분할 방법이 없었다.
+                    candidates 가 이미 x0/y0 를 담고 있으므로 추출기는 손대지 않는다. */}
+              <Select value={String(pdf.pickIdx ?? 0)}
+                onChange={v=>applyPick(pdf, Number(v))}
+                options={pdf.candidates.map((c,i)=>({
+                  id: String(i),
+                  // 위치는 fmtMM 을 쓰지 않는다 — fmtMM(0) 이 "-" 라서 페이지 원점에 있는
+                  // 후보가 "@-,-" 로 찍힌다. 위치는 0 도 의미 있는 값이다.
+                  label: `${i+1}. ${fmtMM(c.bbox.w)}×${fmtMM(c.bbox.h)} @${c.bbox.x0.toFixed(1)},${c.bbox.y0.toFixed(1)}  ` +
+                         `(점수 ${c.score} · 선분 ${c.segs}${c.parts>1?` · ${c.parts}성분`:""}` +
+                         `${c.offPct>1?` · 판밖 ${c.offPct}%`:""})`,
+                }))}/>
+            </div>
+          )}
+
+          {pdf.warnings?.length > 0 && (
+            <div style={{marginTop:4,paddingTop:4,borderTop:"1px solid #1a5038",
+                         fontSize:8.5,color:"#ffcc88",lineHeight:1.7}}>
+              {pdf.warnings.map((w,i)=><div key={i}>⚠ {w}</div>)}
+            </div>
+          )}
+
+          {s.sizeMode !== "net" && (
+            <div style={{marginTop:4,fontSize:8.5,color:"#ffaa66"}}>
+              ⚠ 지금 규격 입력 방식이 「박스 치수」다 — 위 실측값은 견적에 쓰이지 않는다.
+            </div>
+          )}
+        </div>
+      )}
 
       {s.sizeMode === "net" ? (
         <>
@@ -91,6 +290,25 @@ export default function BoxSpec({
         </div>
       )}
 
+      {/* 판형을 못 골랐을 때 — 침묵하지 않는다.
+          전개도가 어떤 판형에도 1개도 안 들어가면 sheetInfo·layout 이 둘 다 null 이라
+          아래 판걸이 블록이 사라진다. 큰 대지 PDF 를 넣은 사용자는 그때 화면에서 아무
+          신호도 못 받았다 — 무엇이 잘못됐는지 말해주는 것이 이 블록의 전부다.
+          (판형이 있으면 아래 판형 캔버스가 전개도를 판 밖으로 걸쳐 그려 눈으로도 보여준다.
+           판형이 "auto" 인데 후보가 0개면 그릴 판이 없으므로 여기서 글로만 알린다 —
+           고르지 않은 판을 그려서 「이 판으로 견적이 났다」고 오해하게 만들지 않는다.) */}
+      {!sheetInfo && netSize?.netW > 0 && (
+        <div style={{background:"#2a1a00",border:"1px solid #664400",borderRadius:4,
+                     padding:"8px 10px",fontSize:10,color:"#ffaa44",lineHeight:1.8}}>
+          ✕ 전개도 <strong style={{fontFamily:"monospace"}}>{fmtMM(netSize.netW)}×{fmtMM(netSize.netH)}mm</strong> 가
+          {" "}<strong>어떤 판형에도 1개도 안 들어간다</strong> — 그래서 판걸이·R수·지대가 계산되지 않았다.
+          <div style={{color:"#cc8844",fontSize:9,marginTop:2}}>
+            인쇄기 최대 {PRESS_MAX_LONG}×{PRESS_MAX_SHORT}mm 다. 규격을 확인하거나,
+            2up 대지 PDF 를 넣었다면 위 후보 드롭다운에서 <b>판 1개</b>를 골라라.
+          </div>
+        </div>
+      )}
+
       {/* 판걸이 정보 */}
       {sheetInfo && layout && (
         <div style={{background:"#0a1628",border:"1px solid #1a4a2a",borderRadius:4,padding:"8px 10px",fontSize:11,color:"#44cc88",lineHeight:2}}>
@@ -119,6 +337,19 @@ export default function BoxSpec({
             <div>✦ 공정R: <strong style={{color:"#88ccff"}}>{fmtR(result.reams.processR)} R</strong>
               <span style={{fontSize:9,color:"#336655",marginLeft:5}}>정미 {result.reams.net.toLocaleString()}장 ÷ 1,000</span>
             </div>
+          )}
+        </div>
+      )}
+
+      {/* 판형 캔버스 — 판 + 물림 + 자. 얹힌 것(layout·PDF 칼선)은 소유하지 않고 넘겨만 준다 */}
+      {canvasSheet && (
+        <div style={{marginTop:8}}>
+          <Toggle checked={s.showSheet} onChange={v=>u("showSheet",v)} label="판형 캔버스 (판·물림·자)"/>
+          {s.showSheet && (
+            // 3단계(드래그 배치): 여기에 placement={손배치} 를 한 줄 더하면 그 배치가
+            // 그려진다. 지금은 넘기지 않으므로 도메인이 푼 layout.boxes 가 그려진다.
+            <SheetCanvas sheet={canvasSheet} layout={layout} dieline={dieline} pdf={pdfOverlay}
+              note={canvasNote}/>
           )}
         </div>
       )}

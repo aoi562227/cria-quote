@@ -19,6 +19,20 @@ export const INITIAL_STATE = {
   sizeMode: "box",
   bW: "40", bD: "40", bH: "133", boxType: "tuck_both",
   nW: "646", nH: "258",           // 전개도 전체크기 직접입력 (예: 슬리브 646×258)
+  // 칼선 PDF 추출 결과 한 벌. readDieline 이 준 객체를 **그대로** 담는다
+  //   { pageSize, bbox, polygons, candidates, source, warnings, pageCount, sheetId }
+  //   + UI 가 얹는 2개: pickIdx(후보 드롭다운 선택) · page(「2종」 도면의 페이지)
+  // 왜 통째로 보관하나: polygons 가 3단계(마우스 드래그 배치)의 입력이다. bbox 만
+  // 남기면 그때 추출을 다시 만들어야 한다. pickIdx 는 후보 드롭다운의 선택이다.
+  // 도메인은 이 값을 읽지 않는다 — 치수는 위 nW/nH 로 흘러가고(sizeMode="net"),
+  // 여기 있는 건 화면·3단계용 원본이다. 그래서 toQuoteInput 에 넣지 않았다.
+  //
+  // ⚠ 3단계는 `s.pdfDl.polygons` 를 읽지 마라 — **`pdfPickOf(s).polygons` 를 읽어라.**
+  //   polygons 가 두 벌이다: s.pdfDl.polygons(추출기 1순위) 와
+  //   s.pdfDl.candidates[pickIdx].polygons(사용자가 드롭다운에서 고른 것). 정답은 후자다.
+  //   앞쪽을 읽으면 사용자가 후보를 바꾼 뒤에도 **바꾸기 전 도형**을 조용히 그린다.
+  //   iSHAP 무제-3 은 후보가 4개(2up 대지의 좌/우 × 도련/칼선)라 실제로 밟히는 경로다.
+  pdfDl: null,
   paperId: "AB350", sheetId: "auto",
   cusW: "890", cusH: "670", cusCut: "2",   // 주문생산 판형 크기·절수
   mR: false, mRV: "",
@@ -42,6 +56,7 @@ export const INITIAL_STATE = {
   foil: false, foilType: "금박", foilS: "1", foilRpr: String(FOIL_RPR_DEFAULT),
   foilDevP: "25000", foilFilmP: "35000",
   showCompare: false, showSheetCompare: false, showViz: true, showNet: false,
+  showSheet: false,              // 판형 캔버스(판 + 물림 + 자)
 };
 
 /** 구조가 톰슨 기본값을 선언했으면 그걸로 강제 전환하고, 아니면 복귀시킨다.
@@ -54,6 +69,26 @@ const THOM_DEFAULTS = new Set(
 
 export const nextThomId = (boxType, cur) =>
   getStructure(boxType)?.thomsonDefault ?? (THOM_DEFAULTS.has(cur) ? "n" : cur);
+
+/**
+ * 칼선 PDF 에서 **지금 고른 후보 한 개**를 푼다 — `{ bbox:{w,h,x0,y0}, polygons }`.
+ *
+ * ★ pdfDl 의 polygons 는 두 벌이다. 그 둘 중 무엇이 정답인지 아는 규칙은 **여기 하나**다.
+ *   ① s.pdfDl.polygons                        추출기 1순위 (사용자 선택 반영 안 됨)
+ *   ② s.pdfDl.candidates[pickIdx].polygons    사용자가 드롭다운에서 고른 것 ← 정답
+ *   종전에는 이 규칙이 BoxSpec.jsx 안의 모듈 private const 여서, 3단계 구현자가 ① 을
+ *   읽으면 후보를 바꾼 뒤에도 바꾸기 전 도형을 조용히 그리게 돼 있었다. state 를 읽는
+ *   규칙은 state 가 갖는다 — 화면(BoxSpec)과 3단계가 같은 함수를 부른다.
+ *
+ * candidates 가 비어 있어도 최상위 bbox 로 접혀 동작한다 (readDieline 계약이 bbox·
+ * polygons 를 항상 채운다). 에러 결과·미로드는 null.
+ */
+export function pdfPickOf(s) {
+  const r = s?.pdfDl;
+  if (!r || r.error) return null;
+  return r.candidates?.[r.pickIdx ?? 0]
+    ?? { bbox: { w: r.bbox.w, h: r.bbox.h, x0: 0, y0: 0 }, polygons: r.polygons };
+}
 
 /** 주문생산 판형 크기·절수 (판형이 custom 일 때만 유효) */
 export function customSheetOf(s) {

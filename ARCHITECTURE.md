@@ -3,9 +3,10 @@
 단상자(종이박스) 견적 계산 React 앱. 이 문서는 **구조 안내서**다.
 왜 이 상수가 이 값인지(실측 근거)는 `readme.md` 와 각 파일 주석이 소유한다.
 
-- 규모: `src/` 53파일 · `test/` 12파일 · 합 5,832줄 (최대 파일 `src/nest.mjs` 423줄)
-- 빌드: `npx vite build` → 218 kB (gzip 72 kB)
-- 검증: `npm run verify` (12개 스위트 전부 실코드 import)
+- 규모: `src/` 55파일 · `test/` 13파일 · 합 7,970줄 (최대 파일 `src/domain/pdf-dieline.mjs` 1,150줄)
+- 빌드: `npx vite build` → 253 kB (gzip 86 kB)
+- 검증: `npm run verify` (13개 스위트 전부 실코드 import)
+  ⚠ `verify-pdf` 는 **오라클을 못 읽으면 exit 1** 이다 — §10 「SKIP 은 실패다」 참조
 
 ---
 
@@ -35,6 +36,9 @@ src/
 │  ├─ reams.mjs                 지대R · 여분(손지) · 공정R
 │  ├─ paper-repo.mjs            지종×판형 → 지대 단가 (룩업 우선, 없으면 면적환산 추정)
 │  ├─ units.mjs                 올림 헬퍼 ceil1 / ceil3
+│  ├─ pdf-dieline.mjs           ★ 협력사 칼선 PDF → 실측 전개도 (1,150줄, 의존 = sheets.mjs 뿐)
+│  │                              컨테이너 파싱 + 콘텐트 스트림 + 성분 분해 + 후보 순위가
+│  │                              **전부 이 한 파일**에 있다. 쪼개지 마라 — §9 참조
 │  │
 │  ├─ data/                     ── 실측 테이블. 근거 주석이 값 옆에 붙어 있다 ──
 │  │  ├─ sheets.mjs             원지·절수·인쇄기 상한·물림·발자국 상한·판형 우선순위
@@ -68,6 +72,8 @@ src/
    ├─ panels/                   좌패널 7섹션
    │  BasicInfo BoxSpec PaperPanel PrintPanel CoatingPanel ProcessPanel DevCostPanel
    └─ viz/                      DielineShape LayoutViz NetDiagram SheetCompare QtyCompareTable
+      SheetCanvas.jsx           판 + 물림 + 자(ruler)만. 얹는 도형은 DielineShape·PDF 폴리곤
+                                ★ 3단계 이음새 3개(placement / data-cell / 좌표변환) — §10
 ```
 
 ---
@@ -147,6 +153,11 @@ QuoteResult { netSize, dieline, sheet, layout, reams, paperPrice, print, lines, 
 | 견적서 화면 | `ui/QuoteSheet.jsx` · `ui/QuoteRow.jsx` | 화면 확인 |
 | 배치 그림 | `ui/viz/LayoutViz.jsx` (좌표는 `layout.boxes` 만 씀) | 화면 확인 |
 | 전개도 그림 | `ui/viz/DielineShape.jsx` + `NetDiagram.jsx` (패널은 `dieline.panels`) | 화면 확인 |
+| **칼선 PDF 추출** | `domain/pdf-dieline.mjs` — 후보 점수·성분 병합 규칙까지 한 파일. §9 를 먼저 읽어라 | `verify-pdf` 66/68 (§E 돌연변이 6/6 검출) |
+| PDF 드롭 UI·후보 드롭다운 | `ui/panels/BoxSpec.jsx` (드롭 영역 → `sizeMode="net"` + `nW`/`nH`) | 화면 확인 |
+| 「고른 후보 → 그 polygons」 규칙 | `ui/state.mjs` `pdfPickOf(s)` — **여기 한 곳**. BoxSpec 과 3단계가 같이 부른다 | §10 계약표 |
+| 판형 캔버스(판·물림·자) | `ui/viz/SheetCanvas.jsx` ⚠ 배치를 다시 풀지 마라 — `placement` 없으면 `layout.boxes` 만 읽는다 | 화면 확인 |
+| **드래그 배치(3단계) 붙이기** | §10 「붙이는 순서」 6단계 — 도메인 수정 0줄이 목표다 | 화면 확인 |
 | 입력 위젯 스타일 | `ui/primitives.jsx` | — |
 
 ---
@@ -275,6 +286,7 @@ QuoteResult { netSize, dieline, sheet, layout, reams, paperPrice, print, lines, 
 | `verify-imposition` | 실측 대조 4/5 | 대지 실측 대조 (문서 성격) |
 | `verify-interlock` | 엑셀 8/8 · 물림 5/6 · up 7/10 | 코리팩 엑셀 모델 대조 |
 | `verify-layout` | 원지 5/11 → 인쇄기제약 3/11 | ⚠ 후보값 스캔 도구 — 앱 점수가 아니다 |
+| `verify-pdf` | **66 / 68** (실측 8건 · 회귀게이트 8건 · FAIL 0) | 칼선 PDF → 실측 bbox·polygons 계약 + §E 「조용히 틀리지 않는지」. ⚠ 오라클 SKIP 이면 exit 1 — §10 |
 
 **갱신 규칙**
 
@@ -353,3 +365,135 @@ QuoteResult { netSize, dieline, sheet, layout, reams, paperPrice, print, lines, 
 | 공정합계 / 개당단가 | `totals.process` / `totals.perEA` | `perEA = round(공정합계/수량)` |
 | 주문생산 | `sheet.custom` | 코리팩에 크기·절수를 직접 지정해 재단 |
 | 추정 단가 | `priceEstimated` | 룩업에 없어 면적환산한 지대 단가 (견적서에 ⚠추정) |
+
+---
+
+## 9. ⚠ 칼선 PDF (`domain/pdf-dieline.mjs`) — 되돌리기 전에 읽어라
+
+W·D·H 회귀식은 **변종을 못 잡는다.** iSHAP 120×150×80 은 netW 는 맞는데(557.1 =
+2(120+150)+14.3, Δ1.4mm) netH 실측 324.2 가 어느 구조 공식으로도 안 나온다
+(삼면접착 302.7~351.9). 그래서 협력사 PDF 를 직접 읽는다 — 추측이 사라진다.
+
+### 흐름 — 도메인은 PDF 를 모른다
+
+```
+BoxSpec 드롭 → readDielineFile(File)
+   → { pageSize, bbox, polygons, candidates[], source, unit:"mm", warnings[], pageCount, sheetId }
+   → sizeMode="net" + nW/nH ← bbox          ← 기존 dieline/direct.mjs 경로를 그대로 쓴다
+   → s.pdfDl 에 **통째로** 보관 (polygons 포함)  ← 3단계(드래그 배치)의 입력
+```
+
+새 도메인 경로를 만들지 않은 것이 핵심이다. `toQuoteInput` 은 `pdfDl` 을 읽지 않는다 —
+치수는 `nW`/`nH` 로만 흐르고, `pdfDl` 은 화면·3단계용 원본이다.
+
+### 되돌리면 무너지는 설계 판단 4개
+
+| 판단 | 왜 | 뒤집으면 |
+|---|---|---|
+| 성분 병합은 「접는선을 공유하고 **바깥으로만** 나가는」 것만 | 실측 4건 경계오차 전부 0.00mm | 종전 y여유 60mm 규칙 → 바이오머 netH 210.0 → **267.79** (배치 이미지를 삼킴) |
+| x 방향(좌/우) 병합 안 함 | 2up 대지를 읽는 게 목적 | iSHAP 무제-3 에서 옆 판 17.44mm 조각을 끌어와 557.1 → **574.54** |
+| `fit = min(면적,페이지)/max(면적,페이지)` (1.0 에서 봉우리) | 「가장 가까운」이지 「가장 큰」이 아니다 | 아트보드 밖 스크래치 도형이 1순위가 된다 |
+| `nodes >= 8` 필터 | 대지·도련 사각형(정점 4개)을 걸러내는 **핵심** | 실측 8건 전부 페이지를 꽉 채운 사각형이 어떤 점수로도 1순위 |
+
+두 겹 윤곽은 사방 인셋 편차 ≤2.5mm & 최대 ≤12mm 일 때만 인정하고 안쪽을 고른다
+(iSHAP 사방 5.91mm → 안쪽 채택 + warning).
+
+### ⚠ 이 도구가 원리적으로 못 하는 것
+
+**칼선이 아닌 PDF 를 넣어도 에러가 아니라 그럴듯한 숫자가 나온다** (iSHAP 견적서 →
+170.3×255.65, 표 괘선이다). 그래서 UI 는 `candidates` 드롭다운과 `warnings` 를 항상 띄우고
+사용자 확인을 받는다 — **값을 조용히 견적에 넣지 마라.**
+
+`/ObjStm`(압축 객체 스트림)은 지원하지 않고 명확한 에러로 실패한다. 칼선 PDF 8건은
+전부 구식 xref table 이지만 Acrobat 경유 PDF 는 4/4 가 /ObjStm 이었다. 빈도가 문제가 되면
+별건으로 붙여라(Flate·파서가 이미 있어 20줄 수준).
+
+### 브라우저 확인 방법
+
+`test-pdf/` 에 칼선 PDF 를 두고 `npm run dev` → `/test-pdf/<파일>.pdf` 로 읽힌다.
+⚠ **`public/` 에 두지 마라** — `vite build` 가 `dist/` 로 복사하고 `npm run deploy` 가
+그 `dist` 를 **공개** GitHub Pages 로 올린다(고객사 도면 유출).
+
+가드는 사람이 아니라 **기계가** 갖고 있다: `package.json` 의 `guard:public` 이
+`predeploy` 에 걸려 있어 `public/` 에서 PDF 를 찾으면 배포가 exit 1 로 멈춘다
+(하위 폴더까지 재귀 검사). `.gitignore` 의 `public/*.pdf` 는 **커밋만** 막고 배포는
+못 막으며, 오히려 `git status` 에서도 안 보이게 만든다 — 그래서 가드가 따로 있다.
+CI 경로는 git 체크아웃이므로 무시된 파일이 도달하지 못한다. 남은 유출 경로는
+**로컬 수동 배포** 하나이고 그것을 `predeploy` 가 닫는다.
+
+### SKIP 은 실패다 — `verify-pdf` 를 초록으로 착각하지 마라
+
+§A 실측 오라클 8건은 **저장소 밖** 고객사 폴더에 있다(영업기밀이라 git 에 못 넣는다).
+종전 집계는 SKIP 을 분모에서 빼고 `FAIL` 만 exit 1 로 올려서, 다른 PC·CI·클린 클론에서는
+합성 18건만 돌면서 「18/18」 · EXIT=0 이 떴다 — **실측 대조 0건인데 만점으로 보였다.**
+
+| 상황 | 결과 |
+|---|---|
+| 오라클 8건 다 읽힘 (개발 PC) | `66/68` · EXIT=0 ← **이것만 점수다** |
+| 오라클 없음, 면제 안 함 | EXIT=**1** + 「오라클 N건을 읽지 못했다」 |
+| 오라클 없음, `PDF_ALLOW_SKIP=1` 또는 `--allow-skip` | EXIT=0 + 「실측 대조 미실행 — **점수 아님**」 |
+
+오라클 위치는 `PDF_ORACLE_DIR` 로 갈아끼운다(기본값은 이 PC 경로). CI 두 워크플로는
+`PDF_ALLOW_SKIP: "1"` 를 스텝 env 에 명시했다 — 면제를 **환경이 스스로 밝히게** 한 것이고,
+면제해도 점수 문자열이 「점수 아님」으로 바뀌므로 초록으로 위장하지 않는다.
+
+---
+
+## 10. 3단계(마우스 드래그 배치)를 붙이는 자리와 순서
+
+1·2단계(실측 추출 + 판형 캔버스)는 3단계를 **염두에 두고** 만들었다. 이 절은 그 이음새를
+못 박아 둔다 — 계약을 문서에 박아두지 않으면 다음 사람이 추출기를 다시 만든다.
+
+### 추출 결과 계약 (`readDieline` / `readDielineFile`)
+
+```js
+{
+  pageSize: { w, h },            // mm. /Rotate 적용 후 = 화면에 보이는 방향
+  bbox:     { w, h },            // 채택한 칼선 1개의 크기 (mm)
+  polygons: [ [[x,y],…], … ],    // ★ 3단계의 입력. 지금도 반드시 채워진다
+  candidates: [ {                // 점수순. 사용자가 드롭다운에서 바꾼다
+    bbox:{w,h,x0,y0}, points, area, segs, parts,
+    fitPct, offPct, score, chosen, polygons,   // ← 후보마다 polygons 를 따로 담는다
+  }, … ],
+  source, unit:"mm", warnings:[], pageCount, sheetId,
+}
+```
+
+| 필드 | 3단계가 알아야 할 것 |
+|---|---|
+| `polygons` | **폴리라인 묶음이다.** 닫힌 윤곽도, `nest.mjs` 가 요구하는 볼록 조각도 아니다. 2점짜리 선분이 다수 섞인다(실측: 웨이크버니 `2/3/2/2/2/2/2/2` · 소스코 `2/2/6/17/2/2/2/9`). **그리기**에는 그대로 쓴다. `nest` 에 넘기려면 세그먼트 스티칭 + 볼록 분해가 필요하다 — 근거는 `pdf-dieline.mjs` `polysOf()` 주석 |
+| 좌표계 | **페이지 절대좌표**(mm, y 위로). bbox 원점 기준이 **아니다** (소스코 `polygons[0] = [[396.99,211.47],[355.39,211.47]]`, 페이지 420×297). `SheetCanvas` 는 그래서 `translate(-x0, y0+h) scale(1,-1)` 하나를 씌운다 |
+| 합집합 bbox | `bbox` 와 정확히 일치한다. `verify-pdf` 가 Δ0.02mm 로 게이트한다 |
+| **어느 polygons 를 읽나** | `s.pdfDl.polygons`(추출기 1순위)가 아니라 **`pdfPickOf(s).polygons`**(사용자가 고른 후보). 두 벌이 있고 정답은 후자다 — iSHAP 무제-3 은 후보가 4개(2up 대지의 좌/우 × 도련/칼선)라 실제로 갈린다. 규칙은 `ui/state.mjs` `pdfPickOf` **한 곳**이 소유한다 |
+
+### 캔버스 이음새 (`ui/viz/SheetCanvas.jsx`)
+
+| 이음새 | 지금 상태 | 3단계가 할 일 |
+|---|---|---|
+| ① 좌표 변환 | `px(mm)` `py(mm)` `sc(mm)` · `boxTf(box)`. 역변환 = `(v - RULER) / scale` | 그대로 쓴다 |
+| ② 그릴 배치 | `props.placement` — 주면 그걸 그리고, 없으면 `layout.boxes` | 손배치 배열을 넘긴다. 되돌림은 `placement={null}` 하나 |
+| ③ 히트영역 | `<g data-cell={i}>` 안 `rect` 가 `fill="transparent"` | 그 `<g>` 에 핸들러를 단다 |
+| ④ 계산 되먹임 | `overrides.up` (`state` 의 `mUp`/`mUpV` → `quote.mjs` 분기 ①) | 손배치 up 을 견적에 넣으려면 이 통로를 쓴다. **도메인은 손대지 않는다** |
+
+⚠ ③ 의 `fill` 을 `"none"` 으로 되돌리지 마라. `"none"` 은 히트테스트 **대상이 아니고**
+`"transparent"` 는 대상이다 — 단어 하나 차이로 기능이 죽는다. 실측: `"none"` 일 때
+칸 0 내부 81표본 중 `g[data-cell]` 에 잡힌 점이 **4개**뿐이었고(그 4개도 `rect` 가 아니라
+칸번호 `text`) 나머지는 판 배경 `rect` 로 빠졌다. `"transparent"` 로 바꾼 뒤 **81/81**.
+
+### 붙이는 순서 (이 순서를 지키면 도메인·추출기를 건드릴 일이 없다)
+
+1. **상태 한 칸** — `state.mjs` 에 `placement: null` 추가. `toQuoteInput` 에는 **넣지 않는다**
+   (치수는 `nW`/`nH` 로만 흐른다는 §9 규칙 유지).
+2. **초기값** — `pdfPickOf(s).bbox` 와 `layout.boxes` 로 씨앗을 만든다.
+   `layout.up === 0` 이면 캔버스가 이미 원점에 1개를 판 밖으로 걸쳐 그려 두므로
+   (`data-ghost="1"`, 히트영역 있음) 그것이 출발점이다.
+3. **드래그** — `<g data-cell>` 에 `onPointerDown/Move/Up`. mm 변환은 위 ①.
+   격자 스냅·판 경계 클램프는 이 단계에서 UI 가 판단한다.
+4. **그리기** — `<SheetCanvas placement={s.placement} …/>` 한 줄. 캔버스는 이미 준비됐다.
+5. **겹침 검사** — `nest.mjs` 의 폴리곤 겹침 판정을 재사용하려면 여기서
+   **스티칭 + 볼록 분해**가 필요하다(위 표 `polygons` 행). 그 전까지는 발자국 사각형
+   겹침만으로도 실용적이다.
+6. **견적 반영** — `u("mUp", true); u("mUpV", String(placement.length))`.
+   `quote.mjs` 는 이미 `overrides.up` 을 받는다. **도메인 수정 0줄.**
+
+되돌리기: 5·6 을 빼고 `placement={null}` 로 두면 1·2단계 상태로 정확히 돌아간다.
