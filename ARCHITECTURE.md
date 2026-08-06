@@ -1,0 +1,355 @@
+# ARCHITECTURE — cria-quote
+
+단상자(종이박스) 견적 계산 React 앱. 이 문서는 **구조 안내서**다.
+왜 이 상수가 이 값인지(실측 근거)는 `readme.md` 와 각 파일 주석이 소유한다.
+
+- 규모: `src/` 53파일 · `test/` 12파일 · 합 5,832줄 (최대 파일 `src/nest.mjs` 423줄)
+- 빌드: `npx vite build` → 218 kB (gzip 72 kB)
+- 검증: `npm run verify` (12개 스위트 전부 실코드 import)
+
+---
+
+## 1. 레이어
+
+```
+data ──► domain ──► ui
+ (표)     (계산)     (표시)
+```
+
+의존은 **왼쪽으로만** 흐른다. 순환 0.
+`domain` 은 React 를 모르고, `ui` 는 단가·공식을 모른다.
+`data/` 5파일은 **import 가 0줄**이다 — 순수 상수·테이블 + 그 근거 주석뿐이다.
+
+```
+src/
+├─ main.jsx                     ReactDOM 마운트 (3줄)
+├─ App.jsx                      상태 한 벌 + 2단 레이아웃. buildQuote 를 딱 1회 호출 (96줄)
+├─ nest.mjs                     ★ NFP(No-Fit Polygon) 무겹침 격자 배치 엔진 (423줄)
+│                                 순수 기하. 판형·단가·구조를 모른다.
+│
+├─ domain/                      ── 계산. React 를 import 하지 않는다 ──
+│  ├─ quote.mjs                 견적 1건 조립. 도메인의 단일 진입점
+│  │                              normalizeQuoteInput → buildContext → collectLines → summarize
+│  ├─ imposition.mjs            판걸이 어댑터. nest.mjs 를 부르는 **유일한** 지점
+│  ├─ sheet-select.mjs          판형(원지) 자동선택 — findBestSheet / pickFrom / chooseHadrong
+│  ├─ reams.mjs                 지대R · 여분(손지) · 공정R
+│  ├─ paper-repo.mjs            지종×판형 → 지대 단가 (룩업 우선, 없으면 면적환산 추정)
+│  ├─ units.mjs                 올림 헬퍼 ceil1 / ceil3
+│  │
+│  ├─ data/                     ── 실측 테이블. 근거 주석이 값 옆에 붙어 있다 ──
+│  │  ├─ sheets.mjs             원지·절수·인쇄기 상한·물림·발자국 상한·판형 우선순위
+│  │  ├─ papers.mjs             지종 DB
+│  │  ├─ paper-prices.mjs       [지종][판형] → 원/R
+│  │  ├─ print-prices.mjs       인쇄·소부·별색 단가, 판형 티어별 도당단가
+│  │  └─ process-prices.mjs     코팅·접착·톰슨·후가공 단가 + 랭킹용 추정치
+│  │
+│  ├─ dieline/                  ── 박스 구조 레지스트리 (전개도 치수 + 폴리곤) ──
+│  │  ├─ index.mjs              REGISTRY 배열 + dielinePieces / calcNetSize / structures
+│  │  ├─ geometry.mjs           ★ 치수와 그림의 단일 출처. piecesFromFlaps / xEdges / GLUE_TAB
+│  │  ├─ tuck-both.mjs          맞뚜껑 (상하 텍)      polygon
+│  │  ├─ cross.mjs              십자조립 (크로스바텀)  polygon
+│  │  ├─ glue3.mjs              삼면접착 (자동바닥)    polygon
+│  │  ├─ gtype.mjs              G형 (톰슨조립)        폴리곤 미확정 → 직사각
+│  │  ├─ gtype-tray.mjs         G형 트레이 (뚜껑일체)  폴리곤 미확정 → 직사각
+│  │  └─ direct.mjs             전개도 전체크기 직접입력 (hidden)
+│  │
+│  └─ process/                  ── 견적서 한 줄 = 파일 한 개 ──
+│     ├─ index.mjs              PROCESSES 배열(= 견적서 표기 순서) + collectLines/DevLines/Flags
+│     ├─ paper soboo print coating foil emboss partial-uv thomson glue admin
+│     ├─ dev-costs.mjs          개발비(목형·필름)
+│     └─ overrides.mjs          rprOf / lotOf — 단가 직접입력 통로
+│
+└─ ui/                          ── 표시. 값을 다시 계산하지 않는다 ──
+   ├─ state.mjs                 UI 상태 ↔ QuoteInput 변환 (여기 한 곳에서만)
+   ├─ box-types.mjs             구조 레지스트리 → 드롭다운 (검증 ✓ 표기를 여기서 붙임)
+   ├─ format.mjs                fmtR / fmtMM / today
+   ├─ primitives.jsx            Input / Select / Toggle / Section / Field / Row2 / Row3
+   ├─ QuoteSheet.jsx  QuoteRow.jsx        우패널 견적서
+   ├─ panels/                   좌패널 7섹션
+   │  BasicInfo BoxSpec PaperPanel PrintPanel CoatingPanel ProcessPanel DevCostPanel
+   └─ viz/                      DielineShape LayoutViz NetDiagram SheetCompare QtyCompareTable
+```
+
+---
+
+## 2. 데이터 흐름
+
+```
+UI 상태 s (문자열 64개)
+   │  ui/state.mjs  toQuoteInput(s)
+   ▼
+QuoteInput { qty, box, paper, print, finish, overrides, dev }
+   │  domain/quote.mjs  buildQuote(input)
+   │
+   ├─ normalizeQuoteInput ─── buildDieline ── dieline/index.mjs dielinePieces
+   │    │                                       └─ geometry.piecesFromFlaps → pieces/cuts/folds/panels
+   │    └─ lossOptionsOf (reams.mjs)
+   │
+   ├─ decideSheet ──┬─ overrides.up 있음   → 판형 고정, 배치 우회
+   │                ├─ overrides.reams 있음 → 판형 고정, up 만 자동
+   │                └─ 그 밖               → sheet-select.findBestSheet
+   │                                          └─ 판형 10개마다 solveImposition
+   │
+   ├─ solveImposition ── printableArea(판형 ∩ 인쇄기 990×720)
+   │                     └─ nest.solveLayout(pieces, printW, printH)
+   │                        → up / cols / rows / cells / bbox / interlocked
+   │                     └─ 발자국 92% 상한 → 초과하면 maxUp 낮춰 재시도
+   │
+   ├─ reams: 정미 = ceil(qty/up) → 여분 → 지대R · 공정R
+   │
+   ├─ collectLines(ctx)  PROCESSES 10개가 각자 lines(ctx) 를 낸다
+   ├─ collectFlags(ctx)  공정이 경고 플래그를 낸다 (coating → irWarning)
+   └─ summarize          공정합계 → 개발비 → 개당단가 = round(공정합계/수량) → 부가세
+   ▼
+QuoteResult { netSize, dieline, sheet, layout, reams, paperPrice, print, lines, devLines, totals, flags }
+   │
+   ▼  App.jsx 가 좌패널 7섹션 + 우패널 견적서에 나눠 준다
+```
+
+**호출 규칙 3개**
+
+1. `nest.solveLayout` 은 `imposition.mjs` 만 부른다. 다른 곳에서 직접 부르면
+   인쇄기 클램프·발자국 상한·행거탭 정책이 빠진 up 이 견적에 들어간다.
+2. `buildQuote` 는 App 에서 **1회만** 부른다. `useMemo` 로 감싼 그 한 번이 전부다.
+3. `ui` 는 도메인이 준 값을 **다시 계산하지 않는다.** 수율(`layout.utilPct`)처럼
+   분모가 갈릴 수 있는 값은 정본이 하나뿐이다.
+
+---
+
+## 3. 이런 걸 바꾸려면 어디를 보라
+
+| 바꾸고 싶은 것 | 파일 (순서대로) | 검증 |
+|---|---|---|
+| **새 박스 구조 추가** | ① `src/domain/dieline/<구조>.mjs` 새로 만들고 `netSize()`·`flaps()` 작성 → ② `dieline/index.mjs` REGISTRY 배열에 1줄 | `verify-dieline` (불변식·계약) |
+| 새 구조가 슬리브 위상이 아님 (트레이 등) | 위 + 그 파일에 `pieces(W,D,H,{net,flaps,opt})` 훅 선언. `geometry.mjs` 는 건드리지 않는다 | `verify-dieline` bbox 불변식 |
+| 구조의 톰슨 기본값 | 구조 파일에 `thomsonDefault: "g_std"` — `state.nextThomId` 가 레지스트리를 읽는다 | `verify-dieline` 계약 |
+| 구조의 입력범위 경고 | 구조의 `netSize()` 가 `warning` 문자열 반환. UI 수정 불필요 | 화면 확인 |
+| 구조 이름/검증 표기 | 구조 파일의 `label`·`tag`·`verified`. ✓ 표기는 `ui/box-types.mjs` 가 붙인다 | — |
+| **새 공정 추가** | ① `src/domain/process/<공정>.mjs` (`applies`/`lines`, 필요시 `flags`) → ② `process/index.mjs` PROCESSES 배열에 1줄 | `verify-total` |
+| 공정이 새 입력을 읽어야 함 | `state.mjs` 에 UI 키 추가 → `toQuoteInput` 의 `finish` 에 넣으면 `ctx.finish` 로 그대로 흐른다 (화이트리스트 없음) | `verify-total` |
+| **지대 단가** | `domain/data/paper-prices.mjs` — 값 뒤 주석에 근거 견적서 날짜 | `verify-total` |
+| 코팅·톰슨·접착·후가공 단가 | `domain/data/process-prices.mjs` (컬럼 = `"4절"`/`"2절"`/`"전지"`/`min`) | `verify-total` |
+| 인쇄·소부·별색 단가 | `domain/data/print-prices.mjs` | `verify-print` · `verify-total` |
+| 지종 목록 | `domain/data/papers.mjs` | — |
+| **원지 규격·절수** | `domain/data/sheets.mjs` BASE_SHEETS | `verify-r` (1R 장수) |
+| 판형 실무 우선순위 | `sheets.mjs` SHEET_PRIORITY | `verify-print` §B |
+| 하드롱 채택 문턱 | `sheet-select.mjs` HADRONG_EDGE | `verify-print` §C |
+| 동점 판정 폭 | `sheet-select.mjs` TIE_PCT | `verify-print` §B |
+| 추정단가 페널티 | `sheet-select.mjs` EST_PRICE_PENALTY | `verify-print` §D |
+| **물림(gripper) 방침** | `imposition.mjs` `printableArea` ⚠ 아래 §5 를 먼저 읽어라 | `scorecard-unit` §A/§C · `verify-net` |
+| 발자국 상한 | `sheets.mjs` MAX_FOOT_PCT + `imposition.mjs` `footOf` 분모 | `verify-net` 발자국% 열 |
+| 인쇄기 최대 판 | `sheets.mjs` PRESS_MAX_LONG/SHORT | `verify-layout` §E |
+| 배치 알고리즘 | `src/nest.mjs` ⚠ 순수 기하. 정책을 넣지 마라 | `verify-nest` 44케이스 |
+| **여분(손지) 규칙** | `domain/reams.mjs` LOSS_* + `estimateLoss` | `verify-r` 여분 7케이스 |
+| 지대R·공정R 올림 규칙 | `domain/reams.mjs` `calcR`/`calcProcessR` + `units.mjs` | `verify-r` |
+| 개당단가 반올림 | `quote.mjs` `summarize` (`round`, floor 아님) | `verify-total` |
+| 견적서 줄 순서 | `process/index.mjs` PROCESSES 배열 순서 — **계약이다** | `verify-total` |
+| 견적서 화면 | `ui/QuoteSheet.jsx` · `ui/QuoteRow.jsx` | 화면 확인 |
+| 배치 그림 | `ui/viz/LayoutViz.jsx` (좌표는 `layout.boxes` 만 씀) | 화면 확인 |
+| 전개도 그림 | `ui/viz/DielineShape.jsx` + `NetDiagram.jsx` (패널은 `dieline.panels`) | 화면 확인 |
+| 입력 위젯 스타일 | `ui/primitives.jsx` | — |
+
+---
+
+## 4. 실측 근거는 어디 있나
+
+이 프로젝트의 **모든 상수에는 실측 근거가 있다.** 근거를 잃으면 후임자가 임의로 바꾼다.
+근거는 값 바로 위 주석에 있다 — 아래는 그 색인이다.
+
+### 전개도 (칼선 벡터 실측)
+
+| 상수·공식 | 값 | 근거 위치 |
+|---|---|---|
+| 접착날개 `GLUE_TAB` | 14.3 | `dieline/geometry.mjs:34-41` — 규격 확인 칼선 3건(삼면E·칼선-06·칼선-05) 전부 오차 0.0 |
+| 패널 x 경계 `xEdges` | `[0,D,D+W,2D+W,2D+2W,netW]` | `geometry.mjs:62` · 검산 `test/verify-net.mjs` 「패널 x 경계」 바이오머 150×15×150 오차 0.0mm |
+| 날개 끝단폭 `TIP_W` | 10.8 | `geometry.mjs:52-58` — 웨이크버니 y레벨 절단 실측, A(46mm)·B(36mm) 패널 모두 10.8 → **상수** |
+| 날개 인셋 `TAPER_MAX` | 10.2 | `geometry.mjs:46-51` — 깊은 날개 끝 폭 A 46.0→25.6 / B 36.0→15.6, 한쪽 인셋 환산 둘 다 10.2 |
+| 맞뚜껑 `netH` | `H + 2(D+16.5)` | `dieline/tuck-both.mjs:3-18` — 칼선-07/08 2건 오차 0.0 (종전 공식은 −67.5mm) |
+| 십자 `netH` | `H + 2(7D/8+5.5)` | `dieline/cross.mjs` |
+| 삼면접착 위 띠 | `0.67D + 0.03W + 2.8` | `dieline/glue3.mjs` · 도출 `test/verify-imposition.mjs` 「소스코 …」 절 — 칼선 3건 3점 연립, 오차 0.31mm |
+| 삼면접착 아래 띠 | `D + 15` | 같은 절 — 오차 0.1mm. `W` 계수 −0.001 ≈ 0 |
+| 삼면 아래날개 깊이 | `[0.10b, 0.40b, b, 0.40b]` | `dieline/glue3.mjs` |
+| G형 트레이 | `W+4H+44.5` / `2D+3H+19.5` | `dieline/gtype-tray.mjs:1-15` — 칼선 PDF 4건, 3건 오차 0 |
+| G형 D/H 분기 | 0.8 | `dieline/gtype.mjs:1-17` — 실측 6건 |
+| 왜 치수와 그림이 한 파일인가 | — | `geometry.mjs:5-32` — 종전 두 회귀식이 갈려 폴리곤이 25~30% 작았고, 그래서 십자B 가 4up 대신 6up 이 나왔다 |
+
+### 판형·배치 (견적서 78건 역산)
+
+| 상수 | 값 | 근거 위치 |
+|---|---|---|
+| 원지 3계열·절수 | 788×1091 / 636×939 / 889×1194 | `data/sheets.mjs:1-31` |
+| 인쇄기 최대 판 | 990 × 720 | `sheets.mjs:47-56` — 견적서 99장 「단위」 전건이 이 안에 들어감 |
+| 물림 `BITE_SHORT/LONG` | 30 / 20 (**적용 안 함**) | `sheets.mjs:58-70` — 코리팩 산출식 엑셀 B14 vs B15. 적용하지 않는 이유는 §5 |
+| 배치 허용오차 `FIT_TOL` | 0.005 | `sheets.mjs:73-77` — 삼면E 실측 265.0 vs 공식 268.0 |
+| 발자국 상한 `MAX_FOOT_PCT` | 92 | `sheets.mjs:79-88` — 분모는 **판형 면적**이어야 한다 |
+| 판형 우선순위 | 4×64→국2→4×62→… | `sheets.mjs:33-45` — 실무 확인 |
+| 하드롱 문턱 `HADRONG_EDGE` | 0.06 | `sheet-select.mjs:13-26` — 조립형 324×428 실측. 배수 페널티로 하면 어긋나는 이유까지 적혀 있다 |
+| 동점 폭 `TIE_PCT` | 0.015 | `sheet-select.mjs:28-43` — 삼면 50×40×81 에서 도수만 바꿔 판형이 뒤집힌 실측 |
+| 추정단가 페널티 | 0.03 | `sheet-select.mjs:45-52` |
+| 맞물림 상수 감산이 왜 틀렸나 | — | `test/verify-nest.mjs` §5 — IL_W=10 이 반전 이웃과 464mm² 겹침(독립 샘플링). 실제 허용 최대 행겹침 26.0mm vs 종전 145.0mm |
+
+### 금액 (견적서 78건 역산)
+
+| 규칙 | 값 | 근거 위치 |
+|---|---|---|
+| 지대R | `(정미+여분)/(500×절수)`, 전지급 0.1 올림 / 2절이하 3자리 올림 | `domain/reams.mjs:1-39` |
+| 여분 기본 | 300장 (무인쇄 200) | `reams.mjs:14-32` — 견적서 99건 중 정미 6,000장 이하 전건이 정확히 300 |
+| 여분 가산 | 양면 +100 / 베다 +100 / 형압 +50 / **박 0** | `reams.mjs:45-50` — 십자B 한 장 안에서 직접 대조. 박 0 은 조립형 금박 2건 여분 300 |
+| 공정R | `ceil(정미/1000×10)/10`, 정미<1000 → 1식 | `reams.mjs:34-38` |
+| 별색 가중치 `SPOT_WEIGHT` | 3 | `data/print-prices.mjs:21-33` — 삼면E 별2 84,000 vs 원4 56,000 대조 견적서 |
+| 단가 인상 이력 | 소부 10,000→11,000→12,000 등 | `print-prices.mjs:1-12` |
+| 접착 단면 / IR 2절 | 20원/EA / 40,000 | `data/process-prices.mjs:22-31` · `:14` — 26-08-04 소스코 견적서 |
+| 접착 최소 1식 | 50,000 | `process-prices.mjs:27` |
+| 랭킹용 추정치를 왜 안 합치나 | — | `process-prices.mjs:62-64` — 합치면 판형 선택이 움직인다 |
+| 개당단가 = `round` | — | `domain/quote.mjs:1-12` — 맞뚜껑A 30,000ea 77.84→78 (floor면 77 ✗) |
+| 전체 금액 재현 | 24/26 | `test/verify-total.mjs` — 나머지 2건은 견적서 자체 손수정(파일 안에 `knownDiff` 로 명시) |
+
+### 폐기된 가설 (지우지 마라 — "왜 이 공식이 아닌가" 를 잃는다)
+
+- `test/verify-net.mjs:24-28` `OLD` — 폐기된 netH 회귀식 3종. 원본이 코드에 없다.
+- `test/verify-print.mjs` §B 주석 — 우선순위를 총비용에 곱했던 종전 규칙이 왜 틀렸나.
+- `test/verify-imposition.mjs` 「날개 테이퍼 — 해결됨」 절 — 전폭 사각형 모델의 실패 이력.
+- `test/verify-interlock.mjs` §A~§C — 코리팩 산출식 엑셀 원문. 앱 로직의 미러가 아니라 엑셀 전사다(§A 가 엑셀 자체 예시 8/8 로 검산).
+
+---
+
+## 5. ⚠ 물림(gripper) — 되돌리기 전에 읽어라
+
+`imposition.printableArea` 는 판형에서 물림을 **빼지 않는다.**
+
+물림 자체는 실재한다(코리팩 엑셀 「종이 규격」 vs 「제작 규격」 = 짧은변 −30 / 긴변 −20,
+근거는 `sheets.mjs:58-70` 에 보존). 그런데 **그 차감은 이미 판형 숫자 안에 있다.**
+`BASE_SHEETS` 의 절지 규격과 견적서 「단위」열은 원지가 아니라 인쇄기에 걸리는 재단
+크기이고, 견적서의 up 은 그 크기 위에서 실제로 나온 값이다. 또 빼면 이중 차감이다.
+
+반증 불가능한 사례 — 삼면E 90×70×130 을 545×394(4×64)에 2up:
+회전 2열이 545 중 536mm 를 쓴다. 남는 여백이 전체 9mm 인데, 긴변에서 20mm 를 더 빼면
+그 대지가 물리적으로 성립하지 않는다. 그런데 견적서에 실존한다.
+
+| 측정 | 물림 0 (현행) | 물림 20/30 |
+|---|---|---|
+| `scorecard-unit` (판 = 견적서 「단위」) | **7/12** | 1/12 |
+| `verify-net` (앱 실경로) | **7/10** | 1/10 |
+| `scorecard-nest` 지대금액 평균절대오차 | **14.4%** | 48.9% |
+
+되돌리려면 `BASE_SHEETS` 를 원지 규격으로 재정의하고 견적서 78건을 다시 역산하는 것이
+먼저다. `scorecard-unit.mjs` 가 §A(물림 0) vs §C(물림 적용)를 계속 계량하며,
+§C 가 §A 를 앞지르면 그 파일이 exit 1 로 실패한다.
+
+---
+
+## 6. 불변식과 그걸 지키는 테스트
+
+| 불변식 | 테스트 |
+|---|---|
+| 폴리곤 bbox === `netW × netH` (오차 0) | `verify-dieline` 불변식 360/360 · `scorecard2` |
+| `max(top) === topLid` · `max(bot) === botFloor` | `verify-dieline` |
+| 배치된 조각이 **서로 겹치지 않음** (NFP 완전검증 + 독립 샘플링) | `verify-nest` 44/44 |
+| 행거탭이 열 피치를 늘리지 않음 (0/15/20mm 전 구간 같은 up) | `verify-net` 「행거탭」 |
+| 회전금지 구조가 실제로 회전하지 않음 | `verify-net` 「회전금지 실효」 |
+| 1R 장수 = 500 × 절수 | `verify-r` |
+| 판형 선택 정책 3개(우선순위·하드롱·추정단가)를 뒤집으면 실패 | `verify-print` §B·§C·§D — 돌연변이 3종 전부 검출 확인 |
+| 물림 방침이 뒤집히면 실패 | `scorecard-unit` |
+| 견적서 전체 금액 원 단위 일치 | `verify-total` 24/26 |
+
+**테스트는 전부 실코드를 import 한다** (12/12 파일).
+자체 계산 함수가 남아 있는 곳은 앱 로직의 미러가 아니라 (a) 엑셀 원문 전사
+(`verify-interlock` §A~§C), (b) 후보값 스캔 도구(`verify-layout` `upOn`),
+(c) 폐기된 구현의 문서형 재현(`verify-net` `OLD`)이고 각 파일이 그렇게 명시한다.
+
+---
+
+## 7. 점수판 (2026-08-06)
+
+| 스위트 | 점수 | 무엇을 재나 |
+|---|---|---|
+| `verify-nest` | 44 / 44 | 배치 기하 — 무겹침·NFP 성질 |
+| `verify-dieline` | 불변식 360/360 · 계약 36/36 | 전개도 치수 ↔ 폴리곤 정합 |
+| `verify-net` | **판걸이 up 7/10** · 비폴리곤 6/6 | ★ 앱 실경로 판걸이 대표 점수 |
+| `scorecard-nest` | 7/10 · 지대금액 오차 14.4% | 같은 케이스의 금액 영향 |
+| `scorecard-unit` | 물림0 **7/12** / 물림적용 1/12 | 물림 방침 A/B (회귀 게이트) |
+| `scorecard2` | 10/15 | ⚠ `printableArea` 를 건너뛴다 — **앱 점수가 아니다** |
+| `verify-total` | 24 / 26 | 견적서 전체 금액 (나머지 2건은 견적서 자체 손수정) |
+| `verify-print` | 인쇄비 19/20 · 도수 7/7 · 판형 §B✓ §C 3/3 §D 2/2 | 인쇄비 + 판형 선택 정책 |
+| `verify-r` | 지대R 37/39 · 공정R 39/39 · 여분 7/7 | R수·여분 |
+| `verify-imposition` | 실측 대조 4/5 | 대지 실측 대조 (문서 성격) |
+| `verify-interlock` | 엑셀 8/8 · 물림 5/6 · up 7/10 | 코리팩 엑셀 모델 대조 |
+| `verify-layout` | 원지 5/11 → 인쇄기제약 3/11 | ⚠ 후보값 스캔 도구 — 앱 점수가 아니다 |
+
+**갱신 규칙**
+
+1. 점수를 요약할 때 쓰는 판걸이 대표값은 `verify-net` 「견적서 판걸이 up 재현」이다.
+   `scorecard2` 는 `solveLayout` 을 직접 불러 `printableArea` 를 건너뛰므로 앱 점수가 아니다.
+   (실제로 그 숫자를 요약에 썼다가 앱 점수 붕괴를 4주간 가린 이력이 있다.)
+2. 점수가 떨어지면 **떨어진 대로 적는다.** 숫자를 맞추려고 테스트를 고치지 않는다.
+3. 실측과 어긋나는 케이스는 지우지 말고 이유를 붙여 남긴다
+   (`knownDiff` / 「목형 설계 요인」처럼).
+4. 상수를 바꿀 때는 근거 주석을 같이 갱신한다. 근거 없는 상수는 다음 사람이 지운다.
+
+---
+
+## 8. 도메인 용어 사전
+
+### 규격·전개도
+
+| 한글 (견적서·실무) | 코드 이름 | 뜻 |
+|---|---|---|
+| 가로 / 깊이 / 높이 | `W` / `D` / `H` | 완성 박스 3치수(mm) |
+| 전개도 · 총규격 | `netSize`, `dieline.net` | 펼친 종이 한 장의 크기 |
+| 전개도 가로 / 세로 | `netW` / `netH` | 같은 것의 두 축 |
+| 칼선 | `cuts` (폴리라인) | 자르는 선 |
+| 접는선 | `folds` | 누름선 |
+| 뚜껑 / 바닥 | `topLid` / `botFloor` | 몸통 위·아래로 나가는 최대 깊이 |
+| 날개 | `flaps.top[]` / `flaps.bot[]` | 패널별 날개 깊이 배열 |
+| 텍 혀 | (tongue) | 상자 아가리로 들어가는 좁은 끝 |
+| 더스트 | (dust flap) | 뚜껑 양옆 작은 날개 |
+| 접착날개 · 접착탭 | `GLUE_TAB` = 14.3 | 이어붙이는 여유 폭 |
+| 행거탭 · 유로홀 | `hangTab` | 걸이봉용 상단 돌출 |
+| 조각 | `pieces` | 배치 입력용 **볼록** 다각형 목록 |
+| 패널 | `panels[]` `{i,x0,x1,label}` | 측면1·전면·측면2·후면·접착 |
+
+### 판형·배치
+
+| 한글 | 코드 이름 | 뜻 |
+|---|---|---|
+| 원지 · 판형 | `sheet`, `BASE_SHEETS` | 종이 규격 |
+| 절수 | `sheet.cut` | 전지 1장에서 나오는 장수 (1=전지, 2=2절 …) |
+| 전지 / 2절 / 3절 / 4절 | `cut: 1 / 2 / 3 / 4` | |
+| 사륙(4×6) / 국전 / 하드롱 | `family: "사륙"/"국전"/"하드롱"` | 원지 3계열 |
+| 판형 티어 | `tier` = `"4절"` / `"2절"` / `"전지"` | 단가 구간. `"2절"` 은 2절·3절을 함께 덮는다 |
+| 단위 | (견적서 열) | 인쇄기에 걸리는 **재단 크기**. 원지 규격이 아니다 — §5 |
+| 대지 | (실측 자료) | 실제로 앉힌 인쇄판 한 장 |
+| 판걸이 | `up`, `layout` | 판 한 장에 박스 몇 개 |
+| 물림 | `BITE_SHORT` / `BITE_LONG` | 그리퍼가 잡는 띠. **판걸이에는 적용하지 않는다** — §5 |
+| 맞물림 · 인터로킹 | `interlocked`, `overlapX/Y` | 반전 이웃과 날개를 겹쳐 끼움 |
+| 칼선 공유 | `dx === netW` | 경계 칼선을 맞대기만 함 (겹침 0) |
+| 엇갈림 | `sx` | 행마다 옆으로 미는 양 |
+| 수율 | `layout.utilPct` | `up × netW × netH ÷ 판형 면적` |
+| 발자국 | `layout.footPct` | `배치 외곽 bbox ÷ 판형 면적` — 상한 판정은 이쪽 |
+| 무겹침 다각형 | NFP (No-Fit Polygon) | `nest.mjs` 의 배치 원리 |
+
+### 금액
+
+| 한글 | 코드 이름 | 뜻 |
+|---|---|---|
+| 정미 | `reams.net` | 필요한 종이 장수 = `ceil(수량/up)` |
+| 여분 · 손지 | `reams.loss` | 작업 손실 여유 장수 |
+| 지대 | `paperPrice` | 종이값 |
+| 지대R · 연 | `reams.R` | 종이 수량 단위. `1R = 500 × 절수` 장 |
+| 공정R | `reams.processR` | 공정 수량 단위. 절수 무관 `1,000장 = 1R` |
+| 1식 | `reams.isLot` | 정미 1,000장 미만 → 최소 금액 청구 |
+| 소부 | `process/soboo.mjs` | 인쇄판 제작 (도수당) |
+| 도수 | `sideColors`, `fColors/bColors` | 인쇄 색 수 |
+| 원색 4도 | `side.color` | CMYK |
+| 별색 | `side.spot` | 지정색. 1도 = 인쇄 3회 (`SPOT_WEIGHT`) |
+| 먹 | `side.black` | 검정 1도 |
+| 베다 | `print.beda` | 바탕 전면 인쇄 → 별색 R단가 상향 |
+| 코팅 | `opts.coatFront/Back` | 무광·유광·IR·라미 등 |
+| 톰슨 · 도무송 | `opts.thomson` | 목형으로 찍어내는 공정 |
+| 박 | `finish.foil` | 금박·은박·먹박 |
+| 형압 · 디보싱 | `finish.emb` | 눌러 요철 |
+| 부분코팅 | `finish.puv` | 부분 UV |
+| 목형 | `dev.newDie` | 칼 틀 (개발비) |
+| 공정합계 / 개당단가 | `totals.process` / `totals.perEA` | `perEA = round(공정합계/수량)` |
+| 주문생산 | `sheet.custom` | 코리팩에 크기·절수를 직접 지정해 재단 |
+| 추정 단가 | `priceEstimated` | 룩업에 없어 면적환산한 지대 단가 (견적서에 ⚠추정) |

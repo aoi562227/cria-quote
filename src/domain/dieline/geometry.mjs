@@ -40,8 +40,9 @@
 //   회귀계수도 2.09·W + 1.86·D 로 2·2 수렴 확인.
 export const GLUE_TAB = 14.3;   // 접착날개 (대형 250mm+ 는 24 내외)
 
-/** 텍 혀가 뚜껑 패널보다 한쪽당 얼마나 좁은가(mm). 맞물림 깊이를 직접 결정한다. */
-export const TONGUE_INSET = 6;
+// (TONGUE_INSET=6 은 삭제했다 — 「맞물림 깊이를 직접 결정한다」고 적혀 있었지만
+//  실제로 그 역할을 하는 것은 아래 TAPER_MAX=10.2 다. 어떤 계산에도 쓰이지 않아
+//  실측 상수로 착각하고 조정해도 아무 변화가 없는 함정이었다.)
 
 // 날개 폭 테이퍼 — 웨이크버니 실측
 //   깊은 날개(패널2) 끝 폭:  A 46.0→25.6  B 36.0→15.6
@@ -61,11 +62,20 @@ export const TAPER_MAX = 10.2, TAPER_SLOPE = 0.30, FULL_FRAC = 0.7;
 /** 패널 x 경계 — 실측 오차 0.0mm */
 export const xEdges = (W, D, netW) => [0, D, D + W, 2 * D + W, 2 * D + 2 * W, netW];
 
+/** 위 xEdges 가 가정하는 패널 이름. 화면이 이 배열을 따로 갖지 않게 여기서 내보낸다. */
+export const PANEL_LABELS = ["측면1", "전면", "측면2", "후면", "접착"];
+
 export const rect = (x0, y0, x1, y1) => [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
 
 /**
  * 전개도를 **볼록 조각의 합집합**으로 만든다. NFP 배치와 화면 그림이 이걸 함께 쓴다.
  * 조각이 전부 볼록이라 다각형 불리언 없이 정확한 민코프스키 합이 가능하다.
+ *
+ * ⚠ 이 함수는 xEdges 의 「몸통4 + 접착탭1」 슬리브 위상만 만든다. 다른 위상
+ *   (사각트레이 netW = W+2H+24 처럼 netW 가 2(W+D) 계열이 아닌 구조)을 넣으면
+ *   xEdges 가 netW 를 넘어 단조성이 깨진다 — 그래서 아래에서 즉시 null 을 낸다.
+ *   그런 구조는 자기 파일에 pieces(W,D,H,{net,flaps,opt}) 훅을 선언하면 된다
+ *   (dieline/index.mjs dielinePieces 참조).
  *
  * 날개 2단 분리:
  *   테이퍼가 있으면 [전폭 0~70%] + [사다리꼴 70~100%] 두 조각으로 쪼갠다.
@@ -73,14 +83,18 @@ export const rect = (x0, y0, x1, y1) => [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
  *
  * cuts/folds 를 **같은 루프에서** 낸다 — 화면이 배치와 다른 도형을 그리는 일을
  * 구조적으로 불가능하게 만드는 것이 이 파일의 존재 이유다.
- * @returns {{pieces:number[][][], meta:Object[], cuts:number[][][], folds:number[][][]}}
+ * @returns {{pieces, meta, cuts, folds, panels}|null}
  *   pieces = 볼록 4~6각형(배치 입력) / meta = 조각별 패널 번호·역할(색칠용)
  *   cuts   = 칼선 폴리라인(열린 선)   / folds = 접는선 2점 선분
+ *   panels = [{i,x0,x1,label}] 패널 경계 — 화면이 xEdges 를 다시 계산하지 않게
  */
 export function piecesFromFlaps({ W, D, H, net, flaps, opt = {} }) {
   const taper = opt.taper !== false;
   const y0 = net.topLid, y1 = net.topLid + H;
   const xE = xEdges(W, D, net.netW);
+  // 위상 검사 — 단조증가가 깨지면 이 함수가 만들 수 있는 도형이 아니다.
+  // 조용히 음수 폭 패널을 만들면 bbox 가 netW 와 수백 mm 어긋난 채 배치까지 흘러간다.
+  for (let i = 1; i < xE.length; i++) if (xE[i] < xE[i - 1] - 0.05) return null;
   const pieces = [], meta = [], cuts = [], folds = [];
   const topOf = i => flaps.top?.[i] ?? 0;
   const botOf = i => flaps.bot?.[i] ?? 0;
@@ -147,5 +161,7 @@ export function piecesFromFlaps({ W, D, H, net, flaps, opt = {} }) {
   // 좌측 최외곽 칼선 (패널0 왼쪽)
   cuts.push([[0, y0], [0, y1]]);
 
-  return { pieces, meta, cuts, folds };
+  const panels = PANEL_LABELS.map((label, i) => ({ i, x0: xE[i], x1: xE[i + 1], label }))
+                             .filter(p => p.x1 - p.x0 > 0.05);
+  return { pieces, meta, cuts, folds, panels };
 }

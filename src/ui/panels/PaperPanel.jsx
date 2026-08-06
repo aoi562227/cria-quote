@@ -151,11 +151,14 @@ export default function PaperPanel({ s, u, sheetInfo, autoPriceInfo, result }) {
         </div>
       )}
 
-      {/* 여분(Loss) 수동 입력 — R수 직접 입력이 아닐 때만 표시 */}
+      {/* 여분(Loss) 수동 입력 — R수 직접 입력이 아닐 때만 표시.
+          아래 note 의 정본은 reams.estimateLoss 다. 종전에는 「박·형압 50」이라 적어
+          존재하지 않는 박 가산을 안내했다 — 박은 가산 없음이 확정 정책이다
+          (reams.mjs LOSS_EMB 주석 · 조립형 금박 2건 여분 300). */}
       {!s.mR && (
         <div style={{marginTop:8,background:"#0a1828",border:"1px solid #1a3050",borderRadius:4,padding:"8px 10px"}}>
           <Field label="여분(손지) 수동 입력"
-            note="빈값=자동. max(300, 정미×5%) + 양면 100 + 박·형압 50">
+            note="빈값=자동. max(300, 정미×5%) + 양면 100 · 베다 100 · 형압 50 (박은 가산 없음)">
             <div style={{display:"flex",gap:4,alignItems:"center"}}>
               <Input value={s.lossSheets} onChange={v=>u("lossSheets",v)} type="number" placeholder="자동"/>
               <div style={{display:"flex",gap:3}}>

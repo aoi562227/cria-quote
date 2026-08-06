@@ -55,11 +55,17 @@ export const SHEET_PRIORITY = {
 export const PRESS_MAX_LONG  = 990;
 export const PRESS_MAX_SHORT = 720;
 
-// ── 물림(gripper) ─────────────────────────────────────────────────
+// ── 물림(gripper) — 측정값은 사실, 그러나 판걸이에 적용하지 않는다 ──────
 // 코리팩 산출식 엑셀 「종이 규격」(B14) vs 「제작 규격(여분제외)」(B15) 차이:
 //   788×1091 → 758×1071  /  545×788 → 515×768  /  394×545 → 364×525
 //   636×939  → 606×919   /  469×636 → 436×616  /  450×600 → 420×580
 // → 짧은변 −30mm, 긴변 −20mm (국이절만 −33). 균일값이 아니라 비대칭.
+//
+// ⚠ imposition.printableArea 는 이 값을 **빼지 않는다**. 위 BASE_SHEETS 와 견적서
+//   「단위」열은 원지가 아니라 인쇄기에 걸리는 재단 크기이므로 물림이 이미 반영돼 있다.
+//   또 빼면 이중 차감이고, 실측 up 재현이 7/12 → 1/12 로 무너진다
+//   (A/B: test/scorecard-unit.mjs §A vs §C — 그 표가 이 상수를 계속 소비한다).
+//   되돌리려면 BASE_SHEETS 를 원지 규격으로 재정의하는 것이 먼저다.
 export const BITE_SHORT = 30;   // 짧은변(가로) 물림
 export const BITE_LONG  = 20;   // 긴변(세로) 물림
 // BITE_MM 별칭은 제거했다 — 축을 구분하지 않아 y축 물림을 20 으로 쓰게 만든 원인이었다.
@@ -70,23 +76,34 @@ export const BITE_LONG  = 20;   // 긴변(세로) 물림
 //     공식이 268.0 으로 3mm 크게 나와 허용오차 0 이면 1up 으로 떨어짐 → 0.5%로 회복
 export const FIT_TOL = 0.005;
 
-// 배치 상한 — **발자국(배치 외곽 ÷ 판형)** 기준.
+// 배치 상한 — **발자국(배치 외곽 bbox ÷ 판형 면적)** 기준.
 //   종전에는 up × netW × netH ÷ 판형(=「수율」)로 컷했는데, 맞물림 배치에서는
 //   netW×netH 가 전개도의 빈 모서리를 포함하므로 실제보다 과대평가된다.
-//   예) 맞뚜껑A 92×13×140 국2 6up : 수율 90% 지만 발자국은 82%
+//   예) 맞뚜껑A 92×13×140 국2 6up : 수율 90% 지만 발자국은 81%
 //       → 종전 85% 컷이 견적서와 일치하는 6up 을 잘못 걸러냈음
-//   발자국은 구조적으로 100%를 넘을 수 없고, 실측 최대는 82%.
+//   ⚠ 분모는 반드시 **판형 면적**(effectiveSheet.long × short)이다. 인쇄가능영역으로
+//     바꾸면 분모가 달라져 92 의 교정 근거가 깨진다(imposition.mjs footOf 참조).
+//   발자국은 구조적으로 100%를 넘을 수 없고, 견적서 실측 10건의 최대는 85%
+//   (삼면D 82×7×126 — D=7 은 공식 검증범위 밖이라 up 이 과다한 건이다).
 export const MAX_FOOT_PCT = 92;
 
 /** 1R(1연) 장수 = 500 × 절수 */
 export const sheetsPerR = sheet => 500 * (sheet?.cut || 2);
 
-/** 판형 크기 구간: 4절 / 2·3절 / 전지 — 공정 단가 티어 결정 */
+/**
+ * 판형 크기 구간 — 코팅·톰슨·인쇄 단가 티어를 결정한다.
+ * 값은 **절수 이름 그대로**다. 종전 'small'|'mid'|'large' 는 견적서·실무가 쓰는
+ * 「4절/2절/전지」라는 도메인 뜻을 지워서, tier:'large' 만 보고는 전지급이라는 걸
+ * 알 수 없었다. COAT_OPTS·THOMSON_OPTS·RANK_* 의 컬럼명도 같은 키를 쓴다.
+ * ※ "2절" 티어는 2절과 3절을 **함께** 덮는다 (단가가 같다).
+ */
+export const TIERS = ["4절", "2절", "전지"];
+
 export function sheetTier(sheet) {
-  if (!sheet) return "mid";
-  if (sheet.cut >= 4) return "small";
-  if (sheet.cut === 1) return "large";
-  return "mid";
+  if (!sheet) return "2절";
+  if (sheet.cut >= 4) return "4절";
+  if (sheet.cut === 1) return "전지";
+  return "2절";
 }
 
 /** 판형 ∩ 인쇄기 최대 → 실제 인쇄 가능한 판 크기 (긴변, 짧은변) */

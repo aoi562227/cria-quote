@@ -188,7 +188,8 @@ for (const [nm,W,D,H,t,sid,real] of UPC) {
     String(raw).padStart(5)+(raw===real?"✓":" ")+String(cap).padStart(10)+(cap===real?"✓":" ")+String(real).padStart(8));
 }
 console.log("-".repeat(88));
-console.log(`원지 최대 기준 ${a0}/${UPC.length}  →  인쇄기 제약(${PRESS_MAX_LONG}×${PRESS_MAX_SHORT}) 적용 ${a1}/${UPC.length}`);
+console.log(`원지 최대 기준 ${a0}/${UPC.length}  →  인쇄기 제약(${PRESS_MAX_LONG}×${PRESS_MAX_SHORT}) 적용 ${a1}/${UPC.length}` +
+            `   ⚠ 이 표는 앱 up 이 아니다 — 앱 점수는 verify-net 「판걸이 up 재현」`);
 console.log(`
 ※ G형 3건은 gtype_tray(뚜껑일체) 공식으로 갱신했다 — 종전에는 이 파일이 복제한
   옛 gtype 공식(W+4D+14 / 2H+3D+1)을 썼고, G형A 350×280×70 을 1484×981 로 내서

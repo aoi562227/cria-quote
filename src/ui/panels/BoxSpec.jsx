@@ -14,7 +14,7 @@ import LayoutViz from "../viz/LayoutViz.jsx";
 import SheetCompare from "../viz/SheetCompare.jsx";
 
 export default function BoxSpec({
-  s, u, handleBoxType, input, netSize, dieline, sheetInfo, layout, result, W, D, H,
+  s, u, handleBoxType, input, netSize, dieline, sheetInfo, layout, result, H,
 }) {
   return (
     <Section title="박스 규격 및 구조">
@@ -43,21 +43,12 @@ export default function BoxSpec({
         </Field>
       )}
 
-      {/* G형 안내 박스 */}
-      {s.sizeMode === "box" && s.boxType === "gtype" && (
-        <div style={{background:"#07150a",border:"1px solid #1a4a22",borderRadius:4,padding:"9px 11px",fontSize:10,color:"#44cc77",marginBottom:10,lineHeight:1.8}}>
-          <div style={{fontWeight:800,color:"#66ff99",marginBottom:6,fontSize:11}}>
-            📦 G형 (톰슨조립)
-          </div>
-          <div style={{fontSize:9,color:"#336644"}}>
-            치수 입력 후 전개도 치수가 자동 계산됩니다.
-          </div>
-          {netSize?.gtypeWarning && (
-            <div style={{marginTop:4,fontSize:9,color:"#ffaa44",background:"#2a1a00",
-              border:"1px solid #664400",borderRadius:3,padding:"4px 6px"}}>
-              ⚠ {netSize.gtypeWarning}
-            </div>
-          )}
+      {/* 구조가 낸 입력범위 경고 — 구조별 if 없이 netSize.warning 하나만 본다.
+          새 구조가 제약(예: 트레이 H ≤ D/2)을 알리려면 warning 문자열만 내면 된다. */}
+      {netSize?.warning && (
+        <div style={{marginBottom:10,fontSize:9.5,color:"#ffaa44",background:"#2a1a00",
+          border:"1px solid #664400",borderRadius:4,padding:"6px 9px",lineHeight:1.7}}>
+          ⚠ {netSize.warning}
         </div>
       )}
       {s.sizeMode === "box" && (
@@ -79,25 +70,24 @@ export default function BoxSpec({
             <span>전개도 세로</span>
             <strong style={{color:"#e8f0ff",fontFamily:"monospace"}}>{fmtMM(netSize.netH)} mm</strong>
           </div>
-          {netSize.isDirect ? (
-            <div style={{display:"flex",justifyContent:"space-between",borderTop:"1px solid #1a3050",marginTop:4,paddingTop:4}}>
-              <span style={{color:"#88bbdd",fontSize:9}}>전체크기 직접입력</span>
-              <span style={{color:"#88bbdd",fontSize:9,fontFamily:"monospace"}}>날개 계산 없음</span>
-            </div>
-          ) : netSize.isGtype ? (
-            <div style={{display:"flex",justifyContent:"space-between",borderTop:"1px solid #1a3050",marginTop:4,paddingTop:4}}>
-              <span style={{color:"#44cc77",fontSize:9}}>G형 (톰슨조립)</span>
-              <span style={{color:"#44cc77",fontSize:9,fontFamily:"monospace"}}>접착날개 14mm</span>
-            </div>
-          ) : (
-            <div style={{display:"flex",justifyContent:"space-between",borderTop:"1px solid #1a3050",marginTop:4,paddingTop:4}}>
-              <span style={{color:"#8899bb",fontSize:9}}>뚜껑 / 바닥 / 접착날개{netSize.hangTab?" / 행거탭":""}</span>
-              <span style={{color:"#8899bb",fontSize:9,fontFamily:"monospace"}}>
-                {fmtMM(netSize.topLid)} / {fmtMM(netSize.botFloor)} / {fmtMM(netSize.glueTab)}
-                {netSize.hangTab ? ` / ${fmtMM(netSize.hangTab)}` : ""} mm
-              </span>
-            </div>
-          )}
+          {/* note 를 내는 구조는 그 한 줄을, 안 내는 구조(날개가 있는 폴리곤 구조)는
+              뚜껑/바닥/접착날개 내역을 찍는다. 구조 id 로 분기하지 않는다. */}
+          <div style={{display:"flex",justifyContent:"space-between",borderTop:"1px solid #1a3050",marginTop:4,paddingTop:4}}>
+            {netSize.note ? (
+              <>
+                <span style={{color:"#88bbdd",fontSize:9}}>{netSize.note[0]}</span>
+                <span style={{color:"#88bbdd",fontSize:9,fontFamily:"monospace"}}>{netSize.note[1]}</span>
+              </>
+            ) : (
+              <>
+                <span style={{color:"#8899bb",fontSize:9}}>뚜껑 / 바닥 / 접착날개{netSize.hangTab?" / 행거탭":""}</span>
+                <span style={{color:"#8899bb",fontSize:9,fontFamily:"monospace"}}>
+                  {fmtMM(netSize.topLid)} / {fmtMM(netSize.botFloor)} / {fmtMM(netSize.glueTab)}
+                  {netSize.hangTab ? ` / ${fmtMM(netSize.hangTab)}` : ""} mm
+                </span>
+              </>
+            )}
+          </div>
         </div>
       )}
 
@@ -112,7 +102,7 @@ export default function BoxSpec({
           <div>✦ 수율: <strong style={{color:layout.footPct>=MAX_FOOT_PCT?"#ff6655":layout.footPct>=65?"#44cc88":"#ffcc44"}}>
               {layout.utilPct}%</strong>
             <span style={{fontSize:9,color:"#336655",marginLeft:5}}>
-              발자국 {layout.footPct}% · 물림 {layout.biteShort}/{layout.biteLong}mm · 상한 {MAX_FOOT_PCT}%
+              발자국 {layout.footPct}% · 상한 {MAX_FOOT_PCT}%
             </span>
             {layout.utilCapped && <span style={{fontSize:9,color:"#ffaa44",marginLeft:5,fontWeight:700}}>⚠ 상한 적용</span>}
           </div>
@@ -145,7 +135,7 @@ export default function BoxSpec({
       {dieline?.polygon && (
         <div style={{marginTop:6}}>
           <Toggle checked={s.showNet} onChange={v=>u("showNet",v)} label="전개도 미리보기"/>
-          {s.showNet && <NetDiagram dieline={dieline} W={W} D={D} H={H}/>}
+          {s.showNet && <NetDiagram dieline={dieline} H={H}/>}
         </div>
       )}
 

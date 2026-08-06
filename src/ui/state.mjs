@@ -6,6 +6,7 @@
 // ══════════════════════════════════════════════════════════════════
 import { SOBOO_UNIT_DEFAULT } from "../domain/data/print-prices.mjs";
 import { EMB_RPR_DEFAULT, FOIL_RPR_DEFAULT } from "../domain/data/process-prices.mjs";
+import { structures, getStructure } from "../domain/dieline/index.mjs";
 import { today } from "./format.mjs";
 
 // ⚠ parseFloat 필수: parseInt("15.5")=15 → D≤15 조건 오작동, parseInt("73.5")=73 오차
@@ -43,10 +44,16 @@ export const INITIAL_STATE = {
   showCompare: false, showSheetCompare: false, showViz: true, showNet: false,
 };
 
-/** G형 선택 시 톰슨 강제 전환 (복귀 포함). gtype_tray 는 강제하지 않는다.
- *  박스 구조와 접착 방식은 별개다 — 삼면접착 구조여도 접착 작업은 단면이 일반적(실측). */
+/** 구조가 톰슨 기본값을 선언했으면 그걸로 강제 전환하고, 아니면 복귀시킨다.
+ *  종전에는 `boxType === "gtype" ? "g_std"` 로 문자열이 여기 박혀 있어서
+ *  레지스트리의 thomsonDefault 가 선언만 되고 아무도 읽지 않았다.
+ *  복귀 조건도 "어떤 구조든 자기 기본값이던 값이면 일반(n)으로" 로 일반화했다.
+ *  ※ 박스 구조와 접착 방식은 별개다 — 삼면접착 구조여도 접착 작업은 단면이 일반적(실측). */
+const THOM_DEFAULTS = new Set(
+  structures().map(st => getStructure(st.id)?.thomsonDefault).filter(Boolean));
+
 export const nextThomId = (boxType, cur) =>
-  boxType === "gtype" ? "g_std" : (cur === "g_std" ? "n" : cur);
+  getStructure(boxType)?.thomsonDefault ?? (THOM_DEFAULTS.has(cur) ? "n" : cur);
 
 /** 주문생산 판형 크기·절수 (판형이 custom 일 때만 유효) */
 export function customSheetOf(s) {

@@ -1,17 +1,20 @@
 // ══════════════════════════════════════════════════════════════════
-//  이 파일은 src/domain/process/print.mjs 의 printSide() 와
-//  src/domain/data/{print-prices,sheets,process-prices}.mjs · sheet-select.mjs 의
-//  상수를 **직접 import** 한다.
-//  종전에는 printSide 가 computeForQty 클로저 안에 중첩돼 있어 export 가 물리적으로
-//  불가능했고, 그래서 이 파일이 인쇄비 식을 복제했다. 이제 실코드를 호출한다.
+//  이 파일은 실코드만 호출한다.
+//    §  인쇄비  : src/domain/process/print.mjs  printSide()
+//    §A 도수    : print-prices.mjs sideColors + printSide
+//    §B §C 판형 : src/domain/sheet-select.mjs  findBestSheet()
+//
+//  ⚠ §B·§C 는 종전에 pickNew / 하드롱 비교식을 **자체 재구현**했다. 상수만
+//    import 하고 비교식은 사본이라, near.sort 의 정렬 키를 뒤집거나
+//    (1−HADRONG_EDGE) 를 (1+…) 로 뒤집어도 12개 테스트 전부 통과했다
+//    (돌연변이 검증으로 확인). 이제 findBestSheet 를 직접 부른다 —
+//    정책을 바꾸면 여기가 즉시 깨진다.
 // ══════════════════════════════════════════════════════════════════
 import { printSide } from "../src/domain/process/print.mjs";
-import {
-  SPOT_WEIGHT, PRINT_UNIT_DEFAULT, sideColors,
-} from "../src/domain/data/print-prices.mjs";
-import { SHEET_PRIORITY } from "../src/domain/data/sheets.mjs";
-import { RANK_COAT_EST, RANK_THOM_EST } from "../src/domain/data/process-prices.mjs";
-import { TIE_PCT, HADRONG_EDGE } from "../src/domain/sheet-select.mjs";
+import { SPOT_WEIGHT, sideColors } from "../src/domain/data/print-prices.mjs";
+import { TIE_PCT, HADRONG_EDGE, findBestSheet } from "../src/domain/sheet-select.mjs";
+import { buildDieline } from "../src/domain/quote.mjs";
+import { lossOptionsOf } from "../src/domain/reams.mjs";
 
 /** 인쇄비 검산은 도수환산(weight) 모드. UV·별색R당단가 분기는 verify-total 이 본다 */
 const side = (color, spot, black) => ({ color, spot, black, uv: false });
@@ -96,86 +99,132 @@ console.log("-".repeat(72));
 console.log(`원색+별색 병행: ${cOk}/${COMBO.length}   (별색 가중치 SPOT_WEIGHT=${SPOT_WEIGHT})`);
 if (cOk !== COMBO.length) process.exitCode = 1;
 
+// ══════════════════════════════════════════════════════════════════
+//  판형 자동선택 — findBestSheet 직접 호출
+// ══════════════════════════════════════════════════════════════════
+/** 실 박스 규격 → findBestSheet. 앱이 타는 인자를 그대로 만든다 */
+function pickSheet({ box, paperId, qty, front = {}, back = {}, beda = false, hasEmb = false }) {
+  const dieline = buildDieline(box);
+  const F = { color:false, spot:0, black:false, uv:false, ...front };
+  const B = { color:false, spot:0, black:false, uv:false, ...back };
+  const lossOpts = lossOptionsOf({ front:F, back:B, beda }, { hasEmb }, "");
+  return findBestSheet({ dieline, qty, sheetIdHint:"auto", paperId, lossOpts });
+}
+
+const BOX_5040 = { mode:"box", structure:"glue_3side", W:50, D:40, H:81, hangTab:0 };
+
 console.log("\n═══ B. 도수가 판형 선택을 바꾸지 않는지 ══════════════════════════════════");
 // 종전 버그: 우선순위를 총비용에 **곱해서**(총비용 × (1+(priority−1)×0.01))
 //   판형과 무관한 인쇄 도수까지 곱해지는 밑값에 들어가 순위가 뒤집혔다.
-// 실측: 삼면접착 50×40×81 · AB라이트295 · 1,000ea
-//   하4  6up 지대 70,375 (0.234R)  ← 지대 7,465원 저렴 + up 많음
-//   4×64 4up 지대 77,840 (0.275R)
-//
-// pickNew 는 현행 규칙이라 실코드 상수(SHEET_PRIORITY·TIE_PCT)를 쓴다.
-// pickOld 는 **삭제된 구현**이므로 App 에 원본이 없다 → 문서형 재현으로 남긴다.
-//   그 시점의 우선순위 표는 하4=4 였다(현재 표는 7). 여기서 현재 값을 쓰면
-//   페널티가 커져 종전 규칙도 4×64 로 통일돼 버그가 재현되지 않는다.
-const PRIO_THEN = { "4x64":1, "ha4":4 };
-const SHEETS = [   // [id, 지대R, 지대단가/R, up]
-  ["4x64", 0.275, 283056, 4],
-  ["ha4",  0.234, 300747, 6],
+// 실측: 삼면접착 50×40×81 · AB라이트295 · 1,000ea — 별색1도면 하4, 원색4도면 4×64 로
+//   갈렸다. 같은 박스인데 인쇄 도수 때문에 원지·판걸이·R수가 통째로 바뀐 것이다.
+// 현행 규칙(TIE_PCT 동점 → 실무 우선순위)에서는 도수와 무관해야 한다.
+const DOSU = [
+  ["별색1도",        { spot:1 }],
+  ["원색4도",        { color:true }],
+  ["원색4+먹",       { color:true, black:true }],
+  ["원색4+별색2",    { color:true, spot:2 }],
+  ["원색4+별색2+먹", { color:true, spot:2, black:true }],
 ];
-// 1,000ea → 두 판형 다 공정R 1식이고 티어도 동일(4절=small)
-const procEst = u => 1 * (RANK_COAT_EST.small + RANK_THOM_EST.small + u*PRINT_UNIT_DEFAULT);
-
-const pickOld = u => {                              // 종전: 우선순위를 곱함
-  let best = null;
-  for (const [id,R,price] of SHEETS) {
-    const rank = (R*price + procEst(u)) * (1 + (PRIO_THEN[id]-1)*0.01);
-    if (!best || rank < best.rank) best = { id, rank };
-  }
-  return best.id;
-};
-const pickNew = u => {                              // 신: TIE_PCT 안이면 우선순위로 결정
-  const pool = SHEETS.map(([id,R,price]) =>
-    ({ id, cost:R*price + procEst(u), prio:SHEET_PRIORITY[id] }));
-  const min  = Math.min(...pool.map(c => c.cost));
-  const near = pool.filter(c => c.cost <= min*(1 + TIE_PCT));
-  near.sort((a,b) => a.prio - b.prio || a.cost - b.cost);
-  return near[0].id;
-};
-const LABEL = { 3:"별색1도", 4:"원색4도", 5:"원색4+먹", 10:"원색4+별색2", 11:"원색4+별색2+먹" };
-console.log("인쇄 가중치".padEnd(24)+"종전(우선순위 곱셈)".padEnd(22)+"신(동점 처리)");
+console.log("인쇄 도수".padEnd(20)+"선택 판형".padEnd(10)+"up".padEnd(6)+"지대R".padEnd(9)+"랭킹비용");
 console.log("-".repeat(72));
-const oldPicks = new Set(), newPicks = new Set();
-for (const u of [3,4,5,10,11]) {
-  const o = pickOld(u), n = pickNew(u);
-  oldPicks.add(o); newPicks.add(n);
-  console.log(`${u} (${LABEL[u]})`.padEnd(24)+o.padEnd(22)+n);
+const picks = new Set();
+for (const [label, front] of DOSU) {
+  const r = pickSheet({ box:BOX_5040, paperId:"AB295L", qty:1000, front });
+  picks.add(r.id);
+  console.log(label.padEnd(20)+r.id.padEnd(10)+`${r.up}up`.padEnd(6)+
+              r.R.toFixed(3).padEnd(9)+Math.round(r.rankCost).toLocaleString());
 }
 console.log("-".repeat(72));
-const stable = newPicks.size === 1;
-console.log(`종전: 도수에 따라 ${oldPicks.size}종 판형으로 갈림  ${oldPicks.size>1?"✗":"✓"}`);
-console.log(`신  : 도수와 무관하게 ${newPicks.size}종  ${stable?"✓ (원지·판걸이·R수 일관)":"✗"}` +
+const stable = picks.size === 1;
+console.log(`도수와 무관하게 ${picks.size}종 판형  ${stable?"✓ (원지·판걸이·R수 일관)":"✗ 갈림: "+[...picks]}` +
             `   (TIE_PCT=${(TIE_PCT*100).toFixed(1)}%)`);
 if (!stable) process.exitCode = 1;
+
+// ── 동점 구간에서 「우선순위 우선」이 실제로 작동하는지 ─────────────────
+// 위 §B 케이스들은 4×64 가 최저비용이기도 해서 정렬 키를 뒤집어도 답이 같다.
+// 그래서 우선순위와 최저비용이 **엇갈리는** 케이스를 하나 못 박아 둔다:
+//   맞뚜껑 60×60×60 · AB295L 5,000ea (전개도 254.3×153.0, 양쪽 단가 실측)
+//     4×64 4up  rank 431,268   우선순위 1
+//     4×62 10up rank 429,750   우선순위 3   ← 0.35% 저렴 (TIE_PCT 1.5% 안)
+//   규칙은 「TIE_PCT 안이면 실무 우선순위」이므로 4×64 가 이겨야 한다.
+//   ⚠ 이 한 줄이 near.sort 의 정렬 키를 지키는 유일한 게이트다.
+//     (a.rankCost - b.rankCost 를 앞에 두면 4×62 가 나와 여기서 깨진다)
+{
+  const r = pickSheet({ box:{ mode:"box", structure:"tuck_both", W:60, D:60, H:60, hangTab:0 },
+                        paperId:"AB295L", qty:5000, front:{ color:true } });
+  const hit = r.id === "4x64";
+  console.log(`동점 구간 우선순위: 맞뚜껑 60×60×60 · AB295L 5,000ea → ${r.id} ${r.up}up ` +
+              `(우선순위 ${r.priority}, rank ${Math.round(r.rankCost).toLocaleString()})  ` +
+              `기대 4x64  ${hit?"✓":"✗"}`);
+  if (!hit) process.exitCode = 1;
+}
 
 console.log("");
 console.log("═══ C. 하드롱 계열은 확실히 유리할 때만 ═══════════════════════════════════");
 // 실무: "하드롱은 왠만하면 안 쓴다. 국절이나 46절이 너무 수율이 안 좋을 때만 쓴다."
 // → 사륙·국전 최선안보다 HADRONG_EDGE 이상 저렴할 때만 하드롱 채택
-const CASES2 = [
-  // [이름, 하드롱 총비용, 사륙·국전 총비용, 기대 선택, 근거]
-  ["조립형 324×428 · AB400 3,000ea", 935820, 1032310, "하드롱",
-   "하3 지대 673,320 + 공정 262,500  vs  4×62 769,810 + 262,500 → 9.3% 우위 (견적서 = 하3)"],
-  ["삼면 50×40×81 · 295L 1,000ea (별색1)", 218875, 226340, "사륙",
-   "하4 지대 70,375  vs  4×64 77,840 → 3.3% 우위 (부족)"],
-  ["삼면 50×40×81 (원색4+별색2)", 320375, 327840, "사륙",
-   "도수가 커지면 우위가 2.3% 로 더 줄어듦"],
+//   조립형은 견적서가 하3 2up 이므로 하드롱이 이겨야 하고,
+//   삼면 50×40×81 은 하4 가 3.3% 밖에 안 싸서 사륙이 이겨야 한다.
+const HADR = [
+  ["조립형 324×428 · AB400 3,000ea",
+   { mode:"net", netW:428, netH:324 }, "AB400", 3000, { spot:1 }, "하드롱",
+   "견적서 = 하3 2up. 지대 우위 12.5%(총비용 9.3%) → 6% 문턱 통과"],
+  ["삼면 50×40×81 · 295L 1,000ea (별색1)",
+   BOX_5040, "AB295L", 1000, { spot:1 }, "사륙·국전",
+   "하4 지대 70,375 vs 4×64 77,840 → 3.3% 우위로 부족"],
+  ["삼면 50×40×81 (원색4+별색2)",
+   BOX_5040, "AB295L", 1000, { color:true, spot:2 }, "사륙·국전",
+   "도수가 커지면 총비용 기준 우위가 더 줄어듦"],
 ];
-console.log("케이스".padEnd(34)+"하드롱".padEnd(11)+"사륙·국전".padEnd(11)+"우위".padEnd(8)+"선택".padEnd(9)+"기대");
+console.log("케이스".padEnd(38)+"선택".padEnd(9)+"up".padEnd(6)+"계열".padEnd(11)+"기대");
 console.log("-".repeat(96));
 let ok2 = 0;
-for (const [nm, h, m, exp] of CASES2) {
-  const edge = (m - h) / m;
-  const pick = h < m * (1 - HADRONG_EDGE) ? "하드롱" : "사륙";
-  const hit = pick === exp;
+for (const [nm, box, paperId, qty, front, exp] of HADR) {
+  const r = pickSheet({ box, paperId, qty, front });
+  const fam = r.family === "하드롱" ? "하드롱" : "사륙·국전";
+  const hit = fam === exp;
   if (hit) ok2++;
-  console.log(nm.padEnd(34)+h.toLocaleString().padStart(9).padEnd(11)+m.toLocaleString().padStart(9).padEnd(11)+
-    ((edge*100).toFixed(1)+"%").padStart(6).padEnd(8)+pick.padEnd(9)+exp+(hit?" ✓":" ✗"));
+  console.log(nm.padEnd(38)+r.id.padEnd(9)+`${r.up}up`.padEnd(6)+fam.padEnd(11)+exp+(hit?" ✓":" ✗"));
 }
 console.log("-".repeat(96));
-console.log("하드롱 채택 규칙: " + ok2 + "/" + CASES2.length + `   (HADRONG_EDGE=${(HADRONG_EDGE*100).toFixed(0)}%)`);
-for (const [nm,,,,why] of CASES2) console.log("  · " + nm + "\n      " + why);
+console.log(`하드롱 채택 규칙: ${ok2}/${HADR.length}   (HADRONG_EDGE=${(HADRONG_EDGE*100).toFixed(0)}%)`);
+for (const [nm,,,,,,why] of HADR) console.log("  · " + nm + "\n      " + why);
 console.log("");
 console.log("⚠ 배수 페널티(총비용 × 1.12)로 구현하면 안 된다 —");
 console.log("  총비용에 판형과 무관한 공정추정이 섞여 지대 우위가 희석돼");
 console.log("  실제 견적서(하3)와 어긋난다. 명시적 우위 조건(6%)을 쓴다.");
-if (ok2 !== CASES2.length) process.exitCode = 1;
+if (ok2 !== HADR.length) process.exitCode = 1;
+
+console.log("");
+console.log("═══ D. 추정 지대단가가 실측 단가를 이기지 않는지 ═══════════════════════════");
+// 실측 사례: 맞뚜껑 40×62 계열에서 하2 의 AB350 단가는 면적환산 **추정값**이고
+//   4×62 는 실측값인데, 추정 단가가 실측을 이겨 10.8% 더 비싼 견적을 냈다.
+//   견적서 라인에는 「⚠추정」이 뜨지만 선택 단계는 실측/추정을 구분하지 않았다.
+// → EST_PRICE_PENALTY(3%) 로 "동급이면 실측을 고른다" 를 강제한다.
+//   하드 차단이 아니다 — 단가표가 희소해서(지종당 실측 1~2 판형) 추정 판형이
+//   확실히 저렴하면 여전히 이긴다. 12,096건 스캔에서 페널티가 선택을 바꾼 것은
+//   523건(4.3%)이고 전부 「추정 → 실측」 방향이었다.
+const EST = [
+  // [이름, box, 지종, 수량, 기대 판형, 페널티 없을 때 나오던 판형]
+  ["맞뚜껑 40×20×120 · AB270 20,000ea",
+   { mode:"box", structure:"tuck_both", W:40, D:20, H:120, hangTab:0 }, "AB270", 20000,
+   "4x62", "ha2(추정)"],
+  ["맞뚜껑 40×20×120 · MK350 5,000ea",
+   { mode:"box", structure:"tuck_both", W:40, D:20, H:120, hangTab:0 }, "MK350", 5000,
+   "4x64", "4x63(추정)"],
+];
+console.log("케이스".padEnd(38)+"선택".padEnd(8)+"단가".padEnd(12)+"근거".padEnd(9)+"페널티 없으면");
+console.log("-".repeat(92));
+let ok3 = 0;
+for (const [nm, box, paperId, qty, exp, without] of EST) {
+  const r = pickSheet({ box, paperId, qty, front:{ color:true } });
+  const hit = r.id === exp && !r.priceEstimated;
+  if (hit) ok3++;
+  console.log(nm.padEnd(38)+r.id.padEnd(8)+r.price.toLocaleString().padStart(9).padEnd(12)+
+    (r.priceEstimated ? "⚠추정" : "실측").padEnd(9)+without+(hit?" ✓":` ✗ (기대 ${exp})`));
+}
+console.log("-".repeat(92));
+console.log(`추정단가 페널티: ${ok3}/${EST.length}   (EST_PRICE_PENALTY=3%)`);
+console.log("  ⚠ 이 두 줄이 페널티를 지키는 게이트다 — 페널티를 지우면 둘 다 추정 판형으로 넘어간다.");
+if (ok3 !== EST.length) process.exitCode = 1;

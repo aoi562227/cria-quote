@@ -7,16 +7,16 @@
 //       4×62 62,400~65,000 / 4×6전지 112,000 / 46전지 양면 126,000
 //       IR 4×62·하4 30,000 / 4×64 40,000~48,000 / 국2(ir수성) 50,000 / 전지 60,000
 export const COAT_OPTS = [
-  { id:"none",   label:"없음",         small:0,      mid:0,      large:0,      min:0      },
-  { id:"matte",  label:"무광코팅",     small:55000,  mid:65000,  large:112000, min:55000  },
-  { id:"gloss",  label:"유광코팅",     small:55000,  mid:65000,  large:112000, min:55000  },
-  { id:"hg",     label:"글로스코팅",   small:65000,  mid:65000,  large:140000, min:65000  },
-  { id:"ir",     label:"IR코팅",       small:48000,  mid:40000,  large:60000,  min:40000  },  // mid: 30,000 → 40,000 (26-08-04 소스코)
-  { id:"lami",   label:"무광라미",     small:85000,  mid:85000,  large:115000, min:85000  },
-  { id:"velvet", label:"벨벳코팅",     small:241722, mid:241722, large:241722, min:241722 },
-  { id:"epoxy",  label:"에폭시",       small:95000,  mid:95000,  large:120000, min:95000  },
-  { id:"part",   label:"부분코팅",     small:95000,  mid:95000,  large:95000,  min:95000  },
-  { id:"both46", label:"양면코팅(전지)",small:126000, mid:126000, large:126000, min:126000 },
+  { id:"none",   label:"없음",         "4절":0,      "2절":0,      "전지":0,      min:0      },
+  { id:"matte",  label:"무광코팅",     "4절":55000,  "2절":65000,  "전지":112000, min:55000  },
+  { id:"gloss",  label:"유광코팅",     "4절":55000,  "2절":65000,  "전지":112000, min:55000  },
+  { id:"hg",     label:"글로스코팅",   "4절":65000,  "2절":65000,  "전지":140000, min:65000  },
+  { id:"ir",     label:"IR코팅",       "4절":48000,  "2절":40000,  "전지":60000,  min:40000  },  // mid: 30,000 → 40,000 (26-08-04 소스코)
+  { id:"lami",   label:"무광라미",     "4절":85000,  "2절":85000,  "전지":115000, min:85000  },
+  { id:"velvet", label:"벨벳코팅",     "4절":241722, "2절":241722, "전지":241722, min:241722 },
+  { id:"epoxy",  label:"에폭시",       "4절":95000,  "2절":95000,  "전지":120000, min:95000  },
+  { id:"part",   label:"부분코팅",     "4절":95000,  "2절":95000,  "전지":95000,  min:95000  },
+  { id:"both46", label:"양면코팅(전지)","4절":126000, "2절":126000, "전지":126000, min:126000 },
 ];
 
 // ── 접착 (원/EA) ──────────────────────────────────────────────────
@@ -39,11 +39,11 @@ export const GLUE_OPTS = [
 // 실측: 4×64 45,000~50,000 / 하4 45,000~50,000 / 하3·4×63 45,000
 //       국2 50,000~55,000 / 4×62 40,000~60,000 / 46전지 80,000 / 4×6전지 70,000~75,000
 export const THOMSON_OPTS = [
-  { id:"s",     label:"단순형",           small:45000, mid:50000, large:70000, min:45000 },
-  { id:"n",     label:"일반형",           small:50000, mid:55000, large:75000, min:50000 },
-  { id:"c",     label:"복잡형",           small:50000, mid:60000, large:80000, min:50000 },
-  { id:"sp",    label:"측면 풀발이 12단", small:80000, mid:80000, large:80000, min:80000 },
-  { id:"g_std", label:"G형 표준",         small:45000, mid:55000, large:70000, min:45000 },
+  { id:"s",     label:"단순형",           "4절":45000, "2절":50000, "전지":70000, min:45000 },
+  { id:"n",     label:"일반형",           "4절":50000, "2절":55000, "전지":75000, min:50000 },
+  { id:"c",     label:"복잡형",           "4절":50000, "2절":60000, "전지":80000, min:50000 },
+  { id:"sp",    label:"측면 풀발이 12단", "4절":80000, "2절":80000, "전지":80000, min:80000 },
+  { id:"g_std", label:"G형 표준",         "4절":45000, "2절":55000, "전지":70000, min:45000 },
 ];
 
 // ── 후가공 (원/R) ─────────────────────────────────────────────────
@@ -53,14 +53,14 @@ export const FOIL_RPR_DEFAULT = 140000;
 export const EMB_RPR_DEFAULT  = 100000;
 
 /** 코팅·톰슨 R단가를 판형 티어로 선택 */
-export const rprFor = (opt, tier) => opt ? (opt[tier] ?? opt.mid ?? 0) : 0;
+export const rprFor = (opt, tier) => opt ? (opt[tier] ?? opt["2절"] ?? 0) : 0;
 
 export const coatById    = id => COAT_OPTS.find(o => o.id === id)    || COAT_OPTS[0];     // none
 export const glueById    = id => GLUE_OPTS.find(o => o.id === id)    || GLUE_OPTS[0];     // none
 export const thomsonById = id => THOMSON_OPTS.find(o => o.id === id) || THOMSON_OPTS[0];  // s 단순형
 
 /** ⚠ 판형 랭킹 전용 공정비 추정. COAT_OPTS·THOMSON_OPTS 와 값이 다르다
- *  (matte mid 65,000 vs 랭킹 62,000). **통합하지 마라** — 통합하면 판형 선택이 움직인다.
+ *  (matte 2절 65,000 vs 랭킹 62,000). **통합하지 마라** — 통합하면 판형 선택이 움직인다.
  *  의도인지 확인되기 전에는 두 벌을 유지한다. */
-export const RANK_COAT_EST = { small: 55000, mid: 62000, large: 112000 };
-export const RANK_THOM_EST = { small: 50000, mid: 55000, large:  75000 };
+export const RANK_COAT_EST = { "4절": 55000, "2절": 62000, "전지": 112000 };
+export const RANK_THOM_EST = { "4절": 50000, "2절": 55000, "전지":  75000 };

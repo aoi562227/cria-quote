@@ -7,7 +7,7 @@ import {
 import { PRINT_UNIT_DEFAULT } from "./data/print-prices.mjs";
 import { RANK_COAT_EST, RANK_THOM_EST } from "./data/process-prices.mjs";
 import { calcR, calcProcessR } from "./reams.mjs";
-import { getPaperPrice } from "./paper-repo.mjs";
+import { getPaperPriceInfo } from "./paper-repo.mjs";
 import { solveImposition } from "./imposition.mjs";
 
 // 하드롱 계열은 후순위 — 실무 기준
@@ -42,6 +42,15 @@ export const HADRONG_EDGE = 0.06;
 // 정도로는 "수율이 너무 안 좋을 때" 에 해당하지 않기 때문.
 export const TIE_PCT = 0.015;
 
+// 추정 지대단가 페널티 — 룩업에 없어 면적환산으로 만든 단가는 실측만큼 못 믿는다.
+//   실측 사례) 케이스 b(맞뚜껑 40×62×?) 에서 하2 의 AB350 단가는 면적환산 추정값이고
+//   4×62 는 실측값인데, 추정 단가가 실측을 이겨 10.8% 더 비싼 견적을 냈다.
+//   견적서에는 「⚠추정」이 뜨지만 선택 단계는 실측/추정을 구분하지 않았다.
+//   면적환산의 관측 오차는 0.2%(AB350 4×64→하4)지만 다른 지종·절수는 표본이 없다.
+//   그래서 "동급이면 실측을 고른다" 정도의 약한 페널티만 준다 — TIE_PCT(1.5%)보다
+//   크게 잡아야 동가 구간에서 실측이 이긴다.
+export const EST_PRICE_PENALTY = 0.03;
+
 /**
  * @param {{dieline:Object, qty:number, sheetIdHint:string, paperId:string,
  *          manualPrice:string|number, lossOpts:Object, customSheet:?Object}} arg
@@ -66,14 +75,16 @@ export function findBestSheet({ dieline, qty, sheetIdHint, paperId,
     if (up === 0) continue;
 
     // solveImposition 이 이미 발자국 상한을 걸지만, 그래도 초과하면(전 배치 초과 케이스)
-    // 실현 불가로 보고 제외 — 단 판형 수동 고정 시에는 남겨서 경고로 보여줌
+    // 실현 불가로 보고 제외 — 단 판형 수동 고정 시에는 남겨서 경고로 보여줌.
+    // ※ 이 지역 수율은 >130 컷 전용이다. 화면에 나가는 수율의 정본은 layout.utilPct 다.
     const esh = effectiveSheet(sh.w, sh.h);
     const utilPct = (up * netW * netH) / (esh.long * esh.short) * 100;
     if (!fixed && utilPct > 130) continue;
 
     const spr       = sheetsPerR(sh);
     const R         = calcR(up, qty, sh, lossOpts);
-    const price     = getPaperPrice(paperId, base.id, manualPrice, customSheet);
+    const info      = getPaperPriceInfo(paperId, base.id, manualPrice, customSheet);
+    const price     = info.price;
     const paperCost = R * price;
 
     // 공정비 추정 (랭킹 전용) — 판형 티어별 코팅·톰슨 + 도수별 인쇄
@@ -84,28 +95,35 @@ export function findBestSheet({ dieline, qty, sheetIdHint, paperId,
     const processCostEst = calcProcessR(up, qty) * (coatEst + thomEst + printEst);
 
     const priority = SHEET_PRIORITY[base.id] || 20;
+    // rankCost 는 **랭킹 전용** 가공값이다 — 화면에 나가는 금액은 cost 다.
+    const estimated = !info.confirmed && !info.manual;
     pool.push({ ...sh, id: base.id, up, R, cost: paperCost, price, priority,
-                rankCost: paperCost + processCostEst,
-                sheetsPerR: spr, tier, utilPct: Math.round(utilPct) });
+                priceEstimated: estimated, priceEstimateFrom: info.estimateFrom || null,
+                rankCost: (paperCost + processCostEst) * (estimated ? 1 + EST_PRICE_PENALTY : 1),
+                sheetsPerR: spr, tier });
   }
+  // ── 아래 두 함수가 판형 선택 「정책」 전부다. 테스트는 findBestSheet 를 직접
+  //    부르거나(권장) 이 두 함수를 import 해서 검증한다. 비교식을 테스트에
+  //    복제하면 정렬 키나 부등호 방향을 뒤집어도 테스트가 통과한다(실제 이력).
   if (!pool.length) return null;
 
-  const pickFrom = list => {
-    const min  = Math.min(...list.map(c => c.rankCost));
-    const near = list.filter(c => c.rankCost <= min * (1 + TIE_PCT));
-    near.sort((a, b) => a.priority - b.priority || a.rankCost - b.rankCost);
-    return near[0];
-  };
+  const bestMain = pickFrom(pool.filter(c => c.family !== "하드롱"));
+  const bestHadr = pickFrom(pool.filter(c => c.family === "하드롱"));
+  return chooseHadrong(bestMain, bestHadr);
+}
 
-  // 하드롱은 사륙·국전 최선안보다 HADRONG_EDGE 이상 저렴할 때만
-  const main = pool.filter(c => c.family !== "하드롱");
-  const hadr = pool.filter(c => c.family === "하드롱");
-  if (!main.length) return hadr.length ? pickFrom(hadr) : null;
+/** 총비용 최저값의 TIE_PCT 안은 「같은 값」으로 보고 실무 우선순위로 고른다 */
+export function pickFrom(list) {
+  if (!list?.length) return null;
+  const min  = Math.min(...list.map(c => c.rankCost));
+  const near = list.filter(c => c.rankCost <= min * (1 + TIE_PCT));
+  near.sort((a, b) => a.priority - b.priority || a.rankCost - b.rankCost);
+  return near[0];
+}
 
-  const bestMain = pickFrom(main);
-  if (!hadr.length) return bestMain;
-
-  const bestHadr = pickFrom(hadr);
-  return bestHadr.rankCost < bestMain.rankCost * (1 - HADRONG_EDGE)
-    ? bestHadr : bestMain;
+/** 하드롱은 사륙·국전 최선안보다 HADRONG_EDGE 이상 저렴할 때만 채택 */
+export function chooseHadrong(bestMain, bestHadr) {
+  if (!bestMain) return bestHadr || null;
+  if (!bestHadr) return bestMain;
+  return bestHadr.rankCost < bestMain.rankCost * (1 - HADRONG_EDGE) ? bestHadr : bestMain;
 }

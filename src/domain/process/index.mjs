@@ -28,3 +28,8 @@ export const collectLines = ctx =>
 
 export const collectDevLines = ctx =>
   DEV_PROCESSES.filter(p => p.applies(ctx)).flatMap(p => p.devLines(ctx));
+
+/** 견적서 경고 플래그 — 공정이 flags(ctx) 를 내면 여기서 병합만 한다.
+ *  종전에는 quote.mjs 가 `finish.coatFrontId === "ir"` 을 직접 알아야 했다. */
+export const collectFlags = ctx =>
+  Object.assign({}, ...PROCESSES.map(p => p.flags?.(ctx)).filter(Boolean));

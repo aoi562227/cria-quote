@@ -7,8 +7,9 @@
 //   → 기본값은 **인상 후 높은 값** 기준. 전부 UI에서 수정 가능.
 //
 // ▶ 판형 티어 (sheetTier):
-//     small = 4절 (4×64·하4)      mid = 2·3절 (4×62·국2·하2·하3·4×63)
-//     large = 전지 (46전지·국전·하전지·4×6전지)
+//     "4절"  = 4절     (4×64 · 하4)
+//     "2절"  = 2·3절   (4×62 · 국2 · 하2 · 하3 · 4×63)  ← 3절도 이 티어다
+//     "전지" = 전지급  (46전지 · 국전 · 하전지 · 4×6전지)
 // ══════════════════════════════════════════════════════════════════
 
 export const SOBOO_UNIT_DEFAULT = 12000;   // 소부 원/도 (26-04 이후)
@@ -16,7 +17,7 @@ export const PRINT_UNIT_DEFAULT = 14500;   // 인쇄 원/도·R (소형·중형)
 export const PRINT_UNIT_LARGE   = 15000;   // 인쇄 원/도·R (전지급)
 
 /** 인쇄 도당 단가 기본값 — 판형 티어별 */
-export const printUnitFor = tier => tier === "large" ? PRINT_UNIT_LARGE : PRINT_UNIT_DEFAULT;
+export const printUnitFor = tier => tier === "전지" ? PRINT_UNIT_LARGE : PRINT_UNIT_DEFAULT;
 
 // ── 별색 인쇄 ─────────────────────────────────────────────────────
 // 견적서에 두 가지 표기가 섞여 있으나 R당 실효금액으로 환산하면 같은 물건:

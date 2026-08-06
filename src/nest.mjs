@@ -323,6 +323,19 @@ export function solveLayout(rawPieces, printW, printH, opts = {}) {
           return c;
         })();
 
+        // ── 열 방향 엇갈림 sy ─────────────────────────────────────────
+        //   셀 (i,j) 위치 = (i·dx + j·sx,  i·sy + j·dy)
+        //   sx(행 엇갈림)만 있으면 **1행 배치에서 j 가 항상 0 이라 무력**하다.
+        //   실측 근거: iSHAP 생활용품 대지(무제-3.pdf, 페이지가 정확히 788×545 = 4×62)
+        //     전개도 568.9×335.7 두 장이 dx 157.1 / dy 78.1 로 **대각으로** 어긋나
+        //     겹침 x 411.8mm(72%) · y 257.6mm(77%), 서로 180° 반전(정점 65/68 일치).
+        //     배치 외곽 726.0×413.8 로 물림(768/515)도 충족한다 —
+        //     즉 이 건이 1up 으로 나온 원인은 물림이 아니라 sy 부재였다.
+        //   sy 는 NFP 경계에서 dx 와 트레이드오프하므로 1D 로 못 푼다.
+        //   netH 의 1/16 격자로 훑고 각 sy 에서 최소 dx 를 구한 뒤 up·발자국으로 고른다.
+        const syCands = noIL ? [0]
+          : Array.from({ length: 9 }, (_, k) => netH * k / 16);
+        for (const sy of syCands) {
         for (const dy of dyCands) {
           // maxUp 은 행에도 걸어야 한다 — 열만 깎으면 행이 단독으로 한도를 넘는다
           const R = Math.max(1, Math.min(maxUp, Math.floor((printH - netH) / dy + 1e-7) + 1));
@@ -337,7 +350,7 @@ export function solveLayout(rawPieces, printW, printH, opts = {}) {
               const coef = di + (sxMode === 'half' ? dj / 2 : 0);
               const same = flipFn(0, 0) === flipFn(di, dj);
               const set = same ? part.N_same : part.N_op;
-              const o = [0, dj * dy];
+              const o = [0, di * sy + dj * dy];   // sy 가 있으면 열 차이도 y 를 움직인다
               if (Math.abs(coef) < EPS) {
                 // dx 와 무관한 제약 — 고정점 판정
                 for (const N of set) if (strictlyInside(N, o)) { dxForbid.push([-Infinity, Infinity]); break; }
@@ -363,6 +376,8 @@ export function solveLayout(rawPieces, printW, printH, opts = {}) {
             // maxUp 초과분은 열 수를 깎는다 — 후보를 조용히 버리면 해가 없는 것처럼 보인다
             let C = Math.max(1, Math.floor((printW - netW - (R - 1) * sx) / dx + 1e-7) + 1);
             C = Math.min(C, Math.max(1, Math.floor(maxUp / R)));
+            // sy 는 열이 늘어날수록 세로로 밀어낸다 — 판 높이에서 역산해 열을 제한한다
+            if (sy > EPS) C = Math.min(C, Math.floor((printH - netH - (R - 1) * dy) / sy + 1e-7) + 1);
             if (C < 1) continue;
 
             // 1D 반사선으로 구한 최소 피치는 열/행 방향만 보장한다. 대각쌍은
@@ -374,14 +389,15 @@ export function solveLayout(rawPieces, printW, printH, opts = {}) {
               let placed = false;
               for (let RR = R; RR >= 1; RR--) {
                 if (CC * RR <= (best ? best.up : 0)) break;   // 이미 더 좋은 해가 있다
-                const bb = { w: (CC - 1) * dx + (RR - 1) * sx + netW, h: (RR - 1) * dy + netH };
+                const bb = { w: (CC - 1) * dx + (RR - 1) * sx + netW,
+                             h: (CC - 1) * sy + (RR - 1) * dy + netH };
                 if (bb.w > printW + EPS || bb.h > printH + EPS) continue;
                 const cells = [];
                 for (let j = 0; j < RR; j++) for (let i = 0; i < CC; i++)
-                  cells.push({ i, j, x: i * dx + j * sx, y: j * dy, flip: flipFn(i, j) });
+                  cells.push({ i, j, x: i * dx + j * sx, y: i * sy + j * dy, flip: flipFn(i, j) });
                 if (!verifyNoOverlap(part, cells, flipFn).ok) continue;
                 const cand = {
-                  up: CC * RR, cols: CC, rows: RR, dx, dy, sx,
+                  up: CC * RR, cols: CC, rows: RR, dx, dy, sx, sy,
                   rotated: g === 90, flipRule: ruleName, netW, netH,
                   bbox: bb, footprint: (bb.w * bb.h) / (printW * printH),
                   interlocked: dx < netW - 0.05 || dy < netH - 0.05,
@@ -396,6 +412,7 @@ export function solveLayout(rawPieces, printW, printH, opts = {}) {
               if (!placed && CC === 1) break;
             }
           }
+        }
         }
       }
     }

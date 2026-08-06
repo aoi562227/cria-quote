@@ -84,7 +84,9 @@ console.log(`
 
 console.log("\n═══ 견적서 판걸이 up 재현 — 실코드(solveImposition) ══════════════════════");
 // buildDieline → solveImposition 이 앱이 실제로 타는 경로다.
-// nest 엔진 + 물림 20/30 + 발자국 92% 컷 + FIT_TOL 전부 그대로 적용된다.
+// nest 엔진 + 발자국 92% 컷 + FIT_TOL 전부 그대로 적용된다(물림은 빼지 않는다).
+// ★ 이 숫자가 **프로젝트 대표 판걸이 점수**다. scorecard2 는 printableArea 를
+//   건너뛰므로(solveLayout 직접 호출) 앱 점수가 아니다 — 요약에 쓰지 마라.
 const S = id => BASE_SHEETS.find(s => s.id === id);
 const Q=[
  ["tuck","맞뚜껑A 92×13×140",   92,13,140,"guk2",6], ["tuck","맞뚜껑B 150×20×150",150,20,150,"4x62",2],
@@ -108,15 +110,59 @@ for(const [k,nm,W,D,H,sid,real] of Q){
 console.log("-".repeat(92));
 console.log(`up 일치: ${n}/${Q.length}`);
 console.log(`
-※ 종전 이 표는 IL_W=10 상수 감산 모델을 복제해서 8/10 을 냈다. 그 모델은
-  verify-nest §5 가 기하 위반(칼선이 서로를 지나감, 독립 샘플링 464mm²)으로
-  증명했으므로 점수 자체가 근거가 없었다.
-※ 현행 경로의 남은 불일치는 두 갈래다:
-  ① 물림 방침 — 판을 견적서 「단위」(=이미 재단된 크기)로 줄 때는 물림을 빼면
-     이중 차감이다. printableArea 는 아직 표준 판형·주문생산 구분 없이 무조건 뺀다.
-     그 단독 변경 전후 비교는 test/scorecard-unit.mjs (A: 물림 0 / C: 물림 적용).
-  ② 목형 설계 요인 — 삼면D(D=7, 공식 검증범위 밖) / 맞뚜껑B(500ea 소량,
-     기존 2up 목형 추정). 「판걸이(up) 직접 입력」으로 보정한다.`);
+※ 이력: 종전 이 표는 IL_W=10 상수 감산 모델을 복제해서 8/10 을 냈고(근거 없음 —
+  verify-nest §5 가 기하 위반으로 반증), 엔진을 nest 로 갈면서 1/10 로 떨어졌다가
+  물림 이중 차감을 제거하고 ${n}/10 이 됐다. A/B 는 test/scorecard-unit.mjs.
+※ 남은 불일치 3건은 전부 **목형 설계 요인**이다 — 물림·엔진 문제가 아니다:
+  · 삼면D 82×7×126 (6up vs 2up) — D=7 은 전개도 공식 검증범위(D≥13) 밖.
+    netH 가 실제보다 작게 나와 배치가 과다하다.
+  · 맞뚜껑B 150×20×150 (4up vs 2up) — 500ea 소량. 기존 2up 목형을 그대로 쓴 건.
+  · 삼면B 210×90×180 (2up vs 3up) — 46전지를 990×720 으로 클램프한 뒤 3열이
+    안 들어간다. 견적서 「단위」는 980×720 이므로 폭은 맞는데 공식 netW 가 크다.
+  세 건 모두 「판걸이(up) 직접 입력」으로 보정하는 것이 정답이다.`);
+
+console.log("\n═══ 비폴리곤 구조(G형·G형트레이·전개도 직접입력) 회귀 게이트 ══════════════");
+// 이 3구조는 polygon:false → imposition.solveRect 경로를 탄다. 종전에는 커버리지가
+// **0** 이었다(scorecard2·verify-net·verify-interlock·scorecard-unit 케이스가 전부
+// 폴리곤 구조). 그래서 구코드가 사각형에도 맞물림 감산(IL_W=10 / IL_H=25)을
+// 걸고 있었다는 사실도, 그게 사라져 up 이 줄었다는 사실도 아무 테스트가 못 잡았다.
+// 기하학적으로는 신 동작이 맞다 — 직사각형은 맞물림이 물리적으로 불가능하다.
+//
+// ※ 여기 숫자는 대부분 「현재 동작 고정」이고, ✓견적서 표시가 붙은 것만 실측이다.
+{
+  const N = [
+    // [이름, box, 판형, 기대 up, 근거]
+    ["슬리브 646×258 · 46전지", { mode:"net", netW:646, netH:258 }, "46",   3, "현재동작"],
+    ["슬리브 646×258 · 4×64",   { mode:"net", netW:646, netH:258 }, "4x64", 0,
+     "기하 불가(646 > 545) — 견적서 4×64 1up 은 「단위」가 표준 4절이 아니었을 것. up 직접입력으로 보정"],
+    ["조립형 428×324 · 하3",    { mode:"net", netW:428, netH:324 }, "ha3",  2, "✓견적서 하3 2up"],
+    ["G형 180×120×85 · 국전",   { mode:"box", structure:"gtype", W:180, D:120, H:85 }, "guk", 1, "현재동작"],
+    ["G형 300×40×70 · 국2",     { mode:"box", structure:"gtype", W:300, D:40,  H:70 }, "guk2", 3,
+     "D/H=0.57 ≤ 0.8 → noRotate 분기. 회전이 막혀야 3up"],
+    ["G형트레이 350×280×70 · 46전지",
+     { mode:"box", structure:"gtype_tray", W:350, D:280, H:70 }, "46", 1, "✓견적서 G형A 46전지 1up"],
+  ];
+  console.log("케이스".padEnd(32)+"전개도".padEnd(15)+"up".padEnd(6)+"기대".padEnd(6)+"회전".padEnd(7)+"근거");
+  console.log("-".repeat(104));
+  let nOk = 0;
+  for (const [nm, box, sid, exp, why] of N) {
+    const dl = buildDieline(box);
+    const L  = solveImposition({ dieline: dl, sheet: S(sid), hangTab: 0 });
+    const hit = L.up === exp;
+    if (hit) nOk++;
+    console.log(nm.padEnd(32)+`${dl.net.netW.toFixed(0)}×${dl.net.netH.toFixed(0)}`.padEnd(15)+
+      String(L.up).padEnd(6)+String(exp).padEnd(6)+
+      (dl.net.noRotate ? "금지" : (L.rotated ? "↺" : "-")).padEnd(7)+(hit?"":"✗ ")+why);
+  }
+  console.log("-".repeat(104));
+  console.log(`비폴리곤 구조 up: ${nOk}/${N.length}`);
+  // 회전금지가 실제로 걸리는지 — 플래그만 true 고 배치가 회전하면 무의미하다
+  const nr = buildDieline({ mode:"box", structure:"gtype", W:300, D:40, H:70 });
+  const nrL = solveImposition({ dieline: nr, sheet: S("guk2"), hangTab: 0 });
+  const nrOk = nr.net.noRotate === true && nrL.rotated === false;
+  console.log(`회전금지 실효: netSize.noRotate=${nr.net.noRotate} → layout.rotated=${nrL.rotated}  ${nrOk?"✓":"✗"}`);
+  if (nOk !== N.length || !nrOk) process.exitCode = 1;
+}
 
 console.log("\n═══ 행거탭(유로홀) 모델링 ════════════════════════════════════════════════");
 // 맞뚜껑A 92×13×140 은 위쪽에 다이소 걸이봉용 유로홀 탭 15mm 가 올라가 있음.
@@ -143,7 +189,6 @@ console.log("\n═══ 행거탭(유로홀) 모델링 ════════
   행거탭은 위쪽 한 곳만 돌출해 옆 열 빈공간에 끼워지기 때문이다.
   ※ netH 에 그냥 합산하는 모델은 열마다 15mm 를 더해 up 을 떨어뜨린다.
     앱은 그 모델을 쓰지 않으므로 비교 구현을 여기 복제해 두지 않는다.
-  ※ 이 건의 절대값(${base}up vs 견적서 6up)은 위 표와 같은 물림 방침 문제다.
-    행거탭 모델과는 무관하다.`);
+  ※ 절대값도 견적서와 일치한다 (${base}up = 견적서 6up).`);
   if (!same) process.exitCode = 1;
 }

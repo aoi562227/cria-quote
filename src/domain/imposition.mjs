@@ -5,50 +5,41 @@
 //  직접 import 하면 아래 3대 정책(인쇄기 클램프·발자국 상한·행거탭)이
 //  적용되지 않은 up 이 견적에 들어간다.
 // ══════════════════════════════════════════════════════════════════
-import {
-  effectiveSheet, BITE_LONG, BITE_SHORT, FIT_TOL, MAX_FOOT_PCT,
-} from "./data/sheets.mjs";
+import { effectiveSheet, FIT_TOL, MAX_FOOT_PCT } from "./data/sheets.mjs";
 import { solveLayout } from "../nest.mjs";
 
-/** 배치 엔진. "nest" = NFP 무겹침(정본) / "rect" = 직사각 단순 나눗셈 */
-export const LAYOUT_ENGINE = "nest";
-
-/** clearance 는 nest 기본값 0.5 그대로 — scorecard2 와 같은 조건이어야 A/B 표가 의미를 갖는다 */
+/** clearance 는 nest 기본값 0.5 그대로 — scorecard 표들과 같은 조건이어야 A/B 가 의미를 갖는다 */
 const CLEARANCE = 0.5;
 
 /**
- * 판형 ∩ 인쇄기 상한(990×720) → 물림 차감 → 실제 인쇄 가능 영역.
+ * 판형 ∩ 인쇄기 상한(990×720) → 실제 인쇄 가능 영역.
  *
- * ── 물림(gripper) 방침 ──────────────────────────────────────────────
- * 표준 판형(BASE_SHEETS)은 **원지 규격**이다. 원지를 판에 걸면 그리퍼가 잡는
- * 띠를 인쇄에 못 쓰므로 여기서 뺀다.
- *   짧은변 −30 / 긴변 −20  (코리팩 산출식 엑셀 「제작 규격(여분제외)」 역산. 비대칭이다)
+ * ── 물림(gripper)을 여기서 빼지 않는 이유 ─────────────────────────────
+ * 물림 자체는 실재한다 — 코리팩 산출식 엑셀의 「종이 규격」 vs 「제작 규격(여분제외)」
+ * 차이가 짧은변 −30 / 긴변 −20 이다(sheets.mjs BITE_SHORT/BITE_LONG 에 근거 보존).
+ * 그런데 **그 차감은 이미 판형 숫자 안에 들어 있다.** 견적서 「단위」열(760×480,
+ * 980×720 …)과 BASE_SHEETS 의 절지 규격은 원지가 아니라 **인쇄기에 걸리는 재단 크기**고,
+ * 견적서의 up 은 그 크기 위에서 실제로 나온 값이다. 여기서 또 빼면 이중 차감이다.
  *
- * ⚠ 여기가 다음 단계의 최우선 재검토 지점이다. 엔진을 nest 로 바꾸면서 측정한
- *   견적서 15건 up 재현율 (판 = 견적서 「단위」열 = 실제 재단 크기):
- *       레거시(IL_W=10 상수 감산) + 물림 20/30 → 11/15
- *       nest(NFP 무겹침)         + 물림 20/30 →  2/15
- *       nest(NFP 무겹침)         + 물림 0     → 10/15
- *   즉 재현율을 움직이는 것은 엔진이 아니라 **물림 방침**이다. 레거시는
- *   물림 차감(과소)과 맞물림 상수 감산(과대)이 서로 상쇄돼 맞아 보였을 뿐이고,
- *   그 맞물림은 verify-nest §5 가 기하 위반으로 증명했다(칼선이 서로를 지나감).
+ * 반증 불가능한 실측 사례: 삼면E 90×70×130 을 545×394(4×64)에 2up.
+ *   회전 2열이 545 중 536mm 를 쓴다 → 남는 여백이 전체 9mm.
+ *   긴변에서 20mm 를 더 빼면 그 대지가 물리적으로 성립하지 않는데, 견적서에 실존한다.
  *
- *   물림 0 이 맞을 근거: 견적서 「단위」열은 원지 규격이 아니라 **이미 재단된 크기**다.
- *   실제 대지(250423 삼면E 545×394 2up)를 재보면 배치 외곽이 545 중 514mm 를 써서
- *   한쪽 여백이 15mm 밖에 없다 — 긴변 20mm 를 또 빼면 그 대지가 성립하지 않는다.
+ * A/B 측정 (test/scorecard-unit.mjs — 판을 견적서 「단위」로 직접 주고 up 채점):
+ *     물림 0     → 7/12       ← 현행
+ *     물림 20/30 → 1/12
+ * 앱 실경로(test/verify-net.mjs · test/scorecard-nest.mjs)도 같은 방향으로 1/10 → 7/10.
  *
- *   그럼에도 이 커밋에서는 종전 동작(무조건 차감)을 **그대로 유지한다**.
- *   물림 방침은 그 자체로 단독 변경이어야 한다. 엔진 교체와 같이 바꾸면
- *   어느 쪽이 재현율을 움직였는지 영구히 알 수 없게 된다.
+ * ⚠ "물림은 물리적으로 항상 필요하다" 는 이유로 되돌리지 마라. 물리적으로는 맞지만
+ *   이 함수에 들어오는 크기가 이미 물림이 반영된 재단 크기다. 되돌리려면 먼저
+ *   BASE_SHEETS 를 원지 규격으로 재정의하고 견적서 78건을 다시 역산해야 한다.
  */
 export function printableArea(sheet) {
   const es = effectiveSheet(sheet.w, sheet.h);
-  const biteLong  = BITE_LONG;
-  const biteShort = BITE_SHORT;
   return {
-    long: es.long, short: es.short, capped: es.capped, biteLong, biteShort,
-    printW: (es.long  - biteLong)  * (1 + FIT_TOL),
-    printH: (es.short - biteShort) * (1 + FIT_TOL),
+    long: es.long, short: es.short, capped: es.capped,
+    printW: es.long  * (1 + FIT_TOL),
+    printH: es.short * (1 + FIT_TOL),
   };
 }
 
@@ -119,17 +110,18 @@ function solveNest(pieces, printW, printH, HT, extra) {
 // 캐시로 11회가 된다. nest 1회가 20~60ms 이므로 이게 없으면 렌더가 초 단위로 멈춘다.
 const CACHE = new Map();
 const CACHE_MAX = 500;
-export function clearImpositionCache() { CACHE.clear(); }
 
 /**
  * @param {{key:string, net:Object, pieces:number[][][], polygon:boolean, noRotate:boolean}} dieline
  * @param {{w:number,h:number,custom?:boolean}} sheet
  * @returns {Object|null} Layout — up=0 이면 배치 불가
  */
-export function solveImposition({ dieline, sheet, hangTab = 0, engine = LAYOUT_ENGINE, opts = {} }) {
+export function solveImposition({ dieline, sheet, hangTab = 0 }) {
   if (!dieline?.net || !sheet?.w || !sheet?.h) return null;
-  const useRect = !dieline.polygon || engine === "rect";
-  const ck = `${useRect ? "rect" : engine}|${dieline.key}|${sheet.w}x${sheet.h}|${hangTab}`;
+  // 폴리곤이 없는 구조(G형·직접입력)는 직사각 경로. 엔진 선택 스위치는 두지 않는다 —
+  // 넘기는 호출자가 없는 파라미터는 캐시 키에서 빠져 조용히 틀린 배치를 돌려준다.
+  const useRect = !dieline.polygon;
+  const ck = `${useRect ? "rect" : "nest"}|${dieline.key}|${sheet.w}x${sheet.h}|${hangTab}`;
   const hit = CACHE.get(ck);
   if (hit) return hit;
 
@@ -143,8 +135,10 @@ export function solveImposition({ dieline, sheet, hangTab = 0, engine = LAYOUT_E
     ? solveRect(net.netW, net.netH, printW, printH, HT, allowRotate)
     : solveNest(dieline.pieces, printW, printH, HT, extra);
 
+  // 발자국·수율의 분모는 **판형 면적**이다(인쇄가능영역이 아니다).
+  // MAX_FOOT_PCT=92 가 이 분모로 교정된 값이라 여기가 갈리면 상한이 조용히 세진다.
   const sheetArea = pa.long * pa.short;
-  const footOf = r => (r.bbox.w * r.bbox.h) / (printW * printH) * 100;
+  const footOf = r => (r.bbox.w * r.bbox.h) / sheetArea * 100;
 
   const pool = run({});
   const first = pool[0] || null;
@@ -170,8 +164,7 @@ export function solveImposition({ dieline, sheet, hangTab = 0, engine = LAYOUT_E
       sheetW: pa.long, sheetH: pa.short, pressCapped: pa.capped,
       utilPct: 0, footPct: 0, utilCapped: false, overlapInfo: null,
       alt: { up: 0, rotated: false, interlocked: false },
-      printW, printH, biteLong: pa.biteLong, biteShort: pa.biteShort,
-      dx: 0, dy: 0, sx: 0, engine: useRect ? "rect" : engine,
+      printW, printH, dx: 0, dy: 0, sx: 0,
     };
     return cache(ck, empty);
   }
@@ -181,9 +174,7 @@ export function solveImposition({ dieline, sheet, hangTab = 0, engine = LAYOUT_E
   const ref = useRect ? null : solveNest(dieline.pieces, printW, printH, HT, { noInterlock: true })[0];
 
   const boxes = chosen.cells.map((c, i) => ({
-    x: pa.biteLong  + c.x,
-    y: pa.biteShort + c.y,
-    w: chosen.netW, h: chosen.netH,
+    x: c.x, y: c.y, w: chosen.netW, h: chosen.netH,
     flipped: !!c.flip, rotated: chosen.rotated, idx: i,
   }));
 
@@ -202,6 +193,8 @@ export function solveImposition({ dieline, sheet, hangTab = 0, engine = LAYOUT_E
     boxW: chosen.netW, boxH: chosen.netH,
     boxes, cells: chosen.cells, candidates,
     sheetW: pa.long, sheetH: pa.short, pressCapped: pa.capped,
+    // 수율(utilPct)의 정본은 여기 하나다. 종전에는 quote.mjs 3곳이 각자 계산했고
+    // 분모가 두 종류라 같은 화면에서 53%/44% 로 갈렸다.
     utilPct: Math.round(usedArea / sheetArea * 100),
     footPct: Math.round(footOf(chosen)),
     utilCapped,
@@ -210,9 +203,7 @@ export function solveImposition({ dieline, sheet, hangTab = 0, engine = LAYOUT_E
         (chosen.sx ? ` · 엇갈림 ${chosen.sx.toFixed(0)}mm` : "")
       : null,
     alt: candidates[1] || { up: 0, rotated: false, interlocked: false },
-    printW, printH, biteLong: pa.biteLong, biteShort: pa.biteShort,
-    dx: chosen.dx, dy: chosen.dy, sx: chosen.sx,
-    engine: useRect ? "rect" : engine,
+    printW, printH, dx: chosen.dx, dy: chosen.dy, sx: chosen.sx,
   };
   return cache(ck, layout);
 }

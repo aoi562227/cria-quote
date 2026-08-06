@@ -9,14 +9,14 @@
  *     ✓ 180×120×85 / 300×200×70 / 300×100×70 / 270×370×70
  *   ⚠ D/H<0.2 극단 평판 → 공식 미확정 (예: 323×234×36은 실제 571×507)
  *
- * gtypeNoRotate 는 **정적 플래그가 아니다** — netSize() 가 D/H 로 분기해 반환한다.
+ * noRotate 는 **정적 플래그가 아니다** — netSize() 가 D/H 로 분기해 반환한다.
  * 교차형 전개도라 회전 배치가 물리적으로 불가능한 쪽만 true.
  *
  * polygon:false — 이 구조의 칼선 폴리곤은 확정돼 있지 않다. 배치는 netW×netH
  * 직사각 1조각으로 한다. 조용히 다른 구조의 폴리곤을 갖다 쓰면 G형이 망가진다.
  */
 export default {
-  id: "gtype", label: "G형 (톰슨조립)", polygon: false, thomsonDefault: "g_std",
+  id: "gtype", label: "G형 (톰슨조립)", tag: "G형", polygon: false, thomsonDefault: "g_std",
 
   netSize(W, D, H, { hangTab = 0 } = {}) {
     const ratio = D / H;
@@ -27,22 +27,13 @@ export default {
     } else if (ratio < 0.2) {
       warning = `D/H=${ratio.toFixed(2)} 극단 평판 — 공식 오차 가능`;
     }
-    if (useExtended) {
-      return {
-        netW: W + 4 * D + 14,
-        netH: 2 * H + 3 * D + 1,
-        topLid: 0, botFloor: 0, glueTab: 14,
-        isGtype: true, gtypeNoRotate: false, hangTab,
-        gtypeRatio: ratio, gtypeWarning: warning,
-      };
-    }
-    return {
-      netW: W + 2 * D + 14,
-      netH: H + 2 * D,
-      topLid: 0, botFloor: 0, glueTab: 14,
-      isGtype: true, gtypeNoRotate: true, hangTab,
-      gtypeRatio: ratio, gtypeWarning: warning,
-    };
+    // note = 「뚜껑/바닥/접착날개」 대신 화면에 찍을 한 줄. 구조가 소유하므로
+    // BoxSpec 에 isGtype 같은 구조별 if 가 생기지 않는다.
+    const common = { topLid: 0, botFloor: 0, glueTab: 14, hangTab, warning,
+                     note: ["G형 (톰슨조립)", "접착날개 14mm"] };
+    return useExtended
+      ? { ...common, netW: W + 4 * D + 14, netH: 2 * H + 3 * D + 1, noRotate: false }
+      : { ...common, netW: W + 2 * D + 14, netH: H + 2 * D,         noRotate: true  };
   },
 
   flaps: () => null,

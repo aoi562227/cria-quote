@@ -6,10 +6,13 @@
 //  견적서가 알려주는 「단위(재단크기)」를 그대로 판으로 주고 up 이 맞는지 본다.
 //  판형 선택 변수를 제거한 순수 배치 정확도 측정.
 //
-//  ★ 이 파일이 물림 방침의 유일한 A/B 측정이다.
-//    solveImposition 은 언제나 물림을 빼므로(printableArea) 「물림 0」을 표현할 수
-//    없다 → 그래서 여기서만 nest.solveLayout 을 직접 부른다.
-//    물림 상수는 sheets.mjs 에서 가져와 값을 두 벌로 두지 않는다.
+//  ★ 이 파일이 물림 방침의 A/B 측정이자, 그 방침을 지키는 회귀 게이트다.
+//    §A(물림 0) 가 현행 printableArea 와 같은 조건이고, §C(물림 20/30) 는
+//    **폐기된 방침**의 점수를 계속 보여준다. 두 숫자가 뒤바뀌면 누군가
+//    물림을 다시 빼기 시작한 것이다.
+//    물림 상수는 sheets.mjs 에서 가져와 값을 두 벌로 두지 않는다
+//    (그래서 이 파일이 BITE_LONG/BITE_SHORT 의 유일한 소비자다 —
+//     상수의 실측 근거를 살려두는 대가로 여기서 계속 계량한다).
 // ══════════════════════════════════════════════════════════════════
 import { solveLayout } from "../src/nest.mjs";
 import { dielinePieces } from "../src/domain/dieline/index.mjs";
@@ -33,9 +36,9 @@ const C=[
 // 맞물림 허용 여부를 바꿔가며 — 실무에서 맞물림이 기본인지 예외인지 판정
 const SCORES = {};
 for (const [key,label,gL,gS,noIL] of [
-  ["A","A. 물림없음 · 맞물림 허용",0,0,false],
+  ["A","A. 물림없음 · 맞물림 허용  ← 현행 printableArea 와 동일 조건",0,0,false],
   ["B","B. 물림없음 · 맞물림 금지(칼선공유만)",0,0,true],
-  ["C",`C. 물림적용(긴변 ${BITE_LONG} / 짧은변 ${BITE_SHORT}) · 맞물림 허용`,BITE_LONG,BITE_SHORT,false],
+  ["C",`C. 물림적용(긴변 ${BITE_LONG} / 짧은변 ${BITE_SHORT}) · 맞물림 허용  ← 폐기된 방침`,BITE_LONG,BITE_SHORT,false],
 ]) {
   console.log(`\n═══ ${label} ═══════════════════════════════════════════`);
   console.log("케이스".padEnd(24)+"단위".padEnd(12)+"전개도".padEnd(15)+"견적 NFP  판정   배치");
@@ -58,15 +61,20 @@ for (const [key,label,gL,gS,noIL] of [
 
 console.log(`
 ═══ 물림 방침 A/B 결론 ═══════════════════════════════════════════════════
-  물림 0      → ${SCORES.A}/${C.length}
-  물림 적용   → ${SCORES.C}/${C.length}   (긴변 −${BITE_LONG} / 짧은변 −${BITE_SHORT})
+  물림 0      → ${SCORES.A}/${C.length}   ← 채택 (imposition.printableArea 현행)
+  물림 적용   → ${SCORES.C}/${C.length}   (긴변 −${BITE_LONG} / 짧은변 −${BITE_SHORT}) — 폐기
 
 ※ 견적서 「단위」열(760×480, 980×720 …)은 원지 규격이 아니라 **이미 재단된 크기**다.
   그 크기에서 견적서의 up 이 실제로 나왔으므로, 여기서 물림을 또 빼면 이중 차감이다.
-  imposition.printableArea 는 지금 표준 판형·주문생산 구분 없이 무조건 뺀다 —
-  그 단독 변경(주문생산만 물림 0)의 근거가 위 두 숫자다.
+  imposition.printableArea 는 이제 물림을 빼지 않는다 — 그 근거가 위 두 숫자다.
+  앱 실경로(verify-net · scorecard-nest)도 같은 방향으로 1/10 → 7/10 이 됐다.
   ⚠ "물림은 물리적으로 항상 필요하다" 는 이유로 뒤집지 마라. 물리적으로는 맞지만
-    「단위」 칸의 숫자가 이미 물림이 반영된 재단 크기다.
+    「단위」 칸의 숫자가 이미 물림이 반영된 재단 크기다. 되돌리려면 BASE_SHEETS 를
+    원지 규격으로 재정의하고 견적서 78건을 다시 역산하는 것이 먼저다.
 
 ※ B(맞물림 금지)와 A 의 차이는 "맞물림이 up 을 실제로 늘리는가" 다.
   맞물림은 예외적 배치이고, 늘어나는 up 이 많지 않다는 것이 실측 결론이다.`);
+if (SCORES.A <= SCORES.C) {
+  console.log(`\n✗ 회귀: 물림 적용(§C)이 물림 0(§A)을 앞질렀다 — 방침이 뒤집혔는지 확인하라.`);
+  process.exitCode = 1;
+}

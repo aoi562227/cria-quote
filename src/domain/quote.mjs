@@ -23,7 +23,7 @@ import { calcR, calcProcessR, estimateLoss, lossOptionsOf } from "./reams.mjs";
 import { getPaperPriceInfo, getPaperPrice } from "./paper-repo.mjs";
 import { solveImposition } from "./imposition.mjs";
 import { findBestSheet } from "./sheet-select.mjs";
-import { collectLines, collectDevLines } from "./process/index.mjs";
+import { collectLines, collectDevLines, collectFlags } from "./process/index.mjs";
 
 /**
  * @typedef {Object} PrintSide  {color:boolean, spot:number, black:boolean, uv:boolean}
@@ -62,15 +62,15 @@ function decideSheet({ dieline, qty, paperId, sheetId, customSheet, manualPrice,
   const hangTab = dieline.net.hangTab || 0;
   const fixedBase = () => findSheetBase(sheetId) || BASE_SHEETS[3];
 
+  // 수율(utilPct)은 여기서 계산하지 않는다 — 정본은 layout.utilPct 하나다.
+  // 종전에는 이 두 분기와 compareSheets 가 각자 계산했고 분모가 두 종류(인쇄기
+  // 클램프 면적 / 원지 생면적)라 같은 화면에서 53% 와 44% 가 동시에 보였다.
   if (ov.up > 0) {
     const base = fixedBase();
     const sh = resolveSheet(base, customSheet);
-    const esh = effectiveSheet(sh.w, sh.h);
     const R = ov.reams != null ? ov.reams : calcR(ov.up, qty, sh, lossOpts);
     return { ...sh, id: base.id, up: ov.up, R, manualUp: true,
              sheetsPerR: sheetsPerR(sh), tier: sheetTier(sh),
-             utilPct: Math.round(ov.up * dieline.net.netW * dieline.net.netH /
-                                 (esh.long * esh.short) * 100),
              price: getPaperPrice(paperId, base.id, manualPrice, customSheet) };
   }
   if (ov.reams != null) {
@@ -79,8 +79,6 @@ function decideSheet({ dieline, qty, paperId, sheetId, customSheet, manualPrice,
     const up = solveImposition({ dieline, sheet: sh, hangTab })?.up || 0;
     return { ...sh, id: base.id, up, R: ov.reams,
              sheetsPerR: sheetsPerR(sh), tier: sheetTier(sh),
-             utilPct: sh.w && sh.h
-               ? Math.round(up * dieline.net.netW * dieline.net.netH / (sh.w * sh.h) * 100) : 0,
              price: getPaperPrice(paperId, base.id, manualPrice, customSheet) };
   }
   return findBestSheet({ dieline, qty, sheetIdHint: sheetId === "auto" ? "auto" : sheetId,
@@ -104,34 +102,54 @@ export function buildDieline(box) {
     key: `${structure}|${W}|${D}|${H}|${b.netW || 0}|${b.netH || 0}`,
     structure,
     polygon: !!dl.flaps,
-    noRotate: !!dl.net.gtypeNoRotate,
+    noRotate: !!dl.net.noRotate,
+  };
+}
+
+/**
+ * 입력 정규화 — buildContext 와 compareSheets 가 **공유**한다.
+ *
+ * 종전에는 compareSheets 가 이 7줄(normSide / lossOptionsOf 인자 / paperCfg·
+ * customSheet·manualPrice·hangTab)을 복제했다. 결과는 같았지만 여분 정책 인자가
+ * 하나 늘면 판형별 비교표만 조용히 옛 정책으로 남는 구조다.
+ * 리팩토링 전 App.jsx 에서 lossOptsOf/computeForQty 두 사본으로 똑같은 사고가
+ * 있었고 reams.mjs:89 주석이 그 이력을 적어놨다 — 같은 실수를 반복하지 않는다.
+ * @returns {{ov,dieline,front,back,beda,finish,lossOpts,paperCfg,customSheet,manualPrice,hangTab}|null}
+ */
+export function normalizeQuoteInput(input) {
+  const dieline = buildDieline(input.box);
+  if (!dieline) return null;
+  const ov = input.overrides || {};
+  const pin = input.print || {};
+  const front = normSide(pin.front), back = normSide(pin.back);
+  const beda = !!pin.beda;
+  const finish = input.finish || {};
+  const paperCfg = input.paper || {};
+  return {
+    ov, dieline, front, back, beda, finish, paperCfg,
+    lossOpts: lossOptionsOf({ front, back, beda }, { hasEmb: !!finish.emb }, ov.lossSheets),
+    customSheet: paperCfg.custom || null,
+    manualPrice: ov.paperPricePerR || "",
+    hangTab: dieline.net.hangTab || 0,
   };
 }
 
 /** @returns {Object|null} ctx (얕은 freeze). 판형까지 못 정하면 null */
 export function buildContext(input) {
-  const ov = input.overrides || {};
-  const dieline = buildDieline(input.box);
-  if (!dieline) return null;
+  const norm = normalizeQuoteInput(input);
+  if (!norm) return null;
+  const { ov, dieline, front, back, beda, finish,
+          paperCfg, lossOpts, customSheet, manualPrice } = norm;
   const netSize = dieline.net;
 
-  const pin = input.print || {};
-  const front = normSide(pin.front), back = normSide(pin.back);
-  const beda = !!pin.beda;
-  const finish = input.finish || {};
-  const lossOpts = lossOptionsOf({ front, back, beda },
-                                 { hasEmb: !!finish.emb }, ov.lossSheets);
-
-  const paperCfg = input.paper || {};
   const sheet = decideSheet({
     dieline, qty: input.qty || 0,
     paperId: paperCfg.paperId, sheetId: paperCfg.sheetId || "auto",
-    customSheet: paperCfg.custom || null,
-    manualPrice: ov.paperPricePerR || "", lossOpts, ov,
+    customSheet, manualPrice, lossOpts, ov,
   });
   if (!sheet) return { dieline, netSize, sheet: null };
 
-  const layout = solveImposition({ dieline, sheet, hangTab: netSize.hangTab || 0 });
+  const layout = solveImposition({ dieline, sheet, hangTab: norm.hangTab });
 
   // ─── 지대 R수 · 여분 ───────────────────────────────────────────
   const qty = input.qty || 0;
@@ -161,7 +179,7 @@ export function buildContext(input) {
                   amount: Math.round(R * paperInfo.price) },
     print: {
       front, back, beda,
-      spotMode: pin.spotMode || "weight",      // "weight"=도수환산(×3) / "rpr"=R당 고정
+      spotMode: input.print?.spotMode || "weight",  // "weight"=도수환산(×3) / "rpr"=R당 고정
       spotRpr: ov.spotRpr || (beda ? SPOT_RPR_BEDA : SPOT_RPR_PLAIN),
       printUnit: ov.printUnit ?? printUnitFor(tier),
       fColors, bColors, totalColors: fColors + bColors,
@@ -173,9 +191,14 @@ export function buildContext(input) {
       thomson:   thomsonById(finish.thomsonId),
       glue:      glueById(finish.glueId),
     },
-    finish: { foil: finish.foil || null, emb: finish.emb || null, puv: finish.puv || null },
+    // finish 는 **통과시킨다**. 화이트리스트로 재조립하면 새 공정이 자기 입력을
+    // 읽을 통로가 원천 차단된다 — 종전에는 {foil,emb,puv} 세 키만 남겨서
+    // finish.holo 같은 새 키가 ctx 에서 사라졌고(input.finish 에만 살아 있었다),
+    // 「공정 추가 = 파일 1개 + 배열 1줄」 이 사실이 아니게 되는 지점이었다.
+    // null 정규화만 얹는다 — 공정들이 `ctx.finish.foil &&` 로 읽기 때문.
+    finish: { ...finish, foil: finish.foil || null, emb: finish.emb || null,
+              puv: finish.puv || null },
     dev: input.dev || {},
-    flags: { irWarning: finish.coatFrontId === "ir" || finish.coatBackId === "ir" },
   };
   // 얕은 freeze — 공정이 공유 상태를 몰래 고치면 라인 순서에 따라 결과가 달라지는
   // 최악의 버그가 생기고 스냅샷으로도 안 잡힌다. 깊은 freeze 는 성능만 먹는다.
@@ -209,7 +232,10 @@ export function buildQuote(input) {
   return {
     netSize: ctx.netSize, dieline: ctx.dieline, sheet: ctx.sheet, layout: ctx.layout,
     reams: ctx.reams, paperPrice: ctx.paperPrice, print: ctx.print,
-    paper: ctx.paper, opts: ctx.opts, flags: ctx.flags,
+    paper: ctx.paper, opts: ctx.opts,
+    // 경고 플래그도 공정이 소유한다(coating 이 irWarning 을 낸다). quote 는 병합만 —
+    // 종전에는 quote 가 `finish.coatFrontId === "ir"` 을 직접 알아야 했다.
+    flags: collectFlags(ctx),
     lines, devLines, totals: summarize(ctx, lines, devLines),
     warnings: [],
   };
@@ -219,22 +245,12 @@ export function buildQuote(input) {
  *  판걸이는 수량과 무관하므로 imposition 캐시가 재계산을 흡수한다. */
 export const buildQuoteRange = (input, qtys) => qtys.map(q => buildQuote({ ...input, qty: q }));
 
-/** 판형별 비교표 → {rows, bestId} */
+/** 판형별 비교표 → {rows, bestId}. 입력 정규화는 buildContext 와 **같은 함수**를 쓴다 */
 export function compareSheets(input) {
-  const dieline = buildDieline(input.box);
+  const norm = normalizeQuoteInput(input);
   const qty = input.qty || 0;
-  if (!dieline || !qty) return { rows: [], bestId: null };
-
-  const ov = input.overrides || {};
-  const pin = input.print || {};
-  const front = normSide(pin.front), back = normSide(pin.back);
-  const finish = input.finish || {};
-  const lossOpts = lossOptionsOf({ front, back, beda: !!pin.beda },
-                                 { hasEmb: !!finish.emb }, ov.lossSheets);
-  const paperCfg = input.paper || {};
-  const customSheet = paperCfg.custom || null;
-  const manualPrice = ov.paperPricePerR || "";
-  const hangTab = dieline.net.hangTab || 0;
+  if (!norm || !qty) return { rows: [], bestId: null };
+  const { dieline, paperCfg, lossOpts, customSheet, manualPrice, hangTab } = norm;
 
   const best = findBestSheet({ dieline, qty, sheetIdHint: "auto",
                                paperId: paperCfg.paperId, manualPrice, lossOpts, customSheet });
@@ -248,7 +264,7 @@ export function compareSheets(input) {
     const price = getPaperPrice(paperCfg.paperId, base.id, manualPrice, customSheet);
     return {
       id: base.id, label: sh.label, sheet: sh, layout, up: layout.up,
-      utilPct: Math.round(layout.up * dieline.net.netW * dieline.net.netH / (sh.w * sh.h) * 100),
+      utilPct: layout.utilPct,       // 정본 하나 — 여기서 다시 계산하지 않는다
       R, price, cost: Math.round(R * price), sheetsPerR: sheetsPerR(sh),
     };
   }).filter(Boolean);

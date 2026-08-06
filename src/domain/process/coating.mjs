@@ -8,6 +8,9 @@ import { rprOf, lotOf } from "./overrides.mjs";
 export default {
   id: "coating",
   applies: ctx => ctx.opts.coatFront.id !== "none" || ctx.opts.coatBack.id !== "none",
+  // IR코팅은 접착면 처리 주의가 필요해 견적서에 경고를 띄운다. 그 사실을 아는 것은
+  // 코팅 공정이므로 여기서 낸다 — quote 가 코팅 id 를 알 필요가 없어진다.
+  flags: ctx => ({ irWarning: ctx.opts.coatFront.id === "ir" || ctx.opts.coatBack.id === "ir" }),
   lines: ctx => {
     const fc = ctx.opts.coatFront, bc = ctx.opts.coatBack;
     const { processR, isLot } = ctx.reams;

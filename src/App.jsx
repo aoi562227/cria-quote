@@ -32,7 +32,7 @@ export default function App() {
 
   const input = useMemo(()=>toQuoteInput(s), [s]);
   const qty   = input.qty;
-  const { W, D, H } = input.box;
+  const { H } = input.box;      // 전개도 그림이 몸판 높이만 따로 필요하다
 
   // 도메인 호출은 이 한 번뿐이다. 종전에는 netSize·lossOpts·sheetInfo·result 를
   // 4개 useMemo 로 나눠 계산하고 판걸이를 4곳에서 따로 다시 구했다.
@@ -69,7 +69,7 @@ export default function App() {
 
         <BoxSpec s={s} u={u} handleBoxType={handleBoxType} input={input}
           netSize={netSize} dieline={dieline} sheetInfo={sheetInfo} layout={layout}
-          result={result} W={W} D={D} H={H}/>
+          result={result} H={H}/>
 
         <PaperPanel s={s} u={u} sheetInfo={sheetInfo} autoPriceInfo={autoPriceInfo} result={result}/>
 

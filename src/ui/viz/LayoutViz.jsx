@@ -1,8 +1,11 @@
 // ══════════════════════════════════════════════════════════════════
-//  LayoutViz.jsx — 인쇄판 위 판걸이 배치 그림 (물림 띠 · 전개도 오버레이 · 범례).
+//  LayoutViz.jsx — 인쇄판 위 판걸이 배치 그림 (전개도 오버레이 · 범례).
 //
-//  좌표·회전·반전·물림 폭 전부 layout 이 실어 준 값만 쓴다. 여기서 배치를
+//  좌표·회전·반전 전부 layout 이 실어 준 값만 쓴다. 여기서 배치를
 //  다시 풀면 그림이 통과시킨 배치와 실제 걸리는 배치가 갈린다.
+//
+//  물림 띠는 그리지 않는다 — printableArea 가 물림을 빼지 않기 때문이다
+//  (판형 크기가 이미 재단 크기다. 근거는 imposition.printableArea 주석).
 // ══════════════════════════════════════════════════════════════════
 import { fmtMM } from "../format.mjs";
 import DielineShape from "./DielineShape.jsx";
@@ -24,12 +27,6 @@ export default function LayoutViz({ layout, dieline }) {
   const svgH  = drawH * scale + PAD_SVG * 2;
 
   const COLORS = ["#3b82f6","#10b981","#f59e0b","#8b5cf6","#06b6d4","#ec4899"];
-  // 가로축(drawW)은 긴변이라 물림 20, 세로축(drawH)은 짧은변이라 물림 30.
-  // 종전에는 둘 다 20 으로 그려서 범례와 실제 감산이 어긋났다. 이제 두 값 모두
-  // layout 이 실어 준다 — 물림 방침이 바뀌면 그림도 자동으로 따라간다.
-  const biteX = layout.biteLong  * scale;
-  const biteY = layout.biteShort * scale;
-
   const utilPct = layout.utilPct;
   const candSummary = layout.candidates?.map(c =>
     `${c.rotated ? "회전" : "노말"}${c.interlocked ? "·인터로킹" : ""} ${c.up}up`
@@ -72,32 +69,13 @@ export default function LayoutViz({ layout, dieline }) {
           <pattern id="lossHatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
             <line x1="0" y1="0" x2="0" y2="6" stroke="#33223355" strokeWidth="3"/>
           </pattern>
-          <pattern id="biteHatch" width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
-            <line x1="0" y1="0" x2="0" y2="5" stroke="#ff222244" strokeWidth="2.5"/>
-          </pattern>
         </defs>
 
-        {/* 원지 배경 */}
+        {/* 재단된 판 배경 (= 인쇄기에 걸리는 크기. 전지급은 990×720 으로 클램프됨) */}
         <rect x={PAD_SVG} y={PAD_SVG} width={drawW*scale} height={drawH*scale}
           fill="#0d2035" stroke="#2a4060" strokeWidth={1.5} rx={2}/>
         <rect x={PAD_SVG} y={PAD_SVG} width={drawW*scale} height={drawH*scale}
           fill="url(#lossHatch)" rx={2}/>
-
-        {/* 물림 — 상단 */}
-        <rect x={PAD_SVG} y={PAD_SVG} width={drawW*scale} height={biteY} fill="#ff000018"/>
-        <rect x={PAD_SVG} y={PAD_SVG} width={drawW*scale} height={biteY} fill="url(#biteHatch)"/>
-        <line x1={PAD_SVG} y1={PAD_SVG+biteY} x2={PAD_SVG+drawW*scale} y2={PAD_SVG+biteY}
-          stroke="#ff4444" strokeWidth={1} strokeDasharray="4 3" opacity={.8}/>
-        <text x={PAD_SVG+drawW*scale/2} y={PAD_SVG+biteY/2}
-          textAnchor="middle" dominantBaseline="middle" fontSize={8} fill="#ff6666" fontWeight="700">
-          ← 물림 {layout.biteShort}mm (짧은변) →
-        </text>
-
-        {/* 물림 — 좌측 */}
-        <rect x={PAD_SVG} y={PAD_SVG+biteY} width={biteX} height={drawH*scale-biteY} fill="#ff000012"/>
-        <rect x={PAD_SVG} y={PAD_SVG+biteY} width={biteX} height={drawH*scale-biteY} fill="url(#biteHatch)"/>
-        <line x1={PAD_SVG+biteX} y1={PAD_SVG} x2={PAD_SVG+biteX} y2={PAD_SVG+drawH*scale}
-          stroke="#ff4444" strokeWidth={1} strokeDasharray="4 3" opacity={.8}/>
 
         {/* 배치된 전개도 */}
         {layout.boxes.map((box, i) => {
@@ -178,7 +156,6 @@ export default function LayoutViz({ layout, dieline }) {
       {/* 범례 */}
       <div style={{display:"flex",gap:12,marginTop:8,flexWrap:"wrap",fontSize:9.5,color:"#8899bb"}}>
         {[
-          {bg:"#ff000033",bd:"1px dashed #ff4444",txt:`물림 ${layout.biteShort}mm`},
           {bg:"none",bd:"1px dashed #3b82f6aa",txt:"전개도 외곽(바운딩)"},
           {bg:"#3b82f628",bd:"1px solid #3b82f6",txt:"반전 = 맞물림"},
           {bg:"#1e40afcc",bd:"none",txt:"■ 전·후면"},

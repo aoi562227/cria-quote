@@ -14,16 +14,20 @@
  * polygon:false — 칼선 폴리곤 미확정. 배치는 netW×netH 직사각 1조각.
  */
 export default {
-  id: "gtype_tray", label: "G형 트레이 (뚜껑일체) ✓칼선실측", polygon: false,
+  // verified 는 라벨 문자열이 아니라 필드다 — 표시(✓)는 UI 가 붙인다.
+  // 종전 label 에 「✓칼선실측」을 넣었더니 드롭다운 문자열이 곧 근거 표기가 되어
+  // 태그 추출(label 첫 낱말)까지 얽혔다.
+  id: "gtype_tray", label: "G형 트레이 (뚜껑일체)", tag: "G형트레이",
+  verified: "칼선 4건", polygon: false,
 
   netSize(W, D, H, { hangTab = 0 } = {}) {
     return {
       netW: W + 4 * H + 44.5,
       netH: 2 * D + 3 * H + 19.5,
       topLid: 0, botFloor: 0, glueTab: 0,
-      isGtype: true, gtypeNoRotate: false, hangTab,
-      gtypeRatio: D / H,
-      gtypeWarning: (H > D / 2)
+      noRotate: false, hangTab,
+      note: ["G형 트레이 (뚜껑일체)", "칼선 4건 회귀"],
+      warning: (H > D / 2)
         ? `높이(${H}) > 깊이/2(${D / 2}) — 산출식 엑셀의 SY01_A 입력범위(높이 ≤ 세로/2) 밖`
         : null,
     };

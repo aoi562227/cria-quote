@@ -3,14 +3,15 @@
 //
 //  치수는 domain 이 준 net.topLid / net.botFloor 를 그대로 찍는다. 여기서
 //  날개 깊이를 다시 재면 그림과 청구가 갈린다 — 실제로 갈렸던 이력이 있다.
+//  패널 경계·라벨도 dieline.panels 를 그대로 쓴다 — 종전에는 xEdges 와
+//  ['측면1','전면',…] 를 이 파일이 따로 가져 슬리브 위상을 두 번 가정했다.
 // ══════════════════════════════════════════════════════════════════
-import { xEdges } from "../../domain/dieline/geometry.mjs";
 import DielineShape from "./DielineShape.jsx";
 
 // ══════════════════════════════════════════════════════════════════
 // 전개도 미리보기 (펼친 형태)
 // ══════════════════════════════════════════════════════════════════
-export default function NetDiagram({ dieline, W, D, H }) {
+export default function NetDiagram({ dieline, H }) {
   if (!dieline?.polygon) return null;
   const net = dieline.net;
   const SVG_W = 380, SVG_H = 260, PAD = 16;
@@ -24,16 +25,16 @@ export default function NetDiagram({ dieline, W, D, H }) {
   const py = v => oy + v * scale;
   const sc = v => v * scale;
 
-  const xs = xEdges(W, D, net.netW);
-  const panelLabels = ['측면1', '전면', '측면2', '후면', '접착'];
+  const panels = dieline.panels || [];
   const yBody = net.topLid, yBodyEnd = net.topLid + H;
   const topArr = dieline.flaps?.top || [], botArr = dieline.flaps?.bot || [];
 
   // 치수 숫자는 **가장 깊은 날개** 위에 얹는다 (그 값이 topLid/botFloor 정본이다)
   const dimAt = (arr, val, y) => {
     const i = arr.indexOf(Math.max(...arr));
-    if (i < 0 || sc(val) < 12) return null;
-    return <text x={px((xs[i] + xs[i + 1]) / 2)} y={py(y)} textAnchor='middle'
+    const p = panels.find(q => q.i === i);
+    if (!p || sc(val) < 12) return null;
+    return <text x={px((p.x0 + p.x1) / 2)} y={py(y)} textAnchor='middle'
       dominantBaseline='central' fontSize={9} fill='#6699bb'>{Math.round(val)}</text>;
   };
 
@@ -46,11 +47,11 @@ export default function NetDiagram({ dieline, W, D, H }) {
         <g transform={`translate(${ox},${oy}) scale(${scale})`}>
           <DielineShape dl={dieline} color="rgba(120,220,255,0.9)"/>
         </g>
-        {/* 패널 라벨 */}
-        {panelLabels.map((lbl, i) => sc(xs[i + 1] - xs[i]) > 18 && (
-          <text key={'l' + i} x={px((xs[i] + xs[i + 1]) / 2)} y={py(yBody + H / 2)}
+        {/* 패널 라벨 — 경계·이름 모두 domain 이 준 panels */}
+        {panels.map(p => sc(p.x1 - p.x0) > 18 && (
+          <text key={'l' + p.i} x={px((p.x0 + p.x1) / 2)} y={py(yBody + H / 2)}
             textAnchor='middle' dominantBaseline='central'
-            fontSize={Math.min(10, sc(xs[i + 1] - xs[i]) * 0.18)} fill='#7ab8f5'>{lbl}</text>
+            fontSize={Math.min(10, sc(p.x1 - p.x0) * 0.18)} fill='#7ab8f5'>{p.label}</text>
         ))}
         {net.topLid > 0 && dimAt(topArr, net.topLid, yBody - net.topLid / 2)}
         {net.botFloor > 0 && dimAt(botArr, net.botFloor, yBodyEnd + net.botFloor / 2)}
