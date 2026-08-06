@@ -5,14 +5,17 @@
 //  라인이 1줄로 합쳐지는지 2줄로 갈리는지는 domain/process/coating 이 정한다.
 // ══════════════════════════════════════════════════════════════════
 import { COAT_OPTS } from "../../domain/data/process-prices.mjs";
+
+// hidden 항목(부분코팅)은 단가 데이터용이라 드롭다운에 띄우지 않는다
+const COAT_PICK = COAT_OPTS.filter(o => !o.hidden);
 import { Section, Field, Row2, Input, Select, Toggle } from "../primitives.jsx";
 
 export default function CoatingPanel({ s, u }) {
   return (
     <Section title="코팅 / 후가공">
       <Row2>
-        <Field label="전면 코팅"><Select value={s.fcId} onChange={v=>u("fcId",v)} options={COAT_OPTS}/></Field>
-        <Field label="후면 코팅"><Select value={s.bcId} onChange={v=>u("bcId",v)} options={COAT_OPTS}/></Field>
+        <Field label="전면 코팅"><Select value={s.fcId} onChange={v=>u("fcId",v)} options={COAT_PICK}/></Field>
+        <Field label="후면 코팅"><Select value={s.bcId} onChange={v=>u("bcId",v)} options={COAT_PICK}/></Field>
       </Row2>
       <Toggle checked={s.puv} onChange={v=>u("puv",v)} label="부분코팅 (95,000원/R)"/>
       {s.puv && (
