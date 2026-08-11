@@ -9,7 +9,7 @@
 //  (sizeMode="net" → dieline/direct.mjs)이 이미 있으므로, 추출한 실측 bbox 를 그
 //  입력(nW/nH)에 넣는 것이 전부다. 도메인은 PDF 를 모른다.
 // ══════════════════════════════════════════════════════════════════
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { PRESS_MAX_LONG, PRESS_MAX_SHORT, MAX_FOOT_PCT, findSheetBase, resolveSheet } from "../../domain/data/sheets.mjs";
 import { readDielineFile } from "../../domain/pdf-dieline.mjs";
 import { Section, Field, Row2, Row3, Input, Select, Toggle } from "../primitives.jsx";
@@ -22,6 +22,9 @@ import NetDiagram from "../viz/NetDiagram.jsx";
 import LayoutViz from "../viz/LayoutViz.jsx";
 import SheetCompare from "../viz/SheetCompare.jsx";
 import SheetCanvas from "../viz/SheetCanvas.jsx";
+// 손배치의 기하 엔진. UI 는 여기서 **부품 한 벌만 만들고** 나머지(스냅·겹침·감사)는
+// SheetCanvas 가 좌표와 함께 부른다. 새 기하를 짜지 않는다.
+import { makeDragPart, pdfLocalPolylines, serializePlacement, parsePlacement } from "../viz/nest-drag.mjs";
 
 export default function BoxSpec({
   s, u, handleBoxType, input, netSize, dieline, sheetInfo, layout, result, H,
@@ -30,6 +33,11 @@ export default function BoxSpec({
   const [busy, setBusy] = useState(false);
   const [drag, setDrag] = useState(false);
   const fileRef = useRef(null);
+  // 손배치 되돌리기 스택 + 배치파일 불러오기 안내문. 둘 다 순간 UI 다
+  // (스택은 「값」이 아니라 조작 이력이고, 세션을 넘겨 보존할 이유가 없다).
+  const [undo, setUndo] = useState([]);
+  const [plcMsg, setPlcMsg] = useState("");
+  const plcRef = useRef(null);
   // 페이지를 바꿔 다시 읽기 위한 File 손잡이. **값이 아니라 원본 핸들**이라 s 에 넣지 않는다
   // (브라우저가 디스크 핸들만 들고 있어 메모리 비용도 거의 없다).
   const keptFile = useRef(null);
@@ -87,6 +95,120 @@ export default function BoxSpec({
   const pdfOverlay = (pdfPick && netSize &&
     Math.abs(netSize.netW - pdfPick.bbox.w) < 0.05 &&
     Math.abs(netSize.netH - pdfPick.bbox.h) < 0.05) ? pdfPick : null;
+
+  // ══ 손배치(3단계) 배선 ═══════════════════════════════════════════
+  //  엔진은 viz/nest-drag.mjs 가, 조작·그림은 SheetCanvas 가 갖는다.
+  //  여기가 갖는 것은 **상태와 견적 되먹임**뿐이다: s.placement / s.handMode /
+  //  되돌리기 스택 / mUp·mUpV / 배치파일 입출력.
+  const handOn = !!s.handMode;
+
+  // 도형 소스는 둘이다. **SheetCanvas 가 그리는 것과 같은 도형**이어야 한다 —
+  // 그림과 충돌 도형이 갈리면 「닿아 보이는데 안 놓이는」 자리가 생기고 눈으로 못 잡는다.
+  //   · PDF 칼선(polygons) 우선 — 폴리라인 묶음이라 봉합·볼록분해가 필요하다
+  //   · 없으면 구조 전개도(dieline.pieces) — 이미 볼록이라 그대로 쓴다("exact")
+  // 두 소스는 실무에서 배타적이다: PDF 를 넣으면 applyPick 이 sizeMode="net" 으로
+  // 바꾸고 그 경로의 구조는 direct(polygon:false) 라 SheetCanvas 의 usePoly 가 false 다.
+  const handSrc = pdfOverlay ? "pdf" : (dieline?.pieces?.length ? "dieline" : null);
+  const handPart = useMemo(() => {
+    if (!handOn || !handSrc) return null;
+    if (handSrc === "pdf")
+      return makeDragPart({ polylines: pdfLocalPolylines(pdfOverlay),
+                            w: pdfOverlay.bbox.w, h: pdfOverlay.bbox.h });
+    return makeDragPart({ pieces: dieline.pieces,
+                          w: dieline.net.netW, h: dieline.net.netH });
+    // ⚠ 참조를 키로 쓰지 마라. buildQuote 는 상태가 바뀔 때마다 dieline 을 새로 만들므로
+    //   dieline.pieces 를 의존성에 넣으면 **글자 한 자 칠 때마다** NFP 사전계산(조각²)이
+    //   다시 돈다. dieline.key 가 「폴리곤을 결정하는 입력 전부」라 그것으로 충분하다
+    //   (quote.mjs buildDieline 의 key 주석). PDF 쪽 polygons 는 s.pdfDl 안의 안정된
+    //   배열이라 참조를 그대로 써도 된다.
+  }, [handOn, handSrc, dieline?.key, pdfOverlay?.polygons,
+      pdfOverlay?.bbox?.w, pdfOverlay?.bbox?.h, pdfOverlay?.bbox?.x0, pdfOverlay?.bbox?.y0]);
+
+  /**
+   * 손배치 확정 — 되돌리기 스냅샷을 쌓고 개수를 견적에 흘린다.
+   * ★ 새 도메인 경로를 만들지 않는다: up 은 **기존 직접입력 통로**(mUp/mUpV →
+   *   toQuoteInput.overrides.up → quote.mjs decideSheet ① 분기)로만 간다.
+   *   그 분기가 R = calcR(up, …) 을 다시 재므로 지대R·금액이 자동으로 따라온다.
+   */
+  const commitPlacement = (next, { snapshot = true } = {}) => {
+    if (snapshot) setUndo(st => [...st.slice(-49), s.placement ?? []]);
+    u("placement", next);
+    u("mUp", true);
+    // 0개면 toQuoteInput 이 `mUp && up>0` 에서 걸려 **자동 up 으로 되돌아간다.**
+    // 조용히 0원을 만들지 않는 게 낫고, 캔버스가 그 사실을 글로 알린다.
+    u("mUpV", String(next.length));
+  };
+
+  /** Ctrl+Z. 되돌릴 것이 없으면 false — 캔버스가 그 사실을 글로 알린다. */
+  const undoPlacement = () => {
+    if (!undo.length) return false;
+    const back = undo[undo.length - 1];
+    setUndo(st => st.slice(0, -1));
+    commitPlacement(back, { snapshot: false });
+    return true;
+  };
+
+  const enterHand = () => {
+    // 씨앗은 자동 배치다 (ARCHITECTURE §10-2). layout.up === 0 이면 앉힐 발판이 없으므로
+    // 원점에 1개를 둔다 — 캔버스가 판 밖으로 걸쳐 그려서 「안 들어간다」를 보여준다.
+    const seed = (layout?.up > 0 ? layout.boxes : []).map(b => ({
+      x: b.x, y: b.y, flipped: !!b.flipped, rotated: !!b.rotated }));
+    const items = s.placement?.length ? s.placement
+                : (seed.length ? seed : [{ x: 0, y: 0, flipped: false, rotated: false }]);
+    setUndo([]); setPlcMsg("");
+    // u() 는 함수형 setState 라 순서가 안전하다. handPrev 는 **이 렌더의 s**(= 켜기 전 값)를
+    // 담으므로 뒤이은 u() 들이 덮어도 원본이 보존된다.
+    u("handPrev", { mUp: s.mUp, mUpV: s.mUpV, sheetId: s.sheetId });
+    // 판을 못 박는다 — state.mjs handPrev 주석의 4×64 사고를 막는 자리다.
+    if (s.sheetId === "auto") u("sheetId", sheetInfo?.id || canvasSheet?.id || "auto");
+    u("placement", items);
+    u("mUp", true); u("mUpV", String(items.length));
+    u("showSheet", true);          // 캔버스가 닫혀 있으면 켠 표시가 아무 데도 안 보인다
+    u("handMode", true);
+  };
+
+  const exitHand = () => {
+    const pv = s.handPrev;
+    u("handMode", false);
+    // 자동 up 으로 되돌아가야 한다 — 켜기 전 값 그대로. 판형도 같이 되돌린다.
+    if (pv) { u("mUp", pv.mUp); u("mUpV", pv.mUpV); u("sheetId", pv.sheetId); }
+    else u("mUp", false);
+    u("handPrev", null);
+    setPlcMsg("");
+    // placement 는 지우지 않는다 — 다시 켜면 이어서 쓴다. 꺼진 동안은 아무 데도 안 흐른다.
+  };
+
+  /** 배치 저장 — 목형이 정해진 건을 다른 견적에서 다시 쓰는 통로다. */
+  const savePlacement = () => {
+    const txt = serializePlacement(s.placement || [], {
+      sheet: canvasSheet ? { id: canvasSheet.id, label: canvasSheet.label,
+                             w: canvasSheet.w, h: canvasSheet.h } : null,
+      part: handPart ? { w: handPart.w, h: handPart.h, mode: handPart.mode, source: handSrc } : null,
+    });
+    const url = URL.createObjectURL(new Blob([txt], { type: "application/json" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `배치_${(s.product || "배치").replace(/[\\/:*?"<>|]/g, "_")}_${(s.placement||[]).length}up.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setPlcMsg(`저장했다 — ${(s.placement || []).length}개`);
+  };
+
+  /** 배치 불러오기. **막지 않고 알린다** — 다른 판·다른 도형에 붙이는 것이 목형 재사용의
+   *  실무 목적이기도 하다. 대신 다르면 그 사실을 반드시 띄운다(겹침은 캔버스가 빨갛게 잡는다). */
+  const loadPlacement = async file => {
+    if (!file) return;
+    const r = parsePlacement(await file.text());
+    if (r.error) { setPlcMsg(`✕ 배치 파일을 못 읽었다 — ${r.error}`); return; }
+    const warn = [];
+    if (r.sheet && canvasSheet && (r.sheet.w !== canvasSheet.w || r.sheet.h !== canvasSheet.h))
+      warn.push(`판이 다르다 (저장 ${r.sheet.w}×${r.sheet.h} → 지금 ${canvasSheet.w}×${canvasSheet.h})`);
+    if (r.part && handPart && (Math.abs(r.part.w - handPart.w) > 0.05 || Math.abs(r.part.h - handPart.h) > 0.05))
+      warn.push(`도형 크기가 다르다 (저장 ${fmtMM(r.part.w)}×${fmtMM(r.part.h)} → 지금 ${fmtMM(handPart.w)}×${fmtMM(handPart.h)})`);
+    setPlcMsg(warn.length ? `⚠ ${r.items.length}개 불러왔다 — ${warn.join(" · ")}`
+                          : `불러왔다 — ${r.items.length}개`);
+    commitPlacement(r.items);
+  };
 
   return (
     <Section title="박스 규격 및 구조">
@@ -345,11 +467,62 @@ export default function BoxSpec({
       {canvasSheet && (
         <div style={{marginTop:8}}>
           <Toggle checked={s.showSheet} onChange={v=>u("showSheet",v)} label="판형 캔버스 (판·물림·자)"/>
+
+          {/* ── 손배치 모드 ─────────────────────────────────────────────
+              켜면 앉힌 개수가 그대로 up 이 되고 지대R·금액이 따라 움직인다.
+              끄면 자동 판걸이로 되돌아간다(handPrev 복원). */}
+          <div style={{marginTop:4}}>
+            <Toggle checked={handOn} onChange={v=>v ? enterHand() : exitHand()}
+              label="손배치 (마우스 드래그 · NFP 스냅)"/>
+          </div>
+
+          {handOn && (
+            <div style={{background:"#0a1020",border:"1px solid #24344e",borderRadius:4,
+                         padding:"6px 8px",marginTop:5,fontSize:9,color:"#8899bb",lineHeight:1.7}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:6}}>
+                <span>앉힌 개수 <strong style={{color:"#ffcc44"}}>{(s.placement||[]).length} up</strong>
+                  <span style={{color:"#556680"}}> → 견적 판걸이</span></span>
+                <span style={{display:"flex",gap:3}}>
+                  <button type="button" onClick={savePlacement}
+                    style={{background:"#16283f",border:"1px solid #2a3a5a",borderRadius:3,
+                            color:"#a8c8e8",fontSize:8.5,padding:"2px 6px",cursor:"pointer"}}>배치 저장</button>
+                  <button type="button" onClick={()=>plcRef.current?.click()}
+                    style={{background:"#16283f",border:"1px solid #2a3a5a",borderRadius:3,
+                            color:"#a8c8e8",fontSize:8.5,padding:"2px 6px",cursor:"pointer"}}>불러오기</button>
+                  <input ref={plcRef} type="file" accept="application/json,.json" style={{display:"none"}}
+                    onChange={e=>{ const f=e.target.files?.[0]; e.target.value=""; loadPlacement(f); }}/>
+                </span>
+              </div>
+              {/* 판을 못 박았다는 사실을 숨기지 않는다 — 자동 선택이 멈춘 이유다 */}
+              {s.handPrev?.sheetId === "auto" && (
+                <div style={{color:"#66889f"}}>
+                  판형을 <strong style={{color:"#a8c8e8"}}>{canvasSheet.label || canvasSheet.id}</strong> 로 고정했다
+                  (손배치는 판이 고정돼야 좌표가 뜻을 갖는다). 끄면 자동으로 되돌아간다.
+                </div>
+              )}
+              {!handPart && (
+                <div style={{color:"#ffaa44"}}>⚠ 앉힐 도형이 없다 — 규격을 먼저 넣어라</div>
+              )}
+              {plcMsg && <div style={{color:"#ffd08a"}}>{plcMsg}</div>}
+            </div>
+          )}
+
           {s.showSheet && (
-            // 3단계(드래그 배치): 여기에 placement={손배치} 를 한 줄 더하면 그 배치가
-            // 그려진다. 지금은 넘기지 않으므로 도메인이 푼 layout.boxes 가 그려진다.
+            // 3단계 이음새 ②③④ 가 여기 한 줄이다. hand 를 주면 캔버스가 조작면이 되고,
+            // 안 주면(=null) 도메인이 푼 layout.boxes 를 그리는 1·2단계 상태로 정확히 돌아간다.
             <SheetCanvas sheet={canvasSheet} layout={layout} dieline={dieline} pdf={pdfOverlay}
-              note={canvasNote}/>
+              note={canvasNote}
+              hand={handOn && handPart ? {
+                part: handPart,
+                items: s.placement || [],
+                onCommit: commitPlacement,
+                onUndo: undoPlacement,
+                canUndo: undo.length > 0,
+                source: handSrc === "pdf" ? "PDF 칼선" : "구조 전개도",
+                sourceNote: handSrc === "pdf"
+                  ? `${pdf?.source || ""} · 후보 ${(pdf?.pickIdx ?? 0) + 1}`
+                  : (dieline?.polygon ? "폴리곤 확정 구조" : "폴리곤 미확정 → 직사각 1조각"),
+              } : null}/>
           )}
         </div>
       )}

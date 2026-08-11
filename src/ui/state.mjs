@@ -33,6 +33,18 @@ export const INITIAL_STATE = {
   //   앞쪽을 읽으면 사용자가 후보를 바꾼 뒤에도 **바꾸기 전 도형**을 조용히 그린다.
   //   iSHAP 무제-3 은 후보가 4개(2up 대지의 좌/우 × 도련/칼선)라 실제로 밟히는 경로다.
   pdfDl: null,
+  // ── 3단계 손배치(마우스 드래그) ──────────────────────────────────
+  // placement = 앉힌 배치 배열 [{x,y,flipped,rotated}] (판 좌표 mm, y 아래로).
+  //   ⚠ toQuoteInput 에 **넣지 않는다.** 치수는 nW/nH 로만 흐른다는 §9 규칙을 지키고,
+  //     개수(up)는 아래 mUp/mUpV = overrides.up 이라는 **기존 통로**로만 흘린다.
+  //     그래서 도메인은 손배치를 모른다 — quote.mjs 수정 0줄.
+  //   w/h 를 같이 저장하지 않는 이유: 90° 회전은 발자국이 w↔h 로 바뀌므로 저장하면
+  //     부품(itemW/itemH)과 두 벌이 갈린다. 발자국은 늘 부품에서 파생시킨다.
+  // handPrev = 손배치를 켜기 **전** 값 한 벌. 끄면 그대로 되돌린다.
+  //   sheetId 까지 담는 이유: mUp 이 켜지면 decideSheet ① 분기가
+  //   findSheetBase("auto") → BASE_SHEETS[3](4×64) 로 떨어져 **판이 통째로 바뀐다.**
+  //   앉혀둔 좌표가 다른 판의 좌표가 되므로 켜는 순간 지금 판으로 못 박아야 한다.
+  handMode: false, placement: null, handPrev: null,
   paperId: "AB350", sheetId: "auto",
   cusW: "890", cusH: "670", cusCut: "2",   // 주문생산 판형 크기·절수
   mR: false, mRV: "",
