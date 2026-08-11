@@ -11,7 +11,9 @@
 //  §A 실측 오라클 — 협력사 칼선 PDF 를 벡터 실측한 값과 대조 (허용오차 ±0.5mm)
 //  §B 합성 PDF 자기검사 — 실파일 8건이 안 밟는 코드 경로를 직접 만들어 밟는다
 //                          (xref 스트림 · PNG 예측자 · Form XObject/Matrix · c/v/y/re/h/q/Q)
-//  §C 실패 경로 — 암호화 · 객체스트림 · 비PDF 는 **조용히 틀리지 말고** 명확히 실패해야 한다
+//  §C 실패 경로 — 암호화 · 깨진 컨테이너 · 비PDF 는 **조용히 틀리지 말고** 명확히 실패해야 한다
+//  §E 조용히 틀리지 않는지 — 실제로 밟았던 결함의 회귀 게이트
+//  §F /ObjStm 압축 객체 스트림 — Acrobat 경유 PDF 가 쓰는 모양. §A 8건이 안 밟는다
 //  §D guessSheet — 페이지 크기 → 판형 자동 인식
 //
 //  판정 규약 (verify-imposition · verify-total 과 같다)
@@ -397,7 +399,10 @@ console.log("\n═══ §B 합성 PDF 자기검사 (실파일이 안 밟는 �
 console.log("\n═══ §C 실패 경로 (명확한 에러 메시지) ════════════════════════════════════");
 const failCases = [
   ["암호화 PDF (/Encrypt)", buildTablePdf("/Encrypt 9 0 R"), /암호화/],
-  ["객체 스트림 (/ObjStm)", await buildXrefStreamPdf({ objStm: true }), /객체 스트림.*ObjStm/],
+  // 컨테이너를 못 푸는데 그 안의 객체가 **실제로 필요한** 경우. /ObjStm 지원 후에도
+  // 이건 여전히 에러여야 한다 — 조용히 다른 객체로 때우면 틀린 bbox 가 견적에 들어간다.
+  // (여기서는 객체 6 이 /Type /XRef 라 컨테이너가 될 수 없다. §F5 는 해제 실패 쪽을 밟는다.)
+  ["깨진 컨테이너를 참조 (/ObjStm)", await buildXrefStreamPdf({ objStm: true }), /객체 스트림.*ObjStm/],
   ["PDF 가 아닌 바이트", encL("this is not a pdf at all, just text\n".repeat(4)), /PDF 파일이 아니다/],
 ];
 for (const [k, bytes, re] of failCases) {
@@ -575,6 +580,207 @@ console.log("\n═══ §E 조용히 틀리지 않는지 (회귀 게이트) �
   check("E8 788×545 판에서 150×22 칼선이 후보에 남는다", ok,
         err || `후보 ${r.candidates.map(k => k.bbox.w + "×" + k.bbox.h).join(", ")}`);
   console.log(`  ${ok ? "✓" : "✗"} 788×545 판 · 칼선 150×22 → ${err || (ok ? "후보에 있음 ✓" : "사라짐 ✗")}   (종전 문턱 81.75mm)`);
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  §F  /ObjStm (압축 객체 스트림) — Acrobat 경유 PDF 가 쓰는 모양
+//
+//  왜 별도 절인가
+//  ────────────
+//  §A 실측 8건은 전부 Illustrator 의 구식 xref table 이라 이 경로를 **한 번도 안 밟는다.**
+//  그런데 협력사가 Acrobat 을 거쳐 보내는 파일은 전부 /ObjStm 이다 — 고객사 폴더
+//  실측(26-08-07) PDF 485건 중 **351건**이 /ObjStm 이었고, 견적서·납품서·발주서·
+//  사업자등록증은 사실상 전건이다. 그 파일들도 저장소 밖이라 §A 처럼 SKIP 이 되므로
+//  (영업기밀) 여기서는 **합성 PDF 로** 고정한다.
+//
+//  ★ 5건 전부 **옛 코드에 걸어 실제로 깨지는 것을 보고** 넣었다 (26-08-07).
+//    통과만 확인하고 끝내면 아무것도 재지 않는 테스트가 초록으로 남는다 — §E 와 같은 규약이다.
+//    ⓐ = /ObjStm 지원 직전(98b76c2) · ⓑ = 지원 직후(8547cf3, 이번 수정 직전) 의 실제 출력:
+//      F1  ⓐ「객체 1 을 …/ObjStm 에 압축해 넣었다 — 이 추출기는 압축 객체를 읽지 않는다.
+//           Acrobat 4 (PDF 1.3) 로 다시 저장하면 읽힌다」 ← **이 문구를 없애는 것이 목적이었다**
+//          ⓑ 통과
+//      F2  ⓐ 읽기는 통과했지만 **경고가 없었다** (무엇을 못 읽었는지 화면에 안 남았다)
+//          ⓑ 통과 — 이 줄은 lazy 규약(참조 안 된 압축객체로는 실패하지 않는다)의 **파수꾼**이다
+//      F3  ⓐⓑ 둘 다 **50×30 · 경고 0개** (기대 80×30) — 구판 페이지가 조용히 이겼다
+//      F4  ⓐⓑ 둘 다 「PDF trailer 의 /Root(카탈로그)를 찾지 못했다 — PDF 가 아니거나 손상됐다」
+//      F5  ⓑ 「객체 1 …꺼내지 못했다」 — 카탈로그는 멀쩡한데 **남의 객체** 때문에 죽었다
+//
+//  실파일 대조는 저장소에 못 넣지만 숫자는 남긴다: 위 351건에 readDieline 을 태워
+//  332건 성공 / 19건 실패(전부 「벡터 도형이 없다」·「칼선으로 볼 만한 도형이 없다」 =
+//  스캔 이미지·본문 텍스트 문서라 **정상**), 351건 합계 1.0초 · 최대 32ms.
+//  ⚠ 「성공」은 칼선을 맞혔다는 뜻이 아니다 — 견적서는 표 괘선을 170.3×254.6 으로
+//    돌려준다. 그건 §9 가 적어둔 원리적 한계이고, 그래서 UI 가 후보·경고를 띄운다.
+// ══════════════════════════════════════════════════════════════════
+
+/** 객체 여러 개를 /ObjStm 컨테이너 하나로 포장한다 (PDF 32000-1 §7.5.7).
+ *  앞쪽에 「객체번호 위치」 정수쌍이 /N 개, /First 부터 객체 본문이 이어 붙는다.
+ *  안에 든 객체는 스트림일 수 없어서 "N G obj"·"stream" 이 없다 — 그게 이 포맷의 전부다. */
+async function objStm(entries) {                       // [[num, "<<…>>"], …]
+  let head = "", body = "";
+  for (const [n, src] of entries) { head += `${n} ${body.length} `; body += src + " "; }
+  return { bytes: await deflate(encL(head + body)), N: entries.length, first: head.length };
+}
+
+/** 객체를 차례로 써 넣는 최소 조립기. §F 는 xref 모양이 셋(순수 스트림·하이브리드·증분)이라
+ *  §B 의 buildXrefStreamPdf 를 재활용하면 분기가 그쪽에 쌓인다 — 조립만 떼어 공유한다. */
+function Doc0(header = "%PDF-1.5\n%\xE2\xE3\xCF\xD3\n") {
+  const parts = [], off = {}; let len = 0;
+  const raw = x => { const u = typeof x === "string" ? encL(x) : x; parts.push(u); len += u.length; };
+  raw(header);
+  return {
+    off, raw, here: () => len,
+    obj(n, dict, stream) {
+      off[n] = len; raw(`${n} 0 obj\n`); raw(dict);
+      if (stream) { raw("\nstream\n"); raw(stream); raw("\nendstream"); }
+      raw("\nendobj\n");
+    },
+    done() { const out = new Uint8Array(len); let o = 0; for (const p of parts) { out.set(p, o); o += p.length; } return out; },
+  };
+}
+/** xrefStreamBody 는 0번부터 빽빽한 배열을 받는다 — 듬성듬성한 객체번호의 빈칸을 free(0)로 채운다 */
+function rowSet() {
+  const rows = [];
+  return { rows, put(n, r) { while (rows.length < n) rows.push([0, 0, 0]); rows[n] = r; } };
+}
+const PAGE_MB = `[0 0 ${(PAGE_W * MM).toFixed(3)} ${(PAGE_H * MM).toFixed(3)}]`;   // 200×100mm
+const DIE = w => `${MM} 0 0 ${MM} 0 0 cm ` + L8(20, 20, w, 30);                    // 칼선 w×30mm
+
+/** 순수 xref 스트림 PDF — /Catalog·/Pages·/Page 가 **전부** /ObjStm 안에 있다.
+ *  base   카탈로그 객체번호. 뒤로 밀면 「깨진 컨테이너의 객체가 먼저 조회되는」 배치가 된다
+ *  orphan 아무도 참조하지 않는 **깨진** 컨테이너(7)를 끼우고 객체 1 이 그 안이라고 주장한다
+ *  noRoot trailer 에서 /Root 를 뺀다 → 카탈로그 전수 조사 경로로 들어간다
+ *  badSx  startxref 를 엉뚱한 값으로 → xref 체인이 통째로 사라진 파일 */
+async function buildObjStmPdf({ w = 50, base = 1, orphan = false, noRoot = false, badSx = false } = {}) {
+  const D = Doc0();
+  const [cat, pgs, pg] = [base, base + 1, base + 2];
+  const cont = await deflate(encL(DIE(w)));
+  D.obj(4, `<</Length ${cont.length}/Filter/FlateDecode>>`, cont);
+  const os = await objStm([
+    [cat, `<</Type/Catalog/Pages ${pgs} 0 R>>`],
+    [pgs, `<</Type/Pages/Kids[${pg} 0 R]/Count 1>>`],
+    [pg,  `<</Type/Page/Parent ${pgs} 0 R/MediaBox${PAGE_MB}/Contents 4 0 R>>`],
+  ]);
+  D.obj(5, `<</Type/ObjStm/N ${os.N}/First ${os.first}/Length ${os.bytes.length}/Filter/FlateDecode>>`, os.bytes);
+  if (orphan) D.obj(7, `<</Type/ObjStm/N 1/First 4/Length 20/Filter/FlateDecode>>`, encL("!!!broken-flate!!!!!"));
+  const xoff = D.here();
+  const { rows, put } = rowSet();
+  put(0, [0, 0, 65535]);
+  put(4, [1, D.off[4], 0]); put(5, [1, D.off[5], 0]); put(6, [1, xoff, 0]);
+  if (orphan) { put(7, [1, D.off[7], 0]); put(1, [2, 7, 0]); }
+  put(cat, [2, 5, 0]); put(pgs, [2, 5, 1]); put(pg, [2, 5, 2]);
+  const xb = await xrefStreamBody(rows);
+  D.obj(6, `<</Type/XRef/Size ${rows.length}/W[${XREF_W.join(" ")}]${noRoot ? "" : `/Root ${cat} 0 R`}/Filter/FlateDecode` +
+           `/DecodeParms<</Predictor 12/Columns ${XREF_ROW}>>/Length ${xb.length}>>`, xb);
+  D.raw(`startxref\n${badSx ? 999999999 : xoff}\n%%EOF\n`);
+  return D.done();
+}
+
+/** 하이브리드 참조 파일 — 평문 xref table(신) + /XRefStm(압축객체 목록만).
+ *  압축객체 8 은 **아무도 참조하지 않고** 컨테이너 7 은 깨져 있다. 그래도 읽혀야 한다. */
+async function buildHybridPdf({ w = 60 } = {}) {
+  const D = Doc0("%PDF-1.4\n");
+  const body = encL(DIE(w));
+  D.obj(1, `<</Type/Catalog/Pages 2 0 R>>`);
+  D.obj(2, `<</Type/Pages/Kids[3 0 R]/Count 1>>`);
+  D.obj(3, `<</Type/Page/Parent 2 0 R/MediaBox${PAGE_MB}/Contents 4 0 R>>`);
+  D.obj(4, `<</Length ${body.length}>>`, body);
+  D.obj(7, `<</Type/ObjStm/N 1/First 4/Length 20/Filter/FlateDecode>>`, encL("!!!broken-flate!!!!!"));
+  const xsOff = D.here();
+  const xb = await xrefStreamBody([[2, 7, 0]]);                  // /Index[8 1] → 객체 8 한 줄
+  D.obj(9, `<</Type/XRef/Size 10/W[${XREF_W.join(" ")}]/Index[8 1]/Root 1 0 R/Filter/FlateDecode` +
+           `/DecodeParms<</Predictor 12/Columns ${XREF_ROW}>>/Length ${xb.length}>>`, xb);
+  const xoff = D.here();
+  let x = `xref\n0 5\n0000000000 65535 f \n`;
+  for (let n = 1; n <= 4; n++) x += String(D.off[n]).padStart(10, "0") + " 00000 n \n";
+  x += `trailer\n<</Size 10/Root 1 0 R/XRefStm ${xsOff}>>\nstartxref\n${xoff}\n%%EOF\n`;
+  D.raw(x);
+  return D.done();
+}
+
+/** 증분 저장 — 구판 객체 3 은 평문(칼선 50), 신판 객체 3 은 **압축본**(칼선 80).
+ *  신판 xref(스트림)를 먼저 읽으므로 압축본이 정본이다. Acrobat 이 그렇게 저장한다. */
+async function buildIncrementalPdf() {
+  const D = Doc0("%PDF-1.4\n");
+  const oldBody = encL(DIE(50));
+  D.obj(1, `<</Type/Catalog/Pages 2 0 R>>`);
+  D.obj(2, `<</Type/Pages/Kids[3 0 R]/Count 1>>`);
+  D.obj(3, `<</Type/Page/Parent 2 0 R/MediaBox${PAGE_MB}/Contents 4 0 R>>`);
+  D.obj(4, `<</Length ${oldBody.length}>>`, oldBody);
+  const oldX = D.here();
+  let x = `xref\n0 5\n0000000000 65535 f \n`;
+  for (let n = 1; n <= 4; n++) x += String(D.off[n]).padStart(10, "0") + " 00000 n \n";
+  x += `trailer\n<</Size 5/Root 1 0 R>>\nstartxref\n${oldX}\n%%EOF\n`;
+  D.raw(x);
+  const newBody = await deflate(encL(DIE(80)));
+  D.obj(10, `<</Length ${newBody.length}/Filter/FlateDecode>>`, newBody);
+  const os = await objStm([[3, `<</Type/Page/Parent 2 0 R/MediaBox${PAGE_MB}/Contents 10 0 R>>`]]);
+  D.obj(11, `<</Type/ObjStm/N ${os.N}/First ${os.first}/Length ${os.bytes.length}/Filter/FlateDecode>>`, os.bytes);
+  const xoff = D.here();
+  const { rows, put } = rowSet();
+  put(0, [0, 0, 65535]); put(3, [2, 11, 0]);
+  put(10, [1, D.off[10], 0]); put(11, [1, D.off[11], 0]); put(12, [1, xoff, 0]);
+  const xb = await xrefStreamBody(rows);
+  D.obj(12, `<</Type/XRef/Size ${rows.length}/W[${XREF_W.join(" ")}]/Root 1 0 R/Prev ${oldX}/Filter/FlateDecode` +
+            `/DecodeParms<</Predictor 12/Columns ${XREF_ROW}>>/Length ${xb.length}>>`, xb);
+  D.raw(`startxref\n${xoff}\n%%EOF\n`);
+  return D.done();
+}
+
+console.log("\n═══ §F /ObjStm 압축 객체 스트림 ══════════════════════════════════════════");
+
+// F1 순수 xref 스트림 — 카탈로그도 페이지도 컨테이너 안. type 2 를 실제로 풀지 못하면
+//    이 파일은 읽을 **방법이 없다** (평문으로 남은 것은 콘텐트 스트림뿐이다).
+{
+  const { r, err } = await tryRead(await buildObjStmPdf({ w: 50 }), "F1-objstm.pdf");
+  const ok = !err && near(r.bbox.w, 50, .05) && near(r.bbox.h, 30, .05) &&
+             near(r.pageSize.w, PAGE_W, .05) && near(r.pageSize.h, PAGE_H, .05);
+  check("F1 순수 /ObjStm — Catalog·Pages·Page 를 컨테이너에서 꺼낸다 = 50×30", ok,
+        err || `${r.bbox.w}×${r.bbox.h} page ${r.pageSize.w}×${r.pageSize.h}`);
+  console.log(`  ${ok ? "✓" : "✗"} Catalog·Pages·Page 전부 컨테이너 안 → ${err || `${r.bbox.w}×${r.bbox.h} · 페이지 ${r.pageSize.w}×${r.pageSize.h}`}`);
+}
+
+// F2 하이브리드 — 깨진 컨테이너가 있지만 **아무도 참조하지 않는다.** 읽혀야 하고(lazy),
+//    그렇다고 침묵하면 안 된다(무엇을 못 읽었는지는 화면에 남는다). 둘 다 본다.
+{
+  const { r, err } = await tryRead(await buildHybridPdf({ w: 60 }), "F2-hybrid.pdf");
+  const read = !err && near(r.bbox.w, 60, .05) && near(r.bbox.h, 30, .05);
+  const warned = !err && r.warnings.some(w => /객체 스트림.*풀지 못했다/.test(w));
+  check("F2 하이브리드 — 참조 안 된 깨진 컨테이너로는 실패하지 않는다 = 60×30", read,
+        err || `${r.bbox.w}×${r.bbox.h}`);
+  check("F2 하이브리드 — 못 푼 컨테이너를 경고로 알린다", warned,
+        err || `warnings=${JSON.stringify(r.warnings)}`);
+  console.log(`  ${read ? "✓" : "✗"} 깨진 컨테이너 1개(미참조) → ${err || r.bbox.w + "×" + r.bbox.h}` +
+              `   경고 ${warned ? "있음 ✓" : "없음 ✗"}`);
+}
+
+// F3 증분 저장 — 최신 xref 가 「이 페이지의 정본은 압축본」이라고 말한다. 옛 xref 의
+//    평문 오프셋이 그걸 덮으면 **구판이 조용히 이긴다** (종전 50×30 · 경고 0개).
+//    Acrobat 증분 저장이 정확히 이 모양이라 견적서 PDF 에서 실제로 밟을 수 있는 경로다.
+{
+  const { r, err } = await tryRead(await buildIncrementalPdf(), "F3-incremental.pdf");
+  const ok = !err && near(r.bbox.w, 80, .05) && near(r.bbox.h, 30, .05);
+  check("F3 증분 저장 — 압축본(신판)이 평문(구판)을 이긴다 = 80×30", ok, err || `${r.bbox.w}×${r.bbox.h} (기대 80×30)`);
+  console.log(`  ${ok ? "✓" : "✗"} 구판 평문 50 / 신판 압축 80 → ${err || r.bbox.w + "×" + r.bbox.h}   (종전 50×30 무경고)`);
+}
+
+// F4 startxref 가 깨진 /ObjStm PDF — 구식 xref table 파일에는 이미 전수 스캔 복구가
+//    있었는데(_scanAll), 그건 평문 "N G obj" 만 훑으므로 압축객체는 아예 안 보였다.
+//    컨테이너를 본문에서 직접 찾아 풀지 않으면 멀쩡한 파일이 「손상됐다」로 끝난다.
+{
+  const { r, err } = await tryRead(await buildObjStmPdf({ w: 50, badSx: true }), "F4-badstartxref.pdf");
+  const ok = !err && near(r.bbox.w, 50, .05) && near(r.bbox.h, 30, .05);
+  check("F4 startxref 깨진 /ObjStm — 컨테이너를 본문에서 찾아 복구한다 = 50×30", ok, err || `${r.bbox.w}×${r.bbox.h}`);
+  console.log(`  ${ok ? "✓" : "✗"} xref 체인 소실 → ${err || r.bbox.w + "×" + r.bbox.h}   (종전 「PDF 가 아니거나 손상됐다」)`);
+}
+
+// F5 카탈로그 전수 조사 중에 「깨진 컨테이너에 든, 아무도 안 쓰는 객체」를 먼저 만난다.
+//    거기서 던지면 바로 뒤의 카탈로그(9)를 못 찾는다 — lazy 규약이 루프 안에서 깨지는 자리다.
+//    ⚠ 객체번호 1 이라 **반드시 9보다 먼저** 조회된다. 순서가 반대면 이 테스트는 아무것도 안 잰다.
+{
+  const { r, err } = await tryRead(await buildObjStmPdf({ w: 90, base: 9, orphan: true, noRoot: true }), "F5-orphan.pdf");
+  const ok = !err && near(r.bbox.w, 90, .05) && near(r.bbox.h, 30, .05);
+  check("F5 /Root 없음 + 미참조 깨진 컨테이너 — 카탈로그를 찾아낸다 = 90×30", ok, err || `${r.bbox.w}×${r.bbox.h}`);
+  console.log(`  ${ok ? "✓" : "✗"} 깨진 객체 1 을 먼저 조회 → ${err || r.bbox.w + "×" + r.bbox.h}   (종전 「객체 1 …꺼내지 못했다」)`);
 }
 
 // ══════════════════════════════════════════════════════════════════

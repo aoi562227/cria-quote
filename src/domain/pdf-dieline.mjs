@@ -335,6 +335,9 @@ class Doc {
     // 못 읽는다. 대신 조용히 null 로 넘기지 않는다.
     if (v === undefined && this.objStm.has(n)) {
       const loc = this.objStm.get(n), c = this.objStmData.get(loc.stm);
+      // 순환방지로 넣어둔 null 을 지우고 던진다. 안 지우면 같은 번호를 두 번째로 물었을 때
+      // 캐시의 null 이 그대로 나가서 **한 번은 에러, 한 번은 침묵**이 된다.
+      this.cache.delete(n);
       throw new Error(`객체 ${n} 은 객체 스트림(/ObjStm) ${loc.stm} 안에 있다고 xref 가 말하는데 꺼내지 못했다 — ` +
         (c?.err ? `${c.err}. ` : `그 스트림에 객체 ${n} 이 없다. `) +
         `Illustrator/Acrobat 에서 「호환성: Acrobat 4 (PDF 1.3)」로 다시 저장하면 읽힌다.`);
@@ -343,6 +346,15 @@ class Doc {
     this.cache.set(n, out);
     return out;
   }
+
+  /** 던지지 않는 딕셔너리 조회 — **전수 조사 루프 전용**.
+   *
+   *  왜 따로 있나: /Catalog·/Page 를 찾으려고 **모든 객체 번호**를 훑는 복구 경로가 셋 있다
+   *  (looksEncrypted · loadXref 의 Root 탐색 · collectPages 의 Page 탐색). 거기서 get 을
+   *  쓰면 「풀지 못한 컨테이너에 든, 아무도 참조하지 않는 객체」 하나가 조사를 통째로
+   *  중단시킨다 — 카탈로그가 바로 옆에 있어도 못 찾는다. lazy 규약(참조될 때만 실패)이
+   *  루프 안에서는 자동으로 깨지므로 여기서 명시적으로 막는다. */
+  probeDict(n) { try { return this.dict(mkRef(n)); } catch { return null; } }
 
   /** 미리 풀어둔 /ObjStm 컨테이너에서 객체 n 을 꺼낸다. 못 꺼내면 undefined.
    *  왜 여기서 풀지 않나: inflate 가 DecompressionStream 이라 **비동기**인데 get/resolve/
@@ -529,10 +541,14 @@ async function loadXref(doc) {
     if (looksEncrypted(doc))
       throw new Error("암호화된 PDF 다 (/Encrypt — xref 가 깨져 trailer 대신 본문에서 찾았다) — " +
         "암호를 풀지 않으면 칼선을 읽을 수 없다. 보안 해제 후 다시 올려라.");
+    // xref 체인 자체가 못 쓰게 된 파일에서는 컨테이너를 **본문에서 직접** 찾아 푼다.
+    // _scanAll 은 평문 "N G obj" 만 훑으므로 압축객체는 보이지 않는다 — 그대로 두면
+    // /Catalog·/Page 가 컨테이너 안에 있는 /ObjStm PDF 가 통째로 「손상됐다」로 끝난다.
+    await discoverObjStms(doc);
     // trailer 를 못 찾았으면 /Type /Catalog 객체를 직접 찾는다.
     // ⚠ 압축 객체(/ObjStm)도 같이 훑는다 — 순수 xref 스트림 파일은 /Catalog 가 거기 있다.
     for (const n of [...doc.offsets.keys(), ...doc.objStm.keys()]) {
-      const d = doc.dict(mkRef(n));
+      const d = doc.probeDict(n);
       if (d?.Type === "/Catalog") { doc.trailer.Root = mkRef(n); break; }
     }
     if (!doc.trailer.Root) throw new Error("PDF trailer 의 /Root(카탈로그)를 찾지 못했다 — PDF 가 아니거나 손상됐다.");
@@ -574,13 +590,49 @@ async function loadObjStms(doc) {
       `${failed.length > 2 ? ` (외 ${failed.length - 2}건)` : ""}. 그 안의 객체가 필요하면 읽기가 실패한다.`);
 }
 
+/** xref 를 못 믿는 파일에서 /ObjStm 컨테이너를 **본문에서 직접** 찾아 풀고, 그 안에 든
+ *  객체 번호를 objStm 지도에 등록한다. (loadXref 의 「Root 를 못 찾았다」 가지에서만 돈다)
+ *
+ *  왜 필요한가: `_scanAll` 은 평문 "N G obj" 만 훑으므로 압축객체는 아예 안 보인다.
+ *  그래서 xref 가 깨진 순수 /ObjStm PDF 는 복구 경로를 다 갖추고도 「PDF 가 아니거나
+ *  손상됐다」로 끝났다 — 정작 카탈로그·페이지는 컨테이너 안에 멀쩡히 있는데도.
+ *  구식 xref table 파일에는 이미 이 복구가 있었으니, 없는 쪽은 ObjStm 파일뿐이었다.
+ *
+ *  ⚠ xref 가 알려준 자리는 덮지 않는다 — xref 가 살아 있으면 그쪽이 정본이다.
+ *  ⚠ 비용: 파일에 "/ObjStm" 이 없으면 즉시 끝나고, 있어도 객체 머리 256바이트만 본 뒤
+ *    후보에만 _parseAt 을 건다. 어차피 이미 실패한 파일에서만 도는 경로다. */
+async function discoverObjStms(doc) {
+  if (indexOfLit(doc.b, "/ObjStm", 0) < 0) return;
+  const found = [];
+  for (const n of [...doc.offsets.keys()]) {
+    const off = doc.offsets.get(n);
+    if (!(off >= 0) || off >= doc.b.length) continue;
+    // 딕셔너리는 "N G obj" 바로 뒤에 온다 — 머리 256바이트 안에 없으면 컨테이너가 아니다
+    if (indexOfLit(doc.b, "/ObjStm", off, Math.min(doc.b.length, off + 256)) < 0) continue;
+    let s = null;
+    try { s = doc._parseAt(off, n); } catch { continue; }
+    if (!s || s._s === undefined) continue;
+    let ty = null;
+    try { ty = doc.resolve(s.dict?.Type); } catch { continue; }
+    if (ty === "/ObjStm") found.push(n);
+  }
+  for (const stm of found) {
+    const c = await doc._loadObjStm(stm);
+    if (!c?.objs) continue;
+    for (const onum of c.objs.keys())
+      if (!doc.offsets.has(onum) && !doc.objStm.has(onum)) doc.objStm.set(onum, { stm, idx: -1 });
+  }
+  // 컨테이너를 풀기 전에 null 로 굳은 조회 결과를 버린다 (loadObjStms 의 패스 사이와 같은 이유)
+  if (found.length) doc.cache.clear();
+}
+
 /** trailer 를 못 읽은 파일에서 「암호화된 파일인가」를 본문으로 판정한다.
  *  ① 파일 어디든 /Encrypt 참조가 있으면 암호화다 (trailer 문자열이 깨져도 남아 있다).
  *  ② 표준 보안 핸들러 딕셔너리(/Filter + /V + /O|/U)를 직접 찾는다. */
 function looksEncrypted(doc) {
   if (indexOfLit(doc.b, "/Encrypt", 0) >= 0) return true;
   for (const n of doc.offsets.keys()) {
-    const d = doc.dict(mkRef(n));
+    const d = doc.probeDict(n);
     if (d && typeof d.Filter === "string" && d.V !== undefined &&
         (d.O !== undefined || d.U !== undefined)) return true;
   }
@@ -604,8 +656,12 @@ function readXrefTable(doc, P) {
       skipWs(P); readToken(P);                    // gen
       skipWs(P); const ty = readToken(P);
       const n = start + k;
-      // 첫 xref 가 최신이다 — 이미 있으면 덮지 않는다
-      if (ty === "n" && !doc.offsets.has(n)) doc.offsets.set(n, parseInt(o, 10));
+      // 첫 xref 가 최신이다 — 이미 있으면 덮지 않는다.
+      // ⚠ objStm 도 같이 본다. 최신 xref 가 「이 번호의 정본은 압축본(type 2)」이라고
+      //   말했는데 옛 xref 의 평문 오프셋을 등록해 버리면, Doc.get 이 평문을 **먼저**
+      //   보므로 구판이 조용히 이긴다. Acrobat 증분 저장이 정확히 그 모양이다
+      //   (합성 대조 §F3: 새 페이지 80×30 대신 구 페이지 50×30 이 경고 0개로 나왔다).
+      if (ty === "n" && !doc.offsets.has(n) && !doc.objStm.has(n)) doc.offsets.set(n, parseInt(o, 10));
     }
   }
 }
@@ -632,7 +688,8 @@ async function readXrefStream(doc, off) {
       const type = W[0] === 0 ? 1 : rd(W[0]);
       const f2 = rd(W[1]); const f3 = rd(W[2]);
       const n = index[sec] + k;
-      if (type === 1) { if (!doc.offsets.has(n)) doc.offsets.set(n, f2); }
+      // 위 readXrefTable 과 같은 규칙 — 압축본이 정본으로 등록된 번호를 평문이 덮지 않는다
+      if (type === 1) { if (!doc.offsets.has(n) && !doc.objStm.has(n)) doc.offsets.set(n, f2); }
       // type 2 = 압축 객체. f2 = 담고 있는 /ObjStm 객체번호, f3 = 그 안의 순번.
       // 종전에는 번호만 Set 에 넣고 버려서 「어느 컨테이너에 있나」를 잃었다 — 그래서
       // 풀 수 없었다. 컨테이너 번호를 남기면 loadObjStms 가 실제로 풀 수 있다.
@@ -671,7 +728,7 @@ function collectPages(doc) {
     // ⚠ 압축 객체도 같이 훑는다 — 순수 xref 스트림 파일은 페이지 딕셔너리가 /ObjStm 안에 있다.
     doc._scanAll();
     for (const n of [...doc.offsets.keys(), ...doc.objStm.keys()]) {
-      const d = doc.dict(mkRef(n));
+      const d = doc.probeDict(n);
       if (d?.Type === "/Page") out.push({ d, inh: { MediaBox: d.MediaBox, Resources: d.Resources, Rotate: d.Rotate } });
     }
   }

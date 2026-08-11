@@ -153,7 +153,7 @@ QuoteResult { netSize, dieline, sheet, layout, reams, paperPrice, print, lines, 
 | 견적서 화면 | `ui/QuoteSheet.jsx` · `ui/QuoteRow.jsx` | 화면 확인 |
 | 배치 그림 | `ui/viz/LayoutViz.jsx` (좌표는 `layout.boxes` 만 씀) | 화면 확인 |
 | 전개도 그림 | `ui/viz/DielineShape.jsx` + `NetDiagram.jsx` (패널은 `dieline.panels`) | 화면 확인 |
-| **칼선 PDF 추출** | `domain/pdf-dieline.mjs` — 후보 점수·성분 병합 규칙까지 한 파일. §9 를 먼저 읽어라 | `verify-pdf` 66/68 (§E 돌연변이 6/6 검출) |
+| **칼선 PDF 추출** | `domain/pdf-dieline.mjs` — 후보 점수·성분 병합 규칙까지 한 파일. §9 를 먼저 읽어라 | `verify-pdf` 72/74 (§E 돌연변이 6/6 · §F 옛코드 4/5 검출) |
 | PDF 드롭 UI·후보 드롭다운 | `ui/panels/BoxSpec.jsx` (드롭 영역 → `sizeMode="net"` + `nW`/`nH`) | 화면 확인 |
 | 「고른 후보 → 그 polygons」 규칙 | `ui/state.mjs` `pdfPickOf(s)` — **여기 한 곳**. BoxSpec 과 3단계가 같이 부른다 | §10 계약표 |
 | 판형 캔버스(판·물림·자) | `ui/viz/SheetCanvas.jsx` ⚠ 배치를 다시 풀지 마라 — `placement` 없으면 `layout.boxes` 만 읽는다 | 화면 확인 |
@@ -321,7 +321,7 @@ PDF 로 읽은 판)는 이미 재단됐으니 미차감」. **구현해서 6개 
 | `verify-imposition` | 실측 대조 4/5 | 대지 실측 대조 (문서 성격) |
 | `verify-interlock` | 엑셀 8/8 · 물림 5/6 · up 7/10 | 코리팩 엑셀 모델 대조 |
 | `verify-layout` | 원지 5/11 → 인쇄기제약 3/11 | ⚠ 후보값 스캔 도구 — 앱 점수가 아니다 |
-| `verify-pdf` | **66 / 68** (실측 8건 · 회귀게이트 8건 · FAIL 0) | 칼선 PDF → 실측 bbox·polygons 계약 + §E 「조용히 틀리지 않는지」. ⚠ 오라클 SKIP 이면 exit 1 — §10 |
+| `verify-pdf` | **72 / 74** (실측 8건 · §E 게이트 8건 · §F /ObjStm 5건 · FAIL 0) | 칼선 PDF → 실측 bbox·polygons 계약 + §E 「조용히 틀리지 않는지」 + §F 압축 객체 스트림. ⚠ 오라클 SKIP 이면 exit 1 — §10 |
 
 **갱신 규칙**
 
@@ -439,9 +439,35 @@ BoxSpec 드롭 → readDielineFile(File)
 170.3×255.65, 표 괘선이다). 그래서 UI 는 `candidates` 드롭다운과 `warnings` 를 항상 띄우고
 사용자 확인을 받는다 — **값을 조용히 견적에 넣지 마라.**
 
-`/ObjStm`(압축 객체 스트림)은 지원하지 않고 명확한 에러로 실패한다. 칼선 PDF 8건은
-전부 구식 xref table 이지만 Acrobat 경유 PDF 는 4/4 가 /ObjStm 이었다. 빈도가 문제가 되면
-별건으로 붙여라(Flate·파서가 이미 있어 20줄 수준).
+### `/ObjStm`(압축 객체 스트림) — 지원한다 (26-08-07)
+
+칼선 PDF 8건은 전부 구식 xref table 이지만, Acrobat 을 거쳐 오는 파일은 사실상 전건이
+/ObjStm 이다 — 고객사 폴더 실측 PDF 485건 중 **351건**(견적서·납품서·발주서·사업자등록증).
+그 351건에 `readDieline` 을 태우면 **332건 성공 / 19건 실패**(전부 스캔 이미지·본문 텍스트라
+「벡터 도형이 없다」·「칼선으로 볼 만한 도형이 없다」 = 정상), 합계 1.0초 · 최대 32ms.
+⚠ 「성공」은 칼선을 맞혔다는 뜻이 **아니다** — 견적서는 표 괘선을 170.3×254.6 으로 돌려준다.
+위 「원리적으로 못 하는 것」 그대로이고, 그래서 UI 가 후보·경고를 띄운다.
+
+되돌리면 무너지는 판단 3개 (전부 `verify-pdf` §F 가 게이트한다):
+
+| 판단 | 왜 | 뒤집으면 |
+|---|---|---|
+| 컨테이너 해제는 **미리**(eager), 조회는 동기 | `inflate` 는 `DecompressionStream` 이라 async 인데 `Doc.get`/`resolve` 는 파일 전역에서 동기다 | `get` 안에서 풀 수 없다 — 구조가 async 로 번진다 |
+| 컨테이너 해제 실패는 **던지지 않는다.** 그 객체를 실제로 꺼낼 때 실패한다 | 하이브리드 파일은 메타데이터만 압축하고 페이지·칼선은 평문으로 둔다 | 참조도 안 되는 압축객체 하나 때문에 읽히던 파일을 못 읽는다 (F2) |
+| 전수 조사 루프는 `probeDict`(던지지 않음)로 돈다 | /Catalog·/Page 를 찾는 복구 경로 3곳이 **모든** 객체 번호를 훑는다 | 남의 깨진 객체 하나가 조사를 중단시켜, 카탈로그가 바로 옆에 있어도 못 찾는다 (F5) |
+
+⚠ **평문(type 1) 이 압축본(type 2) 을 덮으면 안 된다.** 최신 xref 가 「이 번호의 정본은
+압축본」이라 했는데 옛 xref 의 평문 오프셋을 등록하면 `Doc.get` 이 평문을 먼저 보므로
+**구판이 조용히 이긴다.** Acrobat 증분 저장이 정확히 그 모양이다 — 합성 대조에서 새 페이지
+80×30 대신 구 페이지 50×30 이 경고 0개로 나왔다(F3). `readXrefTable`·`readXrefStream`
+양쪽이 `!objStm.has(n)` 를 같이 본다.
+
+xref 체인이 통째로 깨진 /ObjStm 파일은 `discoverObjStms` 가 본문에서 컨테이너를 직접 찾아
+푼다 — `_scanAll` 은 평문 `"N G obj"` 만 훑어 압축객체가 아예 안 보이므로, 이게 없으면
+멀쩡한 파일이 「PDF 가 아니거나 손상됐다」로 끝난다(F4).
+
+지원 후에도 못 꺼내는 경우(컨테이너 해제 실패·암호화)는 **여전히 명확한 에러**다.
+조용히 다른 값으로 때우지 않는다 — `verify-pdf` §C 가 그 자리를 지킨다.
 
 ### 브라우저 확인 방법
 
