@@ -179,7 +179,25 @@ export function buildContext(input) {
                   amount: Math.round(R * paperInfo.price) },
     print: {
       front, back, beda,
-      spotMode: input.print?.spotMode || "weight",  // "weight"=도수환산(×3) / "rpr"=R당 고정
+      // ── 베다는 R당 고정 모드를 강제한다 ─────────────────────────────
+      // 종전에는 베다가 두 곳에 걸렸는데 하나가 조건부였다:
+      //   · 여분 +100장 (reams.LOSS_BEDA)          → 항상 적용
+      //   · 별색 R단가 50,000 → 75,000 (SPOT_RPR)  → spotMode==="rpr" 에서만
+      // 기본 모드가 "weight"(도수환산 ×3) 이라, 기본값으로 쓰면 **베다를 켜도
+      // 인쇄비는 그대로이고 종이(여분)만 올랐다.** 실무가 정확히 이걸 지적했다.
+      //
+      // 실측 근거: 견적서의 베다는 R당 고정으로 청구된다.
+      //   verify-total 「G형A 350×280×70 (별1베다+먹)」
+      //     인쇄비 150,000 = round(2.0R × 75,000)  — 원 단위 일치
+      //   verify-r E67a/E67b G형C {beda:true} — 여분 가산 근거 2건
+      // 도수환산 + 베다 조합으로 청구된 견적서는 **한 건도 없다.** 그래서
+      // 도수환산 모드에 베다 배수(예 ×1.5)를 넣는 쪽은 근거가 없어 택하지 않았다.
+      // 근거 없는 상수는 다음 사람이 지운다 — 이 프로젝트의 규칙이다.
+      //
+      // ⚠ 사용자가 도수환산을 골라도 베다면 뒤집힌다. UI 가 그 사실을 표시해야 한다
+      //   (PrintPanel 의 베다 토글 옆 안내문). 조용히 뒤집으면 안 된다.
+      spotMode: beda ? "rpr" : (input.print?.spotMode || "weight"),
+      spotModeForcedByBeda: beda && (input.print?.spotMode || "weight") !== "rpr",
       spotRpr: ov.spotRpr || (beda ? SPOT_RPR_BEDA : SPOT_RPR_PLAIN),
       printUnit: ov.printUnit ?? printUnitFor(tier),
       fColors, bColors, totalColors: fColors + bColors,

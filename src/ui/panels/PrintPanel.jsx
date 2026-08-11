@@ -56,9 +56,21 @@ export default function PrintPanel({ s, u, sheetInfo, result }) {
             ]}/>
           </Field>
           <Toggle checked={s.beda} onChange={v=>u("beda",v)} label="베다 (바탕 전면 인쇄)"/>
-          {s.spotMode === "rpr" && (
+          {/* 베다는 계산방식을 R당 고정으로 강제한다 — 조용히 뒤집으면 안 되므로 표시한다.
+              근거: 견적서의 베다는 R당 고정으로 청구된다(G형A 별1베다 = 2.0R × 75,000).
+              도수환산 + 베다로 청구된 견적서는 한 건도 없다. quote.mjs 의 주석 참조. */}
+          {s.beda && s.spotMode !== "rpr" && (
+            <div style={{marginTop:6,padding:"6px 8px",borderRadius:4,
+                         background:"#3a2f10",border:"1px solid #6b5518",
+                         fontSize:9,color:"#e8c96a",lineHeight:1.6}}>
+              베다는 <b>별색 R당 고정 {SPOT_RPR_BEDA.toLocaleString()}원/R</b> 로 계산됩니다
+              (실제 견적서 청구 방식). 위에서 도수환산을 골랐어도 베다가 켜져 있으면
+              R당 고정이 적용됩니다.
+            </div>
+          )}
+          {(s.spotMode === "rpr" || s.beda) && (
             <div style={{marginTop:8}}>
-              <Field label="별색 R당 단가" note={`기본 ${(s.beda?SPOT_RPR_BEDA:SPOT_RPR_PLAIN).toLocaleString()}원/R`}>
+              <Field label="별색 R당 단가" note={`기본 ${(s.beda?SPOT_RPR_BEDA:SPOT_RPR_PLAIN).toLocaleString()}원/R${s.beda?" (베다)":""}`}>
                 <Input value={s.spotRprV} onChange={v=>u("spotRprV",v)} type="number"
                        placeholder={String(s.beda?SPOT_RPR_BEDA:SPOT_RPR_PLAIN)}/>
               </Field>

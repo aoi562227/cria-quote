@@ -228,3 +228,53 @@ console.log("-".repeat(92));
 console.log(`추정단가 페널티: ${ok3}/${EST.length}   (EST_PRICE_PENALTY=3%)`);
 console.log("  ⚠ 이 두 줄이 페널티를 지키는 게이트다 — 페널티를 지우면 둘 다 추정 판형으로 넘어간다.");
 if (ok3 !== EST.length) process.exitCode = 1;
+
+//  §베다 — 베다는 인쇄비를 올려야 한다 (26-08-07 실무 지적으로 발견한 버그)
+// ══════════════════════════════════════════════════════════════════
+//  증상: 베다를 켜면 인쇄 가격이 올라야 하는데 종이(지대)만 올랐다.
+//  원인: 베다가 두 곳에 걸리는데 하나가 조건부였다.
+//    · 여분 +100장 (reams.LOSS_BEDA)         → 항상 적용
+//    · 별색 R단가 50,000 → 75,000            → spotMode==="rpr" 에서만
+//  기본 모드가 "weight"(도수환산 ×3) 이라 기본값으로 쓰면 인쇄비가 안 움직였다.
+//  수정: 베다면 spotMode 를 "rpr" 로 강제한다 (quote.mjs).
+//  근거: 견적서의 베다는 R당 고정으로 청구된다 —
+//        위 「G형A 350×280×70 별1베다+먹」 인쇄 150,000 = round(2.0R × 75,000).
+//        도수환산 + 베다 조합으로 청구된 견적서는 한 건도 없다.
+{
+  const { buildQuote } = await import("../src/domain/quote.mjs");
+  const base = {
+    qty: 2000,
+    box: { sizeMode:"box", W:100, D:50, H:150, boxType:"glue_3side" },
+    paper: { paperId:"AB350", sheetId:"4x62" },
+    print: { front:{ color:false, spot:1, black:false, uv:false }, back:{} },
+    finish: {}, dev: {},
+  };
+  // 이 파일의 ok 는 카운터 변수다(함수 아님). 지역 판정 헬퍼를 따로 둔다.
+  let bPass = 0, bFail = 0;
+  const chk = (c, m) => { if (c) { bPass++; console.log(`  ✓ ${m}`); }
+                          else   { bFail++; console.log(`  ✗ ${m}`); } };
+  const run = (beda, spotMode) => {
+    const r = buildQuote({ ...base, print:{ ...base.print, beda, spotMode } });
+    return { print: r.lines.find(l => l.id === "print_front")?.amount ?? 0,
+             paper: r.lines.find(l => l.id === "paper")?.amount ?? 0,
+             mode: r.ctx?.print?.spotMode };
+  };
+  console.log("\n═══ 베다 — 인쇄비 가산 ══════════════════════════════════════════");
+  for (const mode of ["weight", "rpr"]) {
+    const off = run(false, mode), on = run(true, mode);
+    console.log(`  ${mode.padEnd(7)}  인쇄 ${off.print.toLocaleString().padStart(8)}` +
+                ` → ${on.print.toLocaleString().padStart(8)}` +
+                `   지대 ${off.paper.toLocaleString().padStart(9)} → ${on.paper.toLocaleString().padStart(9)}`);
+    chk(on.print > off.print,
+       `베다 ON 이면 인쇄비가 오른다 (${mode}) — ${off.print.toLocaleString()} → ${on.print.toLocaleString()}`);
+    chk(on.paper > off.paper,
+       `베다 ON 이면 여분 가산으로 지대도 오른다 (${mode})`);
+  }
+  // ★ 이것이 버그의 정체다 — 도수환산 모드에서 베다가 무력했다
+  chk(run(true, "weight").print === run(true, "rpr").print,
+     "베다면 도수환산을 골랐어도 R당 고정과 같은 인쇄비 (모드 강제)");
+  chk(run(true, "weight").print === Math.round(run(true,"weight").print),
+     "베다 인쇄비는 원 단위 정수");
+  console.log(`베다 검증: ${bPass} 통과 / ${bFail} 실패`);
+  if (bFail) process.exitCode = 1;
+}
