@@ -24,7 +24,8 @@ import SheetCompare from "../viz/SheetCompare.jsx";
 import SheetCanvas from "../viz/SheetCanvas.jsx";
 // 손배치의 기하 엔진. UI 는 여기서 **부품 한 벌만 만들고** 나머지(스냅·겹침·감사)는
 // SheetCanvas 가 좌표와 함께 부른다. 새 기하를 짜지 않는다.
-import { makeDragPart, pdfLocalPolylines, serializePlacement, parsePlacement } from "../viz/nest-drag.mjs";
+import { makeDragPart, pdfLocalPolylines, serializePlacement, parsePlacement,
+         overlapPairs } from "../viz/nest-drag.mjs";
 
 export default function BoxSpec({
   s, u, handleBoxType, input, netSize, dieline, sheetInfo, layout, result, H,
@@ -125,6 +126,29 @@ export default function BoxSpec({
       pdfOverlay?.bbox?.w, pdfOverlay?.bbox?.h, pdfOverlay?.bbox?.x0, pdfOverlay?.bbox?.y0]);
 
   /**
+   * 손배치의 **겹침**을 up 이 나가는 자리에서 다시 잰다.
+   *
+   * ⚠ 왜 여기서 또 재는가 — 드래그는 겹침을 막지만 **불러오기는 막지 않는다.**
+   *   [{0,0},{20,20}] 같은 배치를 불러오면 캔버스는 「✕ 겹치는 칸 1, 2」를 띄우는데
+   *   같은 화면의 견적서는 2up → 지대R 2.30 → 개당 322원을 아무 경고 없이 냈다.
+   *   경고가 캔버스 상태줄에만 있어서 캔버스를 접으면 보이지 않았다.
+   *   「막지 않고 알린다」 방침은 유지하되(실무가 의도적으로 겹쳐 볼 수도 있다)
+   *   **경고는 숫자가 나가는 자리에 붙어 있어야 한다.**
+   *
+   * 판 밖 이탈은 여기서 재지 않는다 — 그 판정에 필요한 printableArea·물림은
+   * SheetCanvas 의 fitB 파생값이고, BoxSpec 에 복제하면 판 경계 정의가 두 벌이 된다.
+   * 판밖 경고는 캔버스가 계속 담당한다. 겹침이 목형을 파괴하는 쪽이라 더 위험하다.
+   * 도메인은 그대로다 — 이건 표시 전용이고 quote.mjs 는 손배치를 모른다.
+   */
+  const handWarn = useMemo(() => {
+    const items = s.placement;
+    if (!handOn || !handPart || !items?.length) return null;
+    // overlapPairs 는 **겹친 칸의 인덱스 Set** 을 반환한다(쌍 배열이 아니다).
+    const nOv = overlapPairs(handPart, items).size;
+    return nOv ? { nOv } : null;
+  }, [handOn, handPart, s.placement]);
+
+  /**
    * 손배치 확정 — 되돌리기 스냅샷을 쌓고 개수를 견적에 흘린다.
    * ★ 새 도메인 경로를 만들지 않는다: up 은 **기존 직접입력 통로**(mUp/mUpV →
    *   toQuoteInput.overrides.up → quote.mjs decideSheet ① 분기)로만 간다.
@@ -139,11 +163,25 @@ export default function BoxSpec({
     u("mUpV", String(next.length));
   };
 
-  /** Ctrl+Z. 되돌릴 것이 없으면 false — 캔버스가 그 사실을 글로 알린다. */
+  /** Ctrl+Z. 되돌릴 것이 없으면 false — 캔버스가 그 사실을 글로 알린다.
+   *
+   *  ⚠ 읽기와 팝을 **한 함수형 업데이트 안에서** 해야 한다.
+   *  종전에는 `const back = undo[undo.length-1]` 가 렌더 클로저 값이고
+   *  `setUndo(st => st.slice(0,-1))` 는 함수형이어서 비대칭이었다. 그래서 한 JS 태스크에
+   *  Ctrl+Z 가 N 번 들어오면 **스택은 N 번 팝되는데 배치는 한 걸음만 되돌아갔다.**
+   *  실측: 한 호출 안에서 keydown 8회 → 배치는 1단계만 복귀, 스택은 통째로 비고
+   *        되돌릴 6단계가 소실됐다(다음 Ctrl+Z 가 「되돌릴 것이 없다」).
+   *  사람 손으로는 못 밟는다(키 반복도 태스크가 갈리고 React 가 그 사이 flush 한다).
+   *  하지만 onUndo 를 루프로 부르는 호출부(「전부 되돌리기」 버튼 등)가 생기는 순간 밟힌다.
+   */
   const undoPlacement = () => {
-    if (!undo.length) return false;
-    const back = undo[undo.length - 1];
-    setUndo(st => st.slice(0, -1));
+    let back;
+    setUndo(st => {
+      if (!st.length) return st;
+      back = st[st.length - 1];
+      return st.slice(0, -1);
+    });
+    if (back === undefined) return false;
     commitPlacement(back, { snapshot: false });
     return true;
   };
@@ -480,8 +518,15 @@ export default function BoxSpec({
             <div style={{background:"#0a1020",border:"1px solid #24344e",borderRadius:4,
                          padding:"6px 8px",marginTop:5,fontSize:9,color:"#8899bb",lineHeight:1.7}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:6}}>
-                <span>앉힌 개수 <strong style={{color:"#ffcc44"}}>{(s.placement||[]).length} up</strong>
-                  <span style={{color:"#556680"}}> → 견적 판걸이</span></span>
+                <span>앉힌 개수{" "}
+                  <strong style={{color: handWarn ? "#ff7766" : "#ffcc44"}}>
+                    {(s.placement||[]).length} up</strong>
+                  <span style={{color:"#556680"}}> → 견적 판걸이</span>
+                  {handWarn && (
+                    <span style={{color:"#ff7766",fontWeight:700}}>
+                      {" "}⚠ 겹침 {handWarn.nOv}칸 — 이 개수는 견적에 쓰지 마라
+                    </span>
+                  )}</span>
                 <span style={{display:"flex",gap:3}}>
                   <button type="button" onClick={savePlacement}
                     style={{background:"#16283f",border:"1px solid #2a3a5a",borderRadius:3,
