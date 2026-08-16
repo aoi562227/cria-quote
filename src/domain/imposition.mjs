@@ -1,15 +1,36 @@
 // ══════════════════════════════════════════════════════════════════
 //  imposition.mjs — 판걸이(배치) 어댑터
 //
-//  nest.mjs 를 부르는 **유일한** 지점이다. 다른 곳에서 solveLayout 을
-//  직접 import 하면 아래 3대 정책(인쇄기 클램프·발자국 상한·행거탭)이
-//  적용되지 않은 up 이 견적에 들어간다.
+//  nest.mjs(격자) 와 nest-free.mjs(자유배치) 를 부르는 **유일한** 지점이다.
+//  다른 곳에서 solveLayout / solveFree 를 직접 import 하면 아래 3대 정책
+//  (인쇄기 클램프·발자국 상한·행거탭)이 적용되지 않은 up 이 견적에 들어간다.
 // ══════════════════════════════════════════════════════════════════
 import { effectiveSheet, FIT_TOL, MAX_FOOT_PCT } from "./data/sheets.mjs";
-import { solveLayout } from "../nest.mjs";
+import { solveLayout, itemW, itemH } from "../nest.mjs";
+import { solveFree } from "../nest-free.mjs";
 
 /** clearance 는 nest 기본값 0.5 그대로 — scorecard 표들과 같은 조건이어야 A/B 가 의미를 갖는다 */
 const CLEARANCE = 0.5;
+
+/**
+ * 배치 엔진 — 호출자가 **명시적으로** 고른다.
+ *
+ *  grid  규칙격자(nest.solveLayout). (dx,dy,sx,반전규칙) 5개가 배치 전체를 정한다.
+ *        **기본값이고 기준선이다** — 목형은 규칙적이어야 톰슨이 서고, 견적서 78건 역산과
+ *        verify-net·scorecard-nest 의 재현율이 전부 이 엔진 위에서 교정됐다.
+ *  free  자유배치(nest-free.solveFree). 한 장씩 앉히므로 자리마다 자세가 다를 수 있고
+ *        남는 틈에 **한 장만** 더 넣을 수 있다. 규칙성을 잃는다(사람이 확인해야 한다).
+ *
+ * ⚠ 기본을 free 로 바꾸지 마라. 재현율 기준선이 격자이고, 자유배치는 최적해를
+ *   보장하지 않는다(nest-free.mjs 「한계」). 견적으로 흘리려면 사람이 손배치로
+ *   받아 확정하는 통로(overrides.up = state 의 mUp/mUpV)를 지나야 한다.
+ */
+export const LAYOUT_ENGINE = { GRID: "grid", FREE: "free" };
+export const DEFAULT_ENGINE = LAYOUT_ENGINE.GRID;
+
+/** 자유배치 한 판에 앉힐 최대 개수 — 판이 크고 도형이 아주 작을 때 폭주를 막는다.
+ *  nest-free.DEFAULT_MAX_UP 과 같은 값이지만 **정책은 여기 것이 정본**이다. */
+const FREE_MAX_UP = 200;
 
 /**
  * 판형 ∩ 인쇄기 상한(990×720) → 실제 인쇄 가능 영역.
@@ -142,6 +163,26 @@ function solveNest(pieces, printW, printH, HT, extra) {
   return ok;
 }
 
+/**
+ * 자유배치 1회. 격자와 **같은 인쇄영역**에서 돌아야 두 숫자를 나란히 놓을 수 있다.
+ *
+ * 행거탭(HT): 격자는 배치 전체가 rotated 한 값이라 「탭이 나가는 축」을 고를 수 있고
+ *   그래서 solveNest 가 축별로 나눠 부른다. 자유배치는 **자리마다 자세가 다를 수 있어**
+ *   배치 하나에 축이 하나로 정해지지 않는다 → 양축에서 뺀다. 이것은 solveNest 가
+ *   두 축 다 실패했을 때 쓰는 보수적 분기(C)와 같은 뜻이고, 탭 자리를 침범하지 않는
+ *   유일한 선택이다. HT=0 이면 격자와 완전히 같은 판이다(실무 대부분).
+ *   ⚠ 그래서 HT>0 에서는 자유 up 이 격자보다 **작을 수 있다.** 버그가 아니라 판이
+ *     좁아서다 — 그 경우 아래 solveImposition 이 격자를 그대로 쓴다.
+ *
+ * clearance 는 넘기지 않는다: nest-free 는 makePart(=NFP 원본)로 판정하므로
+ * 격자의 CLEARANCE(피치에 더하는 여유)와 개념이 다르다. 여유를 지어내지 않는다.
+ */
+function solveFreeOne(pieces, printW, printH, HT, allowRotate) {
+  const pw = printW - HT, ph = printH - HT;
+  if (!(pw > 0 && ph > 0) || !pieces?.length) return null;
+  return solveFree(pieces, pw, ph, { allowRotate, maxUp: FREE_MAX_UP });
+}
+
 // ── 캐시 ───────────────────────────────────────────────────────────
 // 판걸이는 **수량과 무관**하다. 수량비교표(9수량) × 판형(11) = 99회 호출이
 // 캐시로 11회가 된다. nest 1회가 20~60ms 이므로 이게 없으면 렌더가 초 단위로 멈춘다.
@@ -150,19 +191,33 @@ const CACHE_MAX = 500;
 
 /**
  * @param {{key:string, net:Object, pieces:number[][][], polygon:boolean, noRotate:boolean}} dieline
+ *   ★ key 는 「폴리곤을 결정하는 입력 전부」여야 한다 — 캐시 키가 이걸 그대로 쓴다.
+ *     PDF 칼선처럼 도메인 구조가 아닌 도형을 넣을 때도 이 계약만 지키면 된다.
  * @param {{w:number,h:number,custom?:boolean}} sheet
- * @returns {Object|null} Layout — up=0 이면 배치 불가
+ * @param {"grid"|"free"} [engine] LAYOUT_ENGINE. 기본 grid — 위 상수 주석 참조
+ * @returns {Object|null} Layout — up=0 이면 배치 불가.
+ *   engine:"free" 로 불러도 반환 모양은 같다. 더해지는 필드 셋:
+ *     · engine    실제로 채택된 엔진 ("grid"|"free")
+ *     · freeUsed  자유배치 결과를 채택했는가
+ *     · free      자유배치 **원본** 요약 {up, footPct, …} — max 를 씌우지 않은 날숫자다.
+ *                 비교표가 「자유가 격자보다 낮은가」를 보려면 이걸 읽어야 한다.
  */
-export function solveImposition({ dieline, sheet, hangTab = 0 }) {
+export function solveImposition({ dieline, sheet, hangTab = 0, engine = DEFAULT_ENGINE }) {
   if (!dieline?.net || !sheet?.w || !sheet?.h) return null;
-  // 폴리곤이 없는 구조(G형·직접입력)는 직사각 경로. 엔진 선택 스위치는 두지 않는다 —
-  // 넘기는 호출자가 없는 파라미터는 캐시 키에서 빠져 조용히 틀린 배치를 돌려준다.
+  // 폴리곤이 없는 구조(G형·직접입력)는 직사각 경로 (회전금지를 표현할 수 있는 유일한 길).
   const useRect = !dieline.polygon;
+  // 종전에는 「엔진 선택 스위치를 두지 않는다」가 규칙이었다. 이유는 스위치 자체가
+  // 아니라 **캐시 키**였다 — 호출자가 넘긴 파라미터가 키에서 빠지면 조용히 틀린 배치를
+  // 돌려준다. 그래서 스위치를 넣되 키의 **첫 조각**으로 박았다. 규칙은 살아 있다.
+  // 정규화도 여기서 한 번만 한다(오타 "Free" 가 키를 갈라 캐시를 두 배로 만들지 않게).
+  const eng = engine === LAYOUT_ENGINE.FREE ? LAYOUT_ENGINE.FREE : LAYOUT_ENGINE.GRID;
   // custom 을 키에 넣는 이유: 지금은 printableArea 가 표준/주문생산을 구분하지 않아
   // 같은 w×h 면 배치가 정말 같다. 하지만 물림처럼 **custom 으로 갈리는 정책**이 하나라도
   // 들어오는 순간, 키가 구분하지 못하면 사용자가 890×670 을 직접 입력했을 때 표준 판형이
   // 캐시에 남긴 배치를 그대로 돌려받는다. 그 사고는 화면상 아무 표시 없이 up 만 틀린다.
-  const ck = `${useRect ? "rect" : "nest"}|${dieline.key}|${sheet.w}x${sheet.h}` +
+  // ⚠ 엔진도 같은 이유로 키에 있다 — 빠지면 자유배치를 한 번 돌린 뒤 같은 규격의
+  //   **견적 경로**(격자)가 자유배치 결과를 캐시에서 돌려받는다. 화면 표시 없이 up 만 틀린다.
+  const ck = `${eng}|${useRect ? "rect" : "nest"}|${dieline.key}|${sheet.w}x${sheet.h}` +
              `|${hangTab}|${sheet.custom ? "c" : "s"}`;
   const hit = CACHE.get(ck);
   if (hit) return hit;
@@ -207,7 +262,10 @@ export function solveImposition({ dieline, sheet, hangTab = 0 }) {
       utilPct: 0, footPct: 0, utilCapped: false, overlapInfo: null,
       alt: { up: 0, rotated: false, interlocked: false },
       printW, printH, dx: 0, dy: 0, sx: 0,
+      engine: LAYOUT_ENGINE.GRID, freeUsed: false, free: null,
     };
+    // 격자가 0개면 도형이 판에 아예 안 들어간다는 뜻이다 — 자유배치도 같은 조건에서
+    // 같은 답을 낸다(둘 다 「부품 bbox 가 판보다 크면 후보 0」). 예산만 태우지 않는다.
     return cache(ck, empty);
   }
 
@@ -246,8 +304,63 @@ export function solveImposition({ dieline, sheet, hangTab = 0 }) {
       : null,
     alt: candidates[1] || { up: 0, rotated: false, interlocked: false },
     printW, printH, dx: chosen.dx, dy: chosen.dy, sx: chosen.sx,
+    engine: LAYOUT_ENGINE.GRID, freeUsed: false, free: null,
   };
-  return cache(ck, layout);
+  if (eng !== LAYOUT_ENGINE.FREE) return cache(ck, layout);
+
+  // ══ 자유배치 ═══════════════════════════════════════════════════════
+  const fr = solveFreeOne(dieline.pieces, printW, printH, HT, allowRotate);
+  const free = fr && {
+    // ★ **원본 up 이다.** 여기에 Math.max(격자) 를 씌우지 마라 — 비교표가
+    //   「자유 < 격자」(= 자유배치 결함)를 못 보게 된다. 채택 여부는 freeUsed 다.
+    up: fr.up,
+    utilPct: Math.round(fr.up * net.netW * net.netH / sheetArea * 100),
+    footPct: Math.round(footOf(fr)),
+    // 발자국 상한을 **적용하지 않고 알린다.** 격자의 상한 루프는 「maxUp 을 한 단계
+    // 줄이면 열·행이 하나 빠져 외곽이 실제로 작아진다」는 격자 성질에 기댄 것이고,
+    // 자유배치는 한 장을 빼도 bbox 가 그대로일 수 있어 그 루프가 성립하지 않는다.
+    // 조용히 자르는 대신 사실을 싣는다 — 사람이 손배치로 받아 확정하는 경로다.
+    footOver: footOf(fr) > MAX_FOOT_PCT,
+    bbox: fr.bbox, strategy: fr.strategy, ops: fr.ops,
+    budgetHit: fr.budgetHit, rejected: fr.rejected, tried: fr.tried,
+    printW: printW - HT, printH: printH - HT,
+  };
+
+  // ★ 자유 ⊇ 격자 — nest-free 는 최적해를 보장하지 않는다(그 파일 「한계」).
+  //   그래서 **두 결과 중 큰 쪽**을 쓴다. 이게 nest-free 가 부르는 쪽에 요구한 계약이다.
+  //   동점이면 격자를 남긴다 — 같은 up 이면 규칙격자가 목형·톰슨에 유리하다.
+  if (!fr || fr.up <= layout.up)
+    return cache(ck, { ...layout, engine: LAYOUT_ENGINE.GRID, freeUsed: false, free });
+
+  const P = fr.part;
+  const freeBoxes = fr.items.map((it, i) => ({
+    x: it.x, y: it.y, w: itemW(P, it), h: itemH(P, it),
+    flipped: !!it.flipped, rotated: !!it.rotated, idx: i,
+  }));
+  const nRot = fr.items.reduce((n, it) => n + (it.rotated ? 1 : 0), 0);
+  const freeLayout = {
+    ...layout,
+    engine: LAYOUT_ENGINE.FREE, freeUsed: true, free,
+    up: fr.up,
+    // 열·행·피치·엇갈림은 자유배치에 **존재하지 않는다.** 0 으로 둔다 —
+    // 숫자를 지어내면 화면이 「3×2」 같은 없는 격자를 주장하고, 그걸 본 사람이
+    // 목형을 그 격자로 짠다. 없는 것은 없다고 말한다.
+    cols: 0, rows: 0, dx: 0, dy: 0, sx: 0,
+    rotated: nRot === fr.up,        // 전부 돌았을 때만 「회전 배치」다 (섞이면 false)
+    interlocked: false,
+    boxW: P.w, boxH: P.h,
+    boxes: freeBoxes,
+    cells: fr.items.map((it, i) => ({ i, j: 0, x: it.x, y: it.y, flip: !!it.flipped })),
+    candidates: [{ cols: 0, rows: 0, up: fr.up, rotated: nRot === fr.up, interlocked: false }],
+    // 차선 = 격자 결과. 「자유배치가 몇 up 을 더 벌었나」가 이 줄에서 읽힌다.
+    alt: { up: layout.up, rotated: layout.rotated, interlocked: layout.interlocked },
+    utilPct: free.utilPct,
+    footPct: free.footPct,
+    utilCapped: false,
+    overlapInfo: `자유배치 ${fr.up}up (격자 ${layout.up}up) · ${fr.strategy}` +
+                 (nRot && nRot < fr.up ? ` · 90° ${nRot}칸 섞임` : ""),
+  };
+  return cache(ck, freeLayout);
 }
 
 function cache(k, v) {

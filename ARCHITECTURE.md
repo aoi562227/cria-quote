@@ -3,7 +3,7 @@
 단상자(종이박스) 견적 계산 React 앱. 이 문서는 **구조 안내서**다.
 왜 이 상수가 이 값인지(실측 근거)는 `readme.md` 와 각 파일 주석이 소유한다.
 
-- 규모: `src/` 55파일 · `test/` 13파일 · 합 7,970줄 (최대 파일 `src/domain/pdf-dieline.mjs` 1,150줄)
+- 규모: `src/` 59파일 · `test/` 14파일 · 합 12,302줄 (최대 파일 `src/domain/pdf-dieline.mjs` 1,150줄)
 - 빌드: `npx vite build` → 253 kB (gzip 86 kB)
 - 검증: `npm run verify` (13개 스위트 전부 실코드 import)
   ⚠ `verify-pdf` 는 **오라클을 못 읽으면 exit 1** 이다 — §10 「SKIP 은 실패다」 참조
@@ -25,13 +25,18 @@ data ──► domain ──► ui
 src/
 ├─ main.jsx                     ReactDOM 마운트 (3줄)
 ├─ App.jsx                      상태 한 벌 + 2단 레이아웃. buildQuote 를 딱 1회 호출 (96줄)
-├─ nest.mjs                     ★ NFP(No-Fit Polygon) 무겹침 격자 배치 엔진 (423줄)
+├─ nest.mjs                     ★ NFP(No-Fit Polygon) 무겹침 **격자** 배치 엔진 (423줄)
 │                                 순수 기하. 판형·단가·구조를 모른다.
+├─ nest-free.mjs                ★ **자유배치** 네스터 (SVGnest 방식 재구현 — 코드 복사 없음)
+│                                 nest 의 NFP·구간스윕을 재사용한다. 격자가 아니므로
+│                                 자리마다 자세가 다를 수 있고 틈에 한 장만 더 넣는다.
+│                                 ⚠ 기본 엔진이 아니다 — §11 참조
 │
 ├─ domain/                      ── 계산. React 를 import 하지 않는다 ──
 │  ├─ quote.mjs                 견적 1건 조립. 도메인의 단일 진입점
 │  │                              normalizeQuoteInput → buildContext → collectLines → summarize
-│  ├─ imposition.mjs            판걸이 어댑터. nest.mjs 를 부르는 **유일한** 지점
+│  ├─ imposition.mjs            판걸이 어댑터. nest.mjs·nest-free.mjs 를 부르는 **유일한** 지점
+│  │                              LAYOUT_ENGINE = grid(기본) | free — §11
 │  ├─ sheet-select.mjs          판형(원지) 자동선택 — findBestSheet / pickFrom / chooseHadrong
 │  ├─ reams.mjs                 지대R · 여분(손지) · 공정R
 │  ├─ paper-repo.mjs            지종×판형 → 지대 단가 (룩업 우선, 없으면 면적환산 추정)
@@ -114,8 +119,9 @@ QuoteResult { netSize, dieline, sheet, layout, reams, paperPrice, print, lines, 
 
 **호출 규칙 3개**
 
-1. `nest.solveLayout` 은 `imposition.mjs` 만 부른다. 다른 곳에서 직접 부르면
-   인쇄기 클램프·발자국 상한·행거탭 정책이 빠진 up 이 견적에 들어간다.
+1. `nest.solveLayout` 과 `nest-free.solveFree` 는 `imposition.mjs` 만 부른다. 다른 곳에서
+   직접 부르면 인쇄기 클램프·발자국 상한·행거탭 정책이 빠진 up 이 견적에 들어간다.
+   엔진 선택은 `solveImposition({…, engine})` 한 인자이고 **기본은 격자**다 (§11).
 2. `buildQuote` 는 App 에서 **1회만** 부른다. `useMemo` 로 감싼 그 한 번이 전부다.
 3. `ui` 는 도메인이 준 값을 **다시 계산하지 않는다.** 수율(`layout.utilPct`)처럼
    분모가 갈릴 수 있는 값은 정본이 하나뿐이다.
@@ -145,7 +151,9 @@ QuoteResult { netSize, dieline, sheet, layout, reams, paperPrice, print, lines, 
 | **물림(gripper) 방침** | `imposition.mjs` `printableArea` ⚠ 아래 §5 를 먼저 읽어라 | `scorecard-unit` §A/§C · `verify-net` |
 | 발자국 상한 | `sheets.mjs` MAX_FOOT_PCT + `imposition.mjs` `footOf` 분모 | `verify-net` 발자국% 열 |
 | 인쇄기 최대 판 | `sheets.mjs` PRESS_MAX_LONG/SHORT | `verify-layout` §E |
-| 배치 알고리즘 | `src/nest.mjs` ⚠ 순수 기하. 정책을 넣지 마라 | `verify-nest` 44케이스 |
+| 배치 알고리즘 (격자) | `src/nest.mjs` ⚠ 순수 기하. 정책을 넣지 마라 | `verify-nest` 44케이스 |
+| 배치 알고리즘 (자유) | `src/nest-free.mjs` ⚠ 같은 규칙. 정책은 `imposition` §11 | `verify-nest`(공유 기하) · §11 표 |
+| **엔진 선택 · 자유배치 UI** | `imposition.mjs` `LAYOUT_ENGINE` → `ui/panels/BoxSpec.jsx` 「배치 엔진」 | §11 |
 | **여분(손지) 규칙** | `domain/reams.mjs` LOSS_* + `estimateLoss` | `verify-r` 여분 7케이스 |
 | 지대R·공정R 올림 규칙 | `domain/reams.mjs` `calcR`/`calcProcessR` + `units.mjs` | `verify-r` |
 | 개당단가 반올림 | `quote.mjs` `summarize` (`round`, floor 아님) | `verify-total` |
@@ -558,3 +566,90 @@ CI 경로는 git 체크아웃이므로 무시된 파일이 도달하지 못한�
    `quote.mjs` 는 이미 `overrides.up` 을 받는다. **도메인 수정 0줄.**
 
 되돌리기: 5·6 을 빼고 `placement={null}` 로 두면 1·2단계 상태로 정확히 돌아간다.
+
+---
+
+## 11. 배치 엔진 — 규칙격자(기본) vs 자유배치
+
+`solveImposition({ dieline, sheet, hangTab, engine })` 의 `engine` 하나로 갈린다.
+**기본은 `LAYOUT_ENGINE.GRID` 이고, 견적 경로는 이 기본만 쓴다.**
+
+| | 규칙격자 `grid` | 자유배치 `free` |
+|---|---|---|
+| 엔진 | `nest.solveLayout` | `nest-free.solveFree` |
+| 배치를 정하는 것 | (dx, dy, sx, 반전규칙) **5개** | 한 장씩 앉힌 좌표 **전부** |
+| 자리마다 다른 자세 | 못 한다 | 한다 |
+| 틈에 **한 장만** 더 | 못 한다(열·행 단위) | 한다 |
+| 목형·톰슨 | 그대로 선다 | **사람이 확인해야 한다** |
+| 견적 반영 | 자동 | 손배치로 확정해야(`mUp`/`mUpV`) |
+
+### 왜 기본을 바꾸지 않았나
+
+재현율 기준선이 전부 격자 위에서 교정됐고(견적서 78건 역산 · `verify-net` · `scorecard-nest`),
+자유배치는 **최적해를 보장하지 않는다**. 그래서 `solveImposition` 은 free 를 부를 때도
+격자를 같이 풀고 **큰 쪽을 쓴다**(동점이면 격자 — 같은 up 이면 규칙격자가 유리하다).
+반환값의 `layout.free.up` 은 **max 를 씌우지 않은 원본**이다 — 이걸 max 로 덮으면
+「자유 < 격자」(= 엔진 결함)를 아무도 못 본다.
+
+### ★ 실측 비교표 (2026-08-17 · 견적서 케이스 전건 실행값)
+
+`grid` = 현행 엔진 · `free` = 자유배치 원본 · `견적서` = 실측 up.
+
+| 케이스군 | 건수 | 격자 일치 | max(격자,자유) 일치 | 자유<격자 |
+|---|---|---|---|---|
+| `verify-net`·`scorecard-nest` (BASE_SHEETS, 앱 실경로) | 10 | **7** | **8** | 0 |
+| `scorecard-unit` (견적서 「단위」를 판으로) | 12 | **7** | **8** | 0 |
+| `verify-net` 비폴리곤 6건 (직사각 경로) | 6 | 6 | 6 | 0 |
+| 행거탭 0/15/20mm (맞뚜껑A 국2) | 3 | 3 | 3 | 0 |
+| **합계** | **31** | **23** | **25** | **0** |
+
+바뀐 것은 **삼면B 210×90×180 한 건**이고, 그 한 건이 두 케이스군에 다 들어 있다:
+
+```
+삼면B 210×90×180 · 46전지(990×720 클램프) · 전개도 614×354
+  격자 2up (1×2, 발자국 61%)  →  자유 3up (발자국 87%, 전략 lb·자세R/Rf, 128ms)
+  견적서 3up ✓                     ← verify-net 「남은 불일치 3건」 중 하나가 이것이다
+```
+
+`verify-net` 주석이 이 건을 「46전지를 990×720 으로 클램프한 뒤 3열이 안 들어간다」고
+적어 뒀는데, **3열이 아니라 자세를 섞으면 들어간다**는 것이 자유배치의 답이다.
+⚠ 그렇다고 `verify-net` 점수가 7/10 → 8/10 이 되지는 **않는다.** 그 스위트는 기본 엔진
+(격자)을 채점하고, 자유배치 결과는 사람이 손배치로 확정해야 견적에 들어가기 때문이다.
+점수를 올리고 싶으면 기본 엔진을 바꿔야 하는데 그건 위 「왜 기본을 바꾸지 않았나」다.
+
+### 자유 < 격자 — 넓은 스윕에서 나온 2건과 그 원인
+
+견적서 케이스 31건에는 0건이지만, 구조 3 × 치수 14 × 판형 6 = **252건 스윕**에서 2건 나왔다.
+겹침·판밖 위반은 **0건**, 겹쳐서 버린 해도 **0개**, 평균 161ms · 최대 995ms.
+
+| 케이스 | 격자 | 자유 | 원인 | 근거 |
+|---|---|---|---|---|
+| 삼면 30×30×60 @46전지 | 35 | 33 | **탐색 예산 소진**. 알고리즘 결함이 아니다 | `ops` 2,027,237 / cap 2,000,000 → 9개 전략 중 **1개**만 돌고 끊겼다. 예산 ×4 → **38up**(격자보다 많다) · ×20 → **41up** |
+| 맞뚜껑 30×30×60 @하4 | 15 | 13 | **드롭&슬라이드가 못 찾는 자리.** `nest-free.mjs` 「한계」의 "두 이웃에 동시에 닿아야만 가능한 자리" 그대로다 | 예산 미소진(445,403 / 2,000,000)이고 9개 전략 전수 실행. 격자는 `5×3↺⇅` = **엇갈림(sx) + 반전 맞물림**으로 이겼다 |
+
+둘 다 `imposition` 이 큰 쪽(격자)을 쓰므로 **사용자에게는 손해가 없다.**
+예산은 `nest-free.DEFAULT_OPS` 다 — 올리면 첫 줄이 회복되지만 버튼이 1~4초가 된다.
+측정만 남기고 기본값은 그대로 뒀다(근거 없이 상수를 움직이지 않는다는 §4 규칙).
+
+### 정책 3개 (되돌리기 전에 읽어라)
+
+| 판단 | 왜 | 뒤집으면 |
+|---|---|---|
+| **엔진을 캐시 키에 넣는다** (`ck` 첫 조각) | 같은 규격·판이라도 두 엔진의 답이 다르다 | 자유배치를 한 번 돌린 뒤 **견적 경로(격자)** 가 자유배치 결과를 캐시에서 돌려받는다. 화면 표시 없이 up 만 틀린다 — `custom` 키와 정확히 같은 사고다 |
+| **발자국 상한을 자유배치에 적용하지 않고 알린다** (`free.footOver`) | 격자의 상한 루프는 「maxUp 한 단계 ↓ = 열·행 하나 ↓ = 외곽이 실제로 작아진다」는 격자 성질에 기댄다. 자유배치는 한 장을 빼도 bbox 가 그대로일 수 있어 그 루프가 성립하지 않는다 | 루프가 up 만 깎고 발자국은 안 줄어 자유배치가 무의미해지거나, 조용히 상한 초과 배치를 낸다 |
+| **행거탭은 양축에서 뺀다** | 격자는 배치 전체가 `rotated` 한 값이라 탭 축을 고를 수 있다(`solveNest` 가 축별로 나눠 부른다). 자유배치는 자리마다 자세가 달라 축이 하나로 안 정해진다 | 탭 자리를 침범한 배치가 나온다. ※ 대신 HT>0 에서 자유가 격자보다 작을 수 있는데, 큰 쪽을 쓰므로 무해하다(위 표 행거탭 3/3) |
+
+### UI (`ui/panels/BoxSpec.jsx`)
+
+- 「배치 엔진」 Select → 자유배치는 **버튼으로만** 돈다. 자동 재계산 금지 —
+  1회가 60~1,000ms 라 입력마다 돌리면 W 칸에 「140」을 치는 동안 세 번 돌아 앱이 멎는다.
+- 엔진·실행결과는 `s` 가 아니라 **BoxSpec 로컬 state** 다. `s` 가 바뀌면 `toQuoteInput` 이
+  새 객체를 만들어 `buildQuote` 가 통째로 다시 돈다 — 도메인이 읽지 않는 값이라 넣을 이유가 없다.
+- 「손배치로 이어받기」 → `s.placement` + `mUp`/`mUpV`. **`quote.mjs` 수정 0줄** (§10-6 과 같은 통로).
+- 겹침 경고는 **up 이 나가는 자리**에 붙는다 — 손배치 up 줄과 같은 함수(`overlapPairs`)를 쓴다.
+  ⚠ `overlapPairs` 는 겹친 칸의 **인덱스 Set** 이다(쌍 배열이 아니다). `.size` 로 읽어라.
+- 규격·후보·판·행거탭이 바뀌면 앞 결과에 「낡았다」를 붙이고 이어받기를 잠근다.
+  **지우지는 않는다** — 조용히 지우면 「눌렀는데 사라졌다」로 읽힌다.
+- PDF 칼선을 얹은 상태에서는 도메인 전개도가 `direct`(= bbox 직사각형)라 자유배치가
+  격자와 같은 답만 낸다. 그래서 `makeDragPart` 가 분해한 **실제 칼선 조각**으로 푼다
+  (손배치와 같은 도형이어야 그림·스냅·겹침이 갈리지 않는다). 그 사실을 화면에 적는다.

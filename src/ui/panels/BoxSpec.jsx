@@ -11,6 +11,9 @@
 // ══════════════════════════════════════════════════════════════════
 import { useMemo, useRef, useState } from "react";
 import { PRESS_MAX_LONG, PRESS_MAX_SHORT, MAX_FOOT_PCT, findSheetBase, resolveSheet } from "../../domain/data/sheets.mjs";
+// 배치 엔진은 **도메인이 소유한다.** 여기서 nest / nest-free 를 직접 부르지 않는다 —
+// 인쇄기 클램프·발자국·행거탭 정책이 빠진 up 이 화면에 뜨는 순간 실무가 그 숫자를 쓴다.
+import { solveImposition, LAYOUT_ENGINE } from "../../domain/imposition.mjs";
 import { readDielineFile } from "../../domain/pdf-dieline.mjs";
 import { Section, Field, Row2, Row3, Input, Select, Toggle } from "../primitives.jsx";
 import { BOX_TYPES } from "../box-types.mjs";
@@ -39,6 +42,15 @@ export default function BoxSpec({
   const [undo, setUndo] = useState([]);
   const [plcMsg, setPlcMsg] = useState("");
   const plcRef = useRef(null);
+  // ── 배치 엔진 선택 + 자유배치 실행 결과 ────────────────────────────
+  // ⚠ 왜 s 가 아니라 로컬인가: App 의 `input = useMemo(toQuoteInput(s), [s])` 는 s 가
+  //   바뀔 때마다 **새 객체**를 만들므로 그 뒤 buildQuote 가 통째로 다시 돈다.
+  //   엔진 선택과 실행 결과는 도메인이 읽지 않는 값(자유배치 up 은 사람이 손배치로
+  //   확정해야 mUp/mUpV 로 흐른다)이라 s 에 넣으면 견적 재계산만 공짜로 늘어난다.
+  //   busy·drag·undo·plcMsg 와 같은 기준이다 — 「값」이 아니라 순간 UI.
+  const [engine, setEngine]   = useState(LAYOUT_ENGINE.GRID);
+  const [freeBusy, setFreeBusy] = useState(false);
+  const [freeRes, setFreeRes] = useState(null);
   // 페이지를 바꿔 다시 읽기 위한 File 손잡이. **값이 아니라 원본 핸들**이라 s 에 넣지 않는다
   // (브라우저가 디스크 핸들만 들고 있어 메모리 비용도 거의 없다).
   const keptFile = useRef(null);
@@ -186,12 +198,15 @@ export default function BoxSpec({
     return true;
   };
 
-  const enterHand = () => {
+  /** @param {Array=} takeItems 명시 씨앗(자유배치 결과 이어받기). 없으면 자동 배치 씨앗 */
+  const enterHand = takeItems => {
     // 씨앗은 자동 배치다 (ARCHITECTURE §10-2). layout.up === 0 이면 앉힐 발판이 없으므로
     // 원점에 1개를 둔다 — 캔버스가 판 밖으로 걸쳐 그려서 「안 들어간다」를 보여준다.
     const seed = (layout?.up > 0 ? layout.boxes : []).map(b => ({
       x: b.x, y: b.y, flipped: !!b.flipped, rotated: !!b.rotated }));
-    const items = s.placement?.length ? s.placement
+    // ⚠ Toggle 은 onChange(true) 로 부른다 — 그 boolean 이 씨앗으로 새지 않도록 배열만 받는다.
+    const items = Array.isArray(takeItems) && takeItems.length ? takeItems
+                : s.placement?.length ? s.placement
                 : (seed.length ? seed : [{ x: 0, y: 0, flipped: false, rotated: false }]);
     setUndo([]); setPlcMsg("");
     // u() 는 함수형 setState 라 순서가 안전하다. handPrev 는 **이 렌더의 s**(= 켜기 전 값)를
@@ -246,6 +261,104 @@ export default function BoxSpec({
     setPlcMsg(warn.length ? `⚠ ${r.items.length}개 불러왔다 — ${warn.join(" · ")}`
                           : `불러왔다 — ${r.items.length}개`);
     commitPlacement(r.items);
+  };
+
+  // ══ 배치 엔진 — 규칙격자(기본) / 자유배치(버튼 실행) ══════════════
+  //  ⚠ 자유배치는 **자동 재계산하지 않는다.** 1회가 실측 60~1,000ms 다(도형이 작고
+  //    판이 클수록 길다 — 삼면 30×30×60 @46전지가 995ms). 입력이 바뀔 때마다 돌리면
+  //    W 칸에 「140」을 치는 동안 세 번 돌아 앱이 멎는다. 버튼으로만 돈다.
+  //  ★ 견적은 그대로 규칙격자다. 자유배치 결과는 사람이 「손배치로 이어받기」로
+  //    확정해야 기존 통로(mUp/mUpV → overrides.up)로 흐른다 — quote.mjs 수정 0줄.
+
+  /** 지금 입력의 지문. 규격·후보·판·행거탭 중 하나라도 바뀌면 앞 결과는 낡은 것이다. */
+  const freeSig =
+    (pdfOverlay
+      ? `pdf|${pdf?.source || ""}|${pdf?.page ?? 0}|${pdf?.pickIdx ?? 0}|` +
+        `${pdfOverlay.bbox.w}x${pdfOverlay.bbox.h}`
+      : (dieline?.key || "-")) +
+    `|${canvasSheet?.w}x${canvasSheet?.h}|${input?.box?.hangTab || 0}`;
+  const freeStale = !!freeRes && freeRes.sig !== freeSig;
+
+  /**
+   * 자유배치에 넘길 도형 한 벌 — **손배치와 같은 도형**이어야 한다.
+   *
+   * PDF 칼선을 얹은 상태에서 도메인 전개도(dieline.pieces)를 그대로 쓰면 그건
+   * direct 구조의 **bbox 직사각형**이다(applyPick 이 sizeMode="net" 으로 바꾸므로).
+   * 직사각형끼리는 오목한 틈이 없어서 자유배치가 격자와 같은 답만 낸다 — 기능이
+   * 통째로 무의미해진다. 그래서 PDF 일 때는 makeDragPart 가 분해한 실제 칼선 조각을 준다.
+   * (겹침도 이 부품으로 재야 한다 — 그림·스냅·겹침이 세 벌로 갈리면 한쪽이 반드시 틀린다.)
+   *
+   * ⚠ key 는 「폴리곤을 결정하는 입력 전부」여야 한다 — imposition 의 캐시 키가 이걸
+   *   그대로 쓴다. 빠지면 후보를 바꿔도 앞 후보의 배치를 캐시에서 조용히 돌려받는다.
+   */
+  const freeInputOf = () => {
+    if (pdfOverlay) {
+      const P = makeDragPart({ polylines: pdfLocalPolylines(pdfOverlay),
+                               w: pdfOverlay.bbox.w, h: pdfOverlay.bbox.h });
+      if (!P) return null;
+      return { part: P, dl: { key: `${freeSig}|${P.mode}|${P.pieceCount}`,
+                              net: { netW: P.w, netH: P.h }, pieces: P.pieces,
+                              polygon: true, noRotate: false } };
+    }
+    if (!dieline?.pieces?.length) return null;
+    return { dl: dieline,
+             part: makeDragPart({ pieces: dieline.pieces,
+                                  w: dieline.net.netW, h: dieline.net.netH }) };
+  };
+
+  const runFree = () => {
+    if (freeBusy) return;
+    const src = canvasSheet ? freeInputOf() : null;
+    if (!src?.part) {
+      setFreeRes({ sig: freeSig, error: "앉힐 도형이나 판이 없다 — 규격을 먼저 넣어라" });
+      return;
+    }
+    setFreeBusy(true);
+    // solveFree 는 **동기**다. 한 프레임 양보하지 않으면 「실행 중」이 한 번도 안 그려지고
+    // 버튼이 죽은 것처럼 보인다 (1초짜리 계산에서 실제로 그렇게 보였다).
+    setTimeout(() => {
+      let res;
+      try {
+        const t0 = performance.now();
+        const L = solveImposition({ dieline: src.dl, sheet: canvasSheet,
+                                    hangTab: input?.box?.hangTab || 0,
+                                    engine: LAYOUT_ENGINE.FREE });
+        const ms = Math.round(performance.now() - t0);
+        const items = (L?.freeUsed ? L.boxes : []).map(b => ({
+          x: b.x, y: b.y, flipped: !!b.flipped, rotated: !!b.rotated }));
+        // ★ 겹침은 **손배치 up 줄과 같은 통로**로 잰다 (아래 handWarn 과 같은 함수·같은 부품).
+        //   overlapPairs 는 겹친 칸의 **인덱스 Set** 을 반환한다 — 쌍 배열이 아니다.
+        //   solveFree 가 겹친 해를 이미 버리므로 0 이어야 정상이고, 0 이 아니면 엔진 결함이라
+        //   숨기지 않고 그 자리에서 빨갛게 띄운다.
+        const nOv = items.length ? overlapPairs(src.part, items).size : 0;
+        res = {
+          sig: freeSig, ms, items, nOv,
+          // 격자 up: 자유를 채택했으면 alt 에, 아니면 그 자체가 격자 결과다
+          gridUp: L?.freeUsed ? (L.alt?.up ?? 0) : (L?.up ?? 0),
+          freeUp: L?.free?.up ?? 0, used: !!L?.freeUsed,
+          footPct: L?.free?.footPct ?? 0, footOver: !!L?.free?.footOver,
+          strategy: L?.free?.strategy || "", budgetHit: !!L?.free?.budgetHit,
+          rejected: L?.free?.rejected || 0, mode: src.part.mode,
+          // 어떤 도형으로 풀었는지 — PDF 를 얹으면 견적서의 전개도(직사각)가 아니라
+          // 칼선 분해 도형이다. 그 사실을 감추면 위 「격자 N up」을 견적 판걸이로 읽는다.
+          src: pdfOverlay ? "PDF 칼선" : "구조 전개도",
+        };
+      } catch (e) {
+        // 조용히 삼키면 「버튼이 안 먹는다」로 읽힌다 — 이유를 그대로 남긴다
+        res = { sig: freeSig, error: e?.message || String(e) };
+      }
+      setFreeRes(res);
+      setFreeBusy(false);
+    }, 0);
+  };
+
+  /** 자유배치 → 손배치. 여기서부터는 **사람이 소유한다** (엔진이 다시 안 건드린다). */
+  const takeFree = () => {
+    const items = freeRes?.items;
+    if (!items?.length) return;
+    if (handOn) commitPlacement(items);   // 이미 켜져 있으면 되돌리기 스택에 쌓고 교체
+    else enterHand(items);                // 켜면서 판 고정 + handPrev 보존
+    setFreeRes(r => (r ? { ...r, taken: true } : r));
   };
 
   return (
@@ -505,6 +618,111 @@ export default function BoxSpec({
       {canvasSheet && (
         <div style={{marginTop:8}}>
           <Toggle checked={s.showSheet} onChange={v=>u("showSheet",v)} label="판형 캔버스 (판·물림·자)"/>
+
+          {/* ── 배치 엔진 ───────────────────────────────────────────────
+              기본은 규칙격자다 — 목형이 격자여야 톰슨이 서고, 견적서 78건 역산과
+              재현율(verify-net·scorecard-nest)이 전부 그 위에서 교정됐다.
+              자유배치는 **버튼으로만** 돌고, 견적에 넣으려면 손배치로 확정해야 한다. */}
+          <div style={{marginTop:6}}>
+            <Field label="배치 엔진"
+              note="견적은 규칙격자 기준이다. 자유배치는 실행한 뒤 「손배치로 이어받기」로 확정해야 up 에 반영된다.">
+              <Select value={engine} onChange={setEngine} options={[
+                { id: LAYOUT_ENGINE.GRID, label: "규칙격자 (기본 · 목형·톰슨이 서는 배치)" },
+                { id: LAYOUT_ENGINE.FREE, label: "자유배치 (남는 틈에 한 장 더 · 규칙성 없음)" },
+              ]}/>
+            </Field>
+          </div>
+
+          {engine === LAYOUT_ENGINE.FREE && (
+            <div style={{background:"#0a1020",border:"1px solid #24344e",borderRadius:4,
+                         padding:"6px 8px",marginTop:-4,marginBottom:6,fontSize:9,
+                         color:"#8899bb",lineHeight:1.7}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:6}}>
+                <span>
+                  {freeBusy ? "자유배치 푸는 중… (수백 ms)"
+                    : freeRes && !freeStale ? "실행 결과 ↓" : "버튼을 눌러야 돈다 (자동 재계산 없음)"}
+                </span>
+                <span style={{display:"flex",gap:3}}>
+                  <button type="button" onClick={runFree} disabled={freeBusy}
+                    style={{background:"#16283f",border:"1px solid #2a3a5a",borderRadius:3,
+                            color: freeBusy ? "#48566a" : "#a8c8e8", fontSize:8.5,
+                            padding:"2px 6px", cursor: freeBusy ? "default" : "pointer"}}>
+                    {freeRes && !freeStale ? "다시 실행" : "자유배치 실행"}
+                  </button>
+                  <button type="button" onClick={takeFree}
+                    disabled={!(freeRes?.items?.length && !freeStale)}
+                    style={{background:"#16283f",
+                            border:`1px solid ${freeRes?.items?.length && !freeStale ? "#2a4a3a" : "#1a2436"}`,
+                            borderRadius:3,
+                            color: freeRes?.items?.length && !freeStale ? "#88ccaa" : "#48566a",
+                            fontSize:8.5, padding:"2px 6px",
+                            cursor: freeRes?.items?.length && !freeStale ? "pointer" : "default"}}>
+                    손배치로 이어받기
+                  </button>
+                </span>
+              </div>
+
+              {freeRes?.error && <div style={{color:"#ff8877"}}>✕ {freeRes.error}</div>}
+
+              {/* 낡은 결과를 **지우지 않고** 낡았다고 말한다 — 조용히 지우면 사용자는
+                  「눌렀는데 사라졌다」로 읽고, 그대로 두면 다른 규격의 up 을 쓴다. */}
+              {freeStale && !freeRes?.error && (
+                <div style={{color:"#ffaa44"}}>
+                  ⚠ 규격·후보·판·행거탭이 바뀌었다 — 아래는 <b>바뀌기 전</b> 결과다. 다시 실행하라.
+                </div>
+              )}
+
+              {freeRes && !freeRes.error && (
+                <>
+                  <div>
+                    격자 <strong style={{color:"#a8c8e8"}}>{freeRes.gridUp} up</strong>
+                    {" → "}자유{" "}
+                    <strong style={{color: freeRes.nOv ? "#ff7766"
+                                         : freeRes.used ? "#44cc88" : "#a8c8e8"}}>
+                      {freeRes.freeUp} up
+                    </strong>
+                    {freeRes.used
+                      ? <span style={{color:"#44cc88"}}> (+{freeRes.freeUp - freeRes.gridUp})</span>
+                      : <span style={{color:"#66889f"}}> — 격자가 같거나 낫다 (격자를 쓴다)</span>}
+                    <span style={{color:"#556680"}}> · 발자국 {freeRes.footPct}% · {freeRes.ms}ms</span>
+                  </div>
+                  {/* ★ 겹침 경고는 up 이 나가는 자리에 붙는다 — 손배치 up 줄과 같은 규칙 */}
+                  {freeRes.nOv > 0 && (
+                    <div style={{color:"#ff7766",fontWeight:700}}>
+                      ⚠ 겹침 {freeRes.nOv}칸 — 이어받지 마라 (엔진 결함이다. 겹친 해는 버려져야 한다)
+                    </div>
+                  )}
+                  {freeRes.rejected > 0 && (
+                    <div style={{color:"#ffaa44"}}>⚠ 겹쳐서 버린 해 {freeRes.rejected}개</div>
+                  )}
+                  {freeRes.budgetHit && (
+                    <div style={{color:"#ffcc88"}}>
+                      ⚠ 탐색 예산을 다 썼다 — 더 들어갈 수 있다 (도형이 작고 판이 클 때 그렇다)
+                    </div>
+                  )}
+                  {/* 발자국 상한은 자유배치에 **적용하지 않는다** — 격자의 「maxUp 한 단계
+                      감소 = 열·행 하나 감소」가 자유배치에는 성립하지 않아서다. 대신 알린다. */}
+                  {freeRes.footOver && (
+                    <div style={{color:"#ffaa44"}}>
+                      ⚠ 발자국 {freeRes.footPct}% 가 상한 {MAX_FOOT_PCT}% 를 넘는다 — 자동 배치라면
+                      걸러졌을 배치다. 판 가장자리를 확인하라.
+                    </div>
+                  )}
+                  <div style={{color:"#556680"}}>
+                    전략 {freeRes.strategy || "-"} · 도형 {freeRes.src}({freeRes.mode})
+                    {freeRes.taken && <span style={{color:"#88ccaa"}}> · 손배치로 넘겼다</span>}
+                  </div>
+                  {/* 두 숫자 다 **이 도형**으로 푼 값이다 — 위 판걸이 정보 블록의 up 은
+                      견적이 쓰는 구조 전개도(PDF 를 얹으면 직사각)라서 다를 수 있다. */}
+                  {freeRes.src === "PDF 칼선" && (
+                    <div style={{color:"#66889f"}}>
+                      · 위 두 up 은 <b>칼선 도형</b>으로 푼 값이다 — 견적 판걸이(구조 전개도 기준)와 다를 수 있다.
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
 
           {/* ── 손배치 모드 ─────────────────────────────────────────────
               켜면 앉힌 개수가 그대로 up 이 되고 지대R·금액이 따라 움직인다.

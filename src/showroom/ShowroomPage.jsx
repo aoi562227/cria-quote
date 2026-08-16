@@ -151,10 +151,16 @@ export default function ShowroomPage() {
     return true;
   };
 
+  // ⚠ 꺼낼 값은 **렌더 클로저의 undo** 에서 읽는다. 종전에는 setUndo 의 갱신함수 안에서
+  //   back 을 집어내 바깥 변수에 담았는데, React 는 그 함수를 **호출 시점에 부른다고
+  //   보장하지 않는다**(렌더 단계에서 부른다. 조기 bailout 계산은 최적화일 뿐이다).
+  //   실측: 같은 코드가 드래그 직후에는 되돌아가고 「빈 곳 채우기」 실패 뒤에는
+  //   back 이 undefined 로 남아 조기 return — **스택만 비고 배치는 그대로**였다.
+  //   되돌리기가 가끔 먹지 않는 것은 부스에서 제일 나쁜 종류의 고장이라 원인을 없앤다.
   const doUndo = () => {
-    let back;
-    setUndo(u => { if (!u.length) return u; back = u[u.length - 1]; return u.slice(0, -1); });
-    if (back === undefined) return;
+    if (!undo.length) return;
+    const back = undo[undo.length - 1];
+    setUndo(u => u.slice(0, -1));
     setItems(back); setSel(null); setMsg("");
   };
 
