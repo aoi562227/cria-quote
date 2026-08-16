@@ -232,6 +232,89 @@ export function overlaps(part, t, sameOrient) {
   return false;
 }
 
+// ══ 자세(pose) 계층 ════════════════════════════════════════════════
+//  왜 여기 있나 — 격자 솔버는 자기 안에서 자세를 다룬다(g=0/90 × FLIP_RULES).
+//  그런데 **격자가 아닌** 배치(손배치 · 자유배치)도 같은 판정이 필요하다. 그 판정을
+//  각자 짜면 「자동은 되는데 손으로는 안 되는」 자리가 생긴다 — 겹침 기준이 갈리면
+//  한쪽이 반드시 틀리고, 틀린 쪽이 목형을 깬다. 그래서 **한 곳**에 둔다.
+//  ⚠ 정책은 없다. 판형·물림·발자국은 여전히 imposition.mjs 의 일이다.
+//
+//  배치 1개 = { x, y, flipped, rotated } 이고 x,y 는 **발자국 bbox 의 좌상단**이다
+//  (solveLayout 의 cells 와 같은 규약 — 그래서 자동 배치를 그대로 씨앗으로 쓸 수 있다).
+
+/** 0° 와 90° 부품을 한 벌로. 90° 는 조각을 돌려 **따로 한 벌 더** 깐다 —
+ *  같은 방향끼리는 정확한 NFP 로 판정하기 위해서다. */
+export function makePart(rawPieces) {
+  const base = preparePart(rawPieces);
+  if (!base) return null;
+  const rot = preparePart(rot90(base.pieces));
+  if (!rot) return null;
+  const w = base.netW, h = base.netH;
+  const rect = (a, b) => [[0, 0], [a, 0], [a, b], [0, b]];
+  return {
+    base, rot, w, h, pieces: base.pieces,
+    // 방향이 다른 쌍(0°×90°)용 **bbox** NFP. 첫째=고정, 둘째=이동 (부호 규약 위 참조).
+    // ⚠ 볼록조각쌍 NFP 를 새로 깔지 않고 bbox 로 보수적으로 막는다 — 겹침을 놓치는
+    //   쪽이 아니라 **더 막는** 쪽으로 틀린다. 못 붙이는 것보다 겹치는 것이 나쁘다.
+    nfpCross: [minkowski(rect(w, h), rect(h, w), -1),
+               minkowski(rect(h, w), rect(w, h), -1)],
+  };
+}
+
+export const itemW = (P, it) => (it.rotated ? P.h : P.w);
+export const itemH = (P, it) => (it.rotated ? P.w : P.h);
+
+/** 고정 a 에 대해 이동 b 를 판정할 때 쓸 NFP 집합과 이동벡터 부호.
+ *  부호 규약은 verifyNoOverlap 과 **똑같다**: t = sg·(b.pos − a.pos) 이고
+ *  「a 가 반전, b 가 정방향」일 때만 sg = −1 이다. */
+export function nfpSetOf(P, a, b) {
+  if (!!a.rotated === !!b.rotated) {
+    const part = a.rotated ? P.rot : P.base;
+    if (!!a.flipped === !!b.flipped) return { set: part.N_same, sg: 1 };
+    return { set: part.N_op, sg: a.flipped ? -1 : 1 };
+  }
+  return { set: [P.nfpCross[a.rotated ? 1 : 0]], sg: 1 };
+}
+
+/** 두 배치가 겹치는가 (닿음은 겹침이 아니다 — strictlyInside 시맨틱). */
+export function pairOverlaps(P, a, b) {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  // bbox 프리필터 — 대부분 즉시 기각 (verifyNoOverlap 과 같은 수법)
+  if (dx >= itemW(P, a) - 1e-7 || -dx >= itemW(P, b) - 1e-7) return false;
+  if (dy >= itemH(P, a) - 1e-7 || -dy >= itemH(P, b) - 1e-7) return false;
+  const { set, sg } = nfpSetOf(P, a, b);
+  const t = [sg * dx, sg * dy];
+  for (const N of set) if (strictlyInside(N, t)) return true;
+  return false;
+}
+
+/** it 가 others 전부와 안 겹치는가 */
+export const freeAt = (P, it, others) => !others.some(o => pairOverlaps(P, o, it));
+
+/** v 방향 직선 위에서 「겹치는 s 구간」들. 구간 끝이 곧 딱 닿는 자리다.
+ *  from 은 **이동 부품의 위치**(발자국 좌상단)이고 s 는 거기서 v 방향 이동량이다. */
+export function forbiddenAlong(P, from, moving, others, v) {
+  const ivs = [];
+  for (const o of others) {
+    const { set, sg } = nfpSetOf(P, o, moving);
+    const ov = [sg * (from[0] - o.x), sg * (from[1] - o.y)];
+    const vv = [sg * v[0], sg * v[1]];
+    for (const N of set) {
+      const iv = lineInsideInterval(N, ov, vv);
+      if (iv && Number.isFinite(iv[0]) && Number.isFinite(iv[1])) ivs.push(iv);
+    }
+  }
+  return ivs;
+}
+
+/** 배치 1개의 조각들을 **판 좌표**로. 그림에는 쓰지 않는다(그림은 SVG transform) —
+ *  겹침 샘플링 검증과 스냅 디버깅이 쓴다. */
+export function placedPieces(P, it) {
+  const part = it.rotated ? P.rot : P.base;
+  const src = it.flipped ? part.flipped : part.pieces;
+  return src.map(p => p.map(([x, y]) => [x + it.x, y + it.y]));
+}
+
 // ══ 격자 솔버 ══════════════════════════════════════════════════════
 
 const FLIP_RULES = {

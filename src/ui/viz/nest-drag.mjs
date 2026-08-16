@@ -11,9 +11,11 @@
 //
 //  nest.mjs 를 어떻게 재사용하나
 //  ──────────────────────────
-//  겹침 판정·스냅 전부 nest 의 NFP 를 그대로 쓴다 (preparePart / overlaps /
-//  minkowski / strictlyInside / lineInsideInterval / firstFree). 새 기하를 짜지 않는다 —
-//  솔버와 손배치가 다른 겹침 기준을 쓰면 「자동은 되는데 손으로는 안 되는」 자리가 생긴다.
+//  겹침 판정은 **한 줄도 여기 없다.** nest.mjs 의 「자세 계층」을 그대로 쓴다
+//  (makePart / nfpSetOf / pairOverlaps / freeAt / forbiddenAlong / placedPieces).
+//  솔버·손배치·자유배치가 다른 겹침 기준을 쓰면 「자동은 되는데 손으로는 안 되는」
+//  자리가 생기고, 그때 틀린 쪽이 목형을 깬다.
+//  이 파일이 실제로 소유하는 것은 **PDF 폴리라인 → 볼록 조각** 변환과 스냅뿐이다.
 //
 //  ⚠ overlaps 는 **볼록 조각 리스트**를 받는다. 입력이 둘로 갈린다:
 //   · 구조 전개도(dieline.pieces)  → 이미 볼록이다. 그대로 쓴다 (mode "exact").
@@ -31,7 +33,7 @@
 //  ────────
 //  손배치가 다루는 자세는 3가지다: 0° / 0°+180°반전 / 90° (+반전).
 //  180° 반전은 nest 의 N_op 가 이미 정확히 그 쌍이다. 90° 는 **부품을 따로 한 벌 더**
-//  깔아서(preparePart(rot90(pieces))) 같은 방향끼리는 정확하게 판정한다.
+//  깔아서(nest.makePart 가 rot90 으로 깐다) 같은 방향끼리는 정확하게 판정한다.
 //  ⚠ 0°×90° 처럼 **방향이 다른 쌍**은 볼록조각쌍 NFP 를 새로 깔지 않고 bbox NFP 로
 //    보수적으로 막는다 (겹침을 놓치는 쪽이 아니라 **더 막는** 쪽으로 틀린다).
 //    자동 배치는 판 하나에 한 방향만 쓰므로 실무에서 섞이는 일이 드물고, 섞였을 때
@@ -42,9 +44,13 @@
 //  (layout.boxes 와 같은 규약 — 그래서 자동 배치를 그대로 씨앗으로 쓸 수 있다).
 // ══════════════════════════════════════════════════════════════════
 import {
-  preparePart, overlaps, minkowski, strictlyInside, lineInsideInterval,
-  firstFree, bboxOf, hull, canonicalize, rot90,
+  firstFree, bboxOf, hull, canonicalize,
+  makePart, itemW, itemH, pairOverlaps, freeAt, forbiddenAlong, placedPieces,
 } from "../../nest.mjs";
+// 자세·겹침 판정은 **엔진이 소유한다** (nest.mjs 「자세 계층」). 여기서 다시 짜지 않고
+// 그대로 내보낸다 — 솔버·손배치·자유배치가 같은 한 벌을 써야 「자동은 되는데 손으로는
+// 안 되는」 자리가 안 생긴다. 종전엔 이 파일이 같은 함수를 복제해 갖고 있었다.
+export { itemW, itemH, pairOverlaps, freeAt, placedPieces };
 
 /** 스냅 반경(화면 px). mm 로 환산할 때 scale 로 나눈다 — 판이 작게 그려졌을 때
  *  6mm 스냅은 2px 라 손가락으로 못 맞춘다. 화면 거리로 잡아야 감이 일정하다. */
@@ -304,8 +310,73 @@ function rdpRing(ring, tol) {
   return res.length >= 3 ? res : ring;
 }
 
+// ── 격자 ↔ mm 「반칸」 보정 ─────────────────────────────────────────
+//  ★ 왜 종전 래스터가 축당 +1칸 커졌나 (계측으로 재현했다)
+//    put() 은 선 위 표본을 **가장 가까운 칸 중심**에 굽는다 → 칸 i 는 mm i·cell 을 뜻한다.
+//    그런데 윤곽은 칸의 **면**을 따라 뽑으므로 아래 mm 환산이 칸 i 를
+//    [i·cell, (i+1)·cell] 로 읽는다. 이 반칸 편차 때문에 낮은쪽 변은 정확히 맞고
+//    높은쪽 변만 +1칸 삐져나갔다 —
+//      t-wake2 cell 0.80 → 199.20×235.20 vs 칼선 198.3×234   = +0.90/+1.20
+//      t-ishap cell 1.857 → 558.96×326.83 vs 칼선 557.1×324.16 = +1.86/+2.67
+//    그래서 makeDragPart 의 |Δ|>0.6 게이트를 **원리적으로** 못 넘었고(cell 하한 0.8mm),
+//    mode==="raster" 용 note 문자열은 도달 불가 코드였다.
+//
+//  −0.5칸 하면 대칭이 된다: 변이 mm u 에 있으면 벽칸은 c = round(u/cell) 이고
+//    그 칸의 면이 (c∓0.5)·cell 에 오므로 |c·cell − u| ≤ 0.5·cell 만큼 대칭으로 어긋난다.
+//
+//  ⚠ 「그래서 축평행 변은 항상 바깥쪽이니 안전하다」는 종전 주석은 **반증됐다.**
+//    축평행 변에서만 맞는 얘기고, 대각·곡선에서는 침식이 벽칸을 옆으로 밀어 도형이
+//    실물보다 **작아진다**. 계측(leakOf): 깎기 있음 → t-wake2 0.327mm · t-ishap 0.608mm
+//    가 도형 **밖**. 그래서 지금은 깎지 않고(rasterDecompose inB 주석) 그 위에
+//    담기 게이트를 걸어 **재서 확인한다.** 추론으로 안전을 주장하지 않는다.
+const HALF_CELL = 0.5;
+/** 윤곽 bbox 가 칼선 bbox 보다 이만큼(칸 수) 넘게 크면 물이 샌 것으로 보고 폐기한다.
+ *  부풀림을 되돌리지 않으므로(아래 「깎지 않는다」 절) 정상값이 **축당 3칸**(한 변 1.5칸)
+ *  이다. 5칸은 거기에 격자 반올림 여유를 더한 값이고, 그 이상이면 물이 샌 것이다.
+ *  ⚠ 이 값을 3 으로 내리면 정상 케이스가 전부 폐기된다(실측: 웨이크버니 축당 2.9칸). */
+const LEAK_CELLS = 5;
+/** ② 늘리기 상한(칸 수). 이만큼도 못 채우면 윤곽이 칼선을 대표하지 못한다 → 폐기. */
+const STRETCH_CELLS = 3;
+/** 실물 칼선이 충돌 도형 **밖**으로 새도 되는 최대 거리(mm).
+ *  이 숫자가 곧 「엔진은 안 겹친다는데 인쇄에서는 겹치는」 폭이라 0 이어야 한다.
+ *  0.02 는 부동소수·표본 격자 잡음 몫이다 — 여유가 아니다. */
+const LEAK_MM = 0.02;
+
+/**
+ * 래스터 윤곽을 **칼선 bbox 에 못 박는다.**
+ *
+ * 왜 필요한가 — 그림과 충돌 도형이 같은 사각형에 앉아야 한다. SheetCanvas 는 칸
+ * rect(= bbox w×h) 안에 PDF 폴리라인을 얹고 반전도 bbox 중심(pb.w/2, pb.h/2)으로 돈다.
+ * 충돌 도형의 bbox 가 다르면 「그린 칸」과 「막는 도형」이 어긋난다. 종전 코드는 그걸
+ * **폐기 사유**로만 썼다 — 위 반칸 편차와 합쳐져 PDF 는 늘 bbox·볼록껍질로 떨어졌고
+ * 그래서 오목한 틈을 파고드는 맞물림이 원리적으로 불가능했다.
+ *
+ * 두 단계이고 **둘 다 도형이 작아지지 않는 쪽으로만** 움직인다:
+ *  ① bbox 밖 오버행을 자른다 — 칼선 bbox 밖은 실물이 아니므로 잘라도 실물을 덜 덮지 않는다.
+ *     (bbox 는 추출기가 이 폴리라인들의 합집합으로 낸 값이고 nW/nH 로 견적에도 그게 갔다.)
+ *  ② 그래도 bbox 를 못 채우면 **늘린다** — sx,sy ≥ 1 만 쓴다. 줄이는 스케일은 안 쓴다:
+ *     실물보다 작아지면 손배치가 「안 겹친다」고 통과시키고 인쇄에서 겹친다.
+ * @returns {{ring:number[][], over:number[], stretch:number[]}|null}
+ */
+function fitRingToBox(ring, w, h, cell) {
+  const cl = ring.map(([x, y]) => [Math.min(w, Math.max(0, x)), Math.min(h, Math.max(0, y))]);
+  const rb = bboxOf([ring]);
+  // 자르기 전 오버행(각 축 최대) — note 에 「얼마나 컸나」를 숫자로 싣는다
+  const over = [Math.max(0, -rb.x0) + Math.max(0, rb.x1 - w),
+                Math.max(0, -rb.y0) + Math.max(0, rb.y1 - h)];
+  const b = bboxOf([cl]);
+  if (!(b.w > 1e-6 && b.h > 1e-6)) return null;
+  const sx = w / b.w, sy = h / b.h;                 // clamp 뒤라 둘 다 ≥ 1
+  if (w - b.w > STRETCH_CELLS * cell || h - b.h > STRETCH_CELLS * cell) return null;
+  const out = cl.map(([x, y]) => [(x - b.x0) * sx, (y - b.y0) * sy]);
+  return { ring: out, over, stretch: [w - b.w, h - b.h] };
+}
+
 function rasterDecompose(polylines, bb, maxPieces) {
   const md = Math.max(bb.w, bb.h);
+  // 실패 사유를 모은다 — 화면 note 가 「왜 정밀도를 잃었나」를 말해야 한다.
+  // 한 줄도 안 남기면 사용자는 폴백을 「원래 그런 것」으로 읽는다.
+  const rw = [];
   for (const cell of [Math.min(2, Math.max(0.8, md / 300)), Math.min(3, Math.max(1.6, md / 150))]) {
     const M = 2;                                                   // 바깥 여백 칸
     const nx = Math.ceil(bb.w / cell) + 2 * M, ny = Math.ceil(bb.h / cell) + 2 * M;
@@ -341,17 +412,29 @@ function rasterDecompose(polylines, bb, maxPieces) {
       if (x) push(x - 1, y); if (x + 1 < nx) push(x + 1, y);
       if (y) push(x, y - 1); if (y + 1 < ny) push(x, y + 1);
     }
-    // 안쪽 = 안 잠긴 칸. 벽을 부풀린 만큼 1칸 깎아 원래 크기로 되돌린다.
-    const inA = new Uint8Array(nx * ny);
-    for (let i = 0; i < inA.length; i++) inA[i] = out[i] ? 0 : 1;
-    const inB = new Uint8Array(inA);
-    for (let y = 0; y < ny; y++) for (let x = 0; x < nx; x++) {
-      if (!inA[gi(x, y)]) continue;
-      if (!x || !y || x + 1 >= nx || y + 1 >= ny ||
-          !inA[gi(x - 1, y)] || !inA[gi(x + 1, y)] || !inA[gi(x, y - 1)] || !inA[gi(x, y + 1)]) inB[gi(x, y)] = 0;
-    }
+    // 안쪽 = 안 잠긴 칸 = 부풀린 벽 ∪ 내부.
+    //
+    // ★ 부풀림을 **되돌리지 않는다** (종전엔 1칸 깎아 원래 크기로 돌렸다).
+    //   깎으면 도형이 실물보다 **작아질 수 있고**, 작아진 충돌 도형은 「안 겹친다」고
+    //   통과시킨 뒤 인쇄에서 겹친다 = 목형이 깨진다. 계측으로 확인했다 —
+    //   깎기 있음: 실물 표본이 도형 밖으로 새는 최대 거리
+    //     t-wake2 0.327mm (표본 6,724개 중 52개) · t-ishap 0.608mm (49,111개 중 690개)
+    //   깎기 없음: 두 파일 **0.000mm / 0개**.
+    //   왜 깎기가 새게 하나 — 침식은 「4이웃이 전부 안쪽인 칸」만 남기므로 대각 계단에서
+    //   원래 벽칸이 아닌 칸이 살아남는다(칸이 선 위에서 옆으로 밀린다). 축평행 변에서는
+    //   ±0.5칸 대칭이 맞지만 대각·곡선에서는 그 대칭이 성립하지 않는다.
+    //
+    //   대가는 숨기지 않는다: 도형이 한 변당 최대 1.5칸 두꺼워지므로 **덜 붙는다**
+    //   (접촉면이 그만큼 벌어진다 → up 이 줄 수 있다). 바깥 테두리는 fitRingToBox 가
+    //   칼선 bbox 로 되잘라서 영향이 없고, 두꺼워지는 곳은 오목한 안쪽 틈이다.
+    //   "겹칠 수도 있지만 잘 붙는다" 와 "확실히 안 겹치지만 덜 붙는다" 중 후자를 고른다.
+    const inB = new Uint8Array(nx * ny);
+    for (let i = 0; i < inB.length; i++) inB[i] = out[i] ? 0 : 1;
     let cnt = 0; for (const v of inB) if (v) cnt++;
-    if (cnt * cell * cell < bb.w * bb.h * 0.12) continue;           // 물이 새어 들어갔다
+    if (cnt * cell * cell < bb.w * bb.h * 0.12) {                   // 물이 새어 들어갔다
+      rw.push(`격자 ${cell.toFixed(2)}mm: 안쪽 면적이 bbox 의 ${(100 * cnt * cell * cell / (bb.w * bb.h)).toFixed(0)}% 뿐 (칼선에 틈이 있어 물이 새어들어갔다)`);
+      continue;
+    }
 
     // 안쪽 칸 경계에지 → 닫힌 윤곽. 면적 최대 = 바깥 윤곽 (안쪽 구멍은 무시 = 보수적)
     const emap = new Map();
@@ -380,17 +463,49 @@ function rasterDecompose(polylines, bb, maxPieces) {
       const a = Math.abs(area2(loop)) / 2;
       if (a > aBest) { aBest = a; outer = loop; }
     }
-    if (!outer) continue;
+    if (!outer) { rw.push(`격자 ${cell.toFixed(2)}mm: 닫힌 윤곽을 못 뽑았다`); continue; }
 
-    const mm = outer.map(([x, y]) => [(x - M) * cell, (y - M) * cell]);
-    for (const tol of [cell * 0.9, cell * 1.8, cell * 3.5]) {
+    // 반칸 보정(위 HALF_CELL 주석) — 이 한 항이 없으면 축당 +1칸 커진다
+    const mm = outer.map(([x, y]) => [(x - M - HALF_CELL) * cell, (y - M - HALF_CELL) * cell]);
+    // 물 샘 감지 — 12% 면적 문턱을 통과했어도 윤곽이 칼선보다 몇 칸씩 크면 새어들어간
+    // 것이다. 그 상태로 아래 clamp 를 걸면 「bbox 사각형」을 정밀한 윤곽으로 위장한다.
+    const rb0 = bboxOf([mm]);
+    if (rb0.w > bb.w + LEAK_CELLS * cell || rb0.h > bb.h + LEAK_CELLS * cell) {
+      rw.push(`격자 ${cell.toFixed(2)}mm: 윤곽 ${rb0.w.toFixed(1)}×${rb0.h.toFixed(1)} 가 칼선 ${bb.w}×${bb.h} 보다 ${LEAK_CELLS}칸 넘게 크다 (물 샘)`);
+      continue;
+    }
+
+    // 단순화 tol 은 **작은 것부터**. RDP 는 윤곽을 안쪽으로도 당길 수 있어서(= 위험한
+    // 방향) 부풀림으로 번 여유를 tol 이 갉아먹는다. 큰 tol 은 아래 leakOf 게이트가
+    // 실제로 새는지 재서 잘라낸다 — 「정점이 적다」가 아니라 「실물을 담는다」가 기준이다.
+    const step = Math.min(0.5, Math.max(0.15, cell / 4));
+    let worstLeak = null;
+    for (const tol of [cell * 0.5, cell * 1.0, cell * 2.0, cell * 3.5]) {
       let ring = dropCollinear(rdpRing(mm, tol), 0.02);
       if (ring.length > RING_MAX) continue;
+      const fit = fitRingToBox(ring, bb.w, bb.h, cell);
+      if (!fit) continue;
+      // clamp 가 만든 중복·공선 정점을 다시 걷어낸다 (귀 자르기가 퇴화에 약하다)
+      ring = dropCollinear(fit.ring, Math.min(0.05, cell * 0.05));
+      if (ring.length < 3 || ring.length > RING_MAX) continue;
       const pieces = ringToPieces(ring, maxPieces);
-      if (pieces) return { pieces, cell, verts: ring.length };
+      if (!pieces) continue;
+      // ★ 담기 게이트 — **NFP 를 쓰지 않는 독립 계측**이다. 실물 칼선을 촘촘히 찍어
+      //   전부 도형 안에 있는지 본다. 새면 그 해를 **버린다** (다음 tol → 다음 cell →
+      //   끝내 없으면 볼록껍질). 「조금 새는 정밀한 윤곽」보다 「무딘 껍질」이 안전하다:
+      //   껍질은 반드시 실물을 담으므로 겹침을 놓치지 않는다.
+      const leak = leakOf(polylines, pieces, step, LEAK_MM);
+      if (leak.worst > LEAK_MM) {
+        if (!worstLeak || leak.worst < worstLeak) worstLeak = leak.worst;
+        continue;
+      }
+      return { pieces, cell, verts: ring.length, tol, over: fit.over, stretch: fit.stretch, leak };
     }
+    if (worstLeak != null)
+      rw.push(`격자 ${cell.toFixed(2)}mm: 윤곽이 실물 칼선을 ${worstLeak.toFixed(2)}mm 못 덮었다 (담기 게이트)`);
+    else rw.push(`격자 ${cell.toFixed(2)}mm: 윤곽을 볼록 ${maxPieces}조각 이하로 못 나눴다`);
   }
-  return null;
+  return { pieces: null, why: rw.join(" / ") || "래스터를 돌릴 격자가 없었다" };
 }
 
 /**
@@ -418,8 +533,9 @@ export function decomposePolylines(polylines, bb, maxPieces = MAX_PIECES) {
     }
   }
   const r = rasterDecompose(polylines, bb, maxPieces);
-  if (r) return { pieces: r.pieces, mode: "raster", why: "", cell: r.cell, verts: r.verts };
-  return { pieces: null, mode: "hull", why: `${why}; 래스터 윤곽도 실패` };
+  if (r.pieces) return { pieces: r.pieces, mode: "raster", why: "", cell: r.cell, verts: r.verts,
+                         tol: r.tol, over: r.over, stretch: r.stretch, leak: r.leak };
+  return { pieces: null, mode: "hull", why: `${why}; 래스터도 실패 — ${r.why}` };
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -439,11 +555,11 @@ export function makeDragPart(src) {
   const w = +src?.w, h = +src?.h;
   if (!(w > 0 && h > 0)) return null;
 
-  let pieces = null, mode = "bbox", why = "", cell = 0;
+  let pieces = null, mode = "bbox", why = "", cell = 0, over = null, stretch = null, leak = null;
   if (src.pieces?.length) { pieces = src.pieces; mode = "exact"; }
   else if (src.polylines?.length) {
     const r = decomposePolylines(src.polylines, { w, h });
-    if (r.pieces) { pieces = r.pieces; mode = r.mode; cell = r.cell || 0; }
+    if (r.pieces) { pieces = r.pieces; mode = r.mode; cell = r.cell || 0; over = r.over; stretch = r.stretch; leak = r.leak; }
     else {
       why = r.why;
       const pts = [];
@@ -454,24 +570,36 @@ export function makeDragPart(src) {
   }
   if (!pieces?.length) { pieces = [rectPoly(w, h)]; mode = mode === "exact" ? "exact" : "bbox"; }
 
-  const base = preparePart(pieces);
-  if (!base) return null;
+  let PB = makePart(pieces);
+  if (!PB) return null;
   // 분해가 bbox 를 못 채우면 그림(bbox 칸)과 충돌 도형이 어긋난다 → bbox 로 내린다.
-  if (Math.abs(base.netW - w) > 0.6 || Math.abs(base.netH - h) > 0.6) {
-    why = why || `분해 결과 ${base.netW.toFixed(1)}×${base.netH.toFixed(1)} 가 칼선 ${w}×${h} 와 다르다`;
+  // ⚠ 이 게이트는 「래스터 결과를 버리는 자리」가 아니다. 래스터는 fitRingToBox 가
+  //   이미 칼선 bbox 에 맞춰 놓았으므로 여기서는 **그게 실제로 됐는지 확인**만 한다.
+  //   그래서 허용폭이 0.6mm(= cell 하한 0.8mm 를 원리적으로 못 넘던 값)가 아니라
+  //   부동소수 오차 수준이다. 여기서 걸리면 정규화가 깨진 것이고, 조용히 넘기면
+  //   그린 칸과 막는 도형이 어긋난 채로 손배치가 돈다.
+  if (Math.abs(PB.w - w) > 0.05 || Math.abs(PB.h - h) > 0.05) {
+    why = why || `분해 결과 ${PB.w.toFixed(2)}×${PB.h.toFixed(2)} 가 칼선 ${w}×${h} 와 다르다`;
     pieces = [rectPoly(w, h)]; mode = "bbox";
+    PB = makePart(pieces);
+    if (!PB) return null;
   }
   const P = {
-    base: mode === "bbox" ? preparePart(pieces) : base,
-    rot: preparePart(rot90(pieces)),
-    w, h, pieces, mode,
-    // 방향이 다른 쌍(0°×90°)용 bbox NFP. 첫째=고정, 둘째=이동 (nest 의 부호 규약).
-    nfpCross: [minkowski(rectPoly(w, h), rectPoly(h, w), -1),
-               minkowski(rectPoly(h, w), rectPoly(w, h), -1)],
+    ...PB,
+    mode,
     // 폴백은 **반드시 화면에 뜬다.** 일부만 맞는 스냅을 정확한 스냅으로 오해하는 것이
     // 폴백 자체보다 위험하다 (SheetCanvas 범례가 이 문자열을 그대로 찍는다).
+    // ⚠ raster 는 폴백이 아니라 **근사**다 — 오목한 틈을 파고들 수 있고, 대신 도형이
+    //   격자 한두 칸만큼 두껍다. 그 숫자를 감추지 않는다. 특히 **담기 계측 결과**를
+    //   그대로 싣는다: 「실물 표본 N개 전부 도형 안」이 곧 겹침 안전의 근거다.
     note: mode === "exact" || mode === "stitched" ? null
-        : mode === "raster" ? `칼선 끝점이 안 이어져 격자 ${cell.toFixed(2)}mm 윤곽으로 근사했다 — 접촉 정밀도 ±${cell.toFixed(1)}mm.`
+        : mode === "raster"
+          ? `칼선 끝점이 안 이어져 격자 ${cell.toFixed(2)}mm 윤곽으로 근사했다. ` +
+            `실물 칼선 표본 ${(leak?.n ?? 0).toLocaleString()}개가 전부 이 도형 안에 있다(이탈 ` +
+            `${(leak?.worst ?? 0).toFixed(3)}mm) — 그래서 **겹침을 놓치지 않는다.** ` +
+            `대신 도형이 한 변당 최대 ${(cell * 1.5).toFixed(1)}mm 두꺼워서 그만큼 **덜 붙는다**(up 이 줄 수 있다). ` +
+            `바깥 테두리는 칼선 bbox ${w}×${h} 로 되잘랐다(오버행 ${(over?.[0] ?? 0).toFixed(2)}/${(over?.[1] ?? 0).toFixed(2)}mm` +
+            `${stretch && (stretch[0] > 0.005 || stretch[1] > 0.005) ? `, 미달 ${stretch[0].toFixed(2)}/${stretch[1].toFixed(2)}mm 는 바깥으로 늘림` : ""}).`
         : mode === "hull" ? `⚠ 칼선 폴리곤을 볼록 분해하지 못해 **볼록껍질**로 스냅한다 — ${why}. 오목한 틈(맞물림)은 못 파고든다.`
         : `⚠ 칼선 폴리곤을 볼록 분해하지 못해 **bbox 사각형**으로 스냅한다 — ${why}. 맞물림 없이 칼선 공유만 된다.`,
   };
@@ -492,50 +620,9 @@ export function pdfLocalPolylines(pick) {
   return pick.polygons.map(p => p.map(([x, y]) => [x - ox, oy - y]));
 }
 
-export const itemW = (P, it) => (it.rotated ? P.h : P.w);
-export const itemH = (P, it) => (it.rotated ? P.w : P.h);
-
-/** 배치 1개의 조각들을 **판 좌표**로. 그림에는 쓰지 않는다(그림은 SVG transform) —
- *  겹침 샘플링 검증과 스냅 디버깅이 쓴다. */
-export function placedPieces(P, it) {
-  const part = it.rotated ? P.rot : P.base;
-  const src = it.flipped ? part.flipped : part.pieces;
-  return src.map(p => p.map(([x, y]) => [x + it.x, y + it.y]));
-}
-
 // ══════════════════════════════════════════════════════════════════
-//  겹침 판정 — nest 의 NFP 를 그대로
+//  겹침 판정 — nest 의 자세 계층을 그대로 (이 파일에 복제본을 두지 마라)
 // ══════════════════════════════════════════════════════════════════
-
-/** 고정 a 에 대해 이동 b 를 판정할 때 쓸 NFP 집합과 이동벡터 부호.
- *  부호 규약은 nest.verifyNoOverlap 과 **똑같다**: t = b.pos − a.pos 이고
- *  「a 가 반전, b 가 정방향」일 때만 −t 로 뒤집는다. */
-function nfpSetOf(P, a, b) {
-  if (!!a.rotated === !!b.rotated) {
-    const part = a.rotated ? P.rot : P.base;
-    if (!!a.flipped === !!b.flipped) return { set: part.N_same, sg: 1 };
-    return { set: part.N_op, sg: a.flipped ? -1 : 1 };
-  }
-  return { set: [P.nfpCross[a.rotated ? 1 : 0]], sg: 1 };   // 방향 다름 → bbox 로 보수적
-}
-
-/** 두 배치가 겹치는가 (닿음은 겹침이 아니다 — strictlyInside 시맨틱). */
-export function pairOverlaps(P, a, b) {
-  const dx = b.x - a.x, dy = b.y - a.y;
-  // bbox 프리필터 — 대부분 즉시 기각 (nest.verifyNoOverlap 과 같은 수법)
-  if (dx >= itemW(P, a) - 1e-7 || -dx >= itemW(P, b) - 1e-7) return false;
-  if (dy >= itemH(P, a) - 1e-7 || -dy >= itemH(P, b) - 1e-7) return false;
-  if (!!a.rotated === !!b.rotated) {
-    const part = a.rotated ? P.rot : P.base;
-    if (!!a.flipped === !!b.flipped) return overlaps(part, [dx, dy], true);
-    if (!a.flipped) return overlaps(part, [dx, dy], false);
-    return overlaps(part, [-dx, -dy], false);
-  }
-  return strictlyInside(P.nfpCross[a.rotated ? 1 : 0], [dx, dy]);
-}
-
-/** it 가 others 전부와 안 겹치는가 */
-export const freeAt = (P, it, others) => !others.some(o => pairOverlaps(P, o, it));
 
 /** 배치 전체의 겹치는 쌍 인덱스 (화면 빨간 표시용) */
 export function overlapPairs(P, items) {
@@ -552,21 +639,6 @@ export function overlapPairs(P, items) {
 
 const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]
   .map(([x, y]) => { const L = Math.hypot(x, y); return [x / L, y / L]; });
-
-/** v 방향 직선 위에서 「겹치는 s 구간」들. 접점(구간 끝)이 곧 딱 닿는 자리다. */
-function forbiddenAlong(P, from, moving, others, v) {
-  const ivs = [];
-  for (const o of others) {
-    const { set, sg } = nfpSetOf(P, o, moving);
-    const ov = [sg * (from[0] - o.x), sg * (from[1] - o.y)];
-    const vv = [sg * v[0], sg * v[1]];
-    for (const N of set) {
-      const iv = lineInsideInterval(N, ov, vv);
-      if (iv && Number.isFinite(iv[0]) && Number.isFinite(iv[1])) ivs.push(iv);
-    }
-  }
-  return ivs;
-}
 
 const axisSnap = (v, targets, snap) => {
   let best = v, d = snap;
@@ -697,6 +769,58 @@ const inConvex = (p, poly) => {
   return false;
 };
 const inPieces = (p, ps) => ps.some(q => inConvex(p, q));
+
+/** 점에서 볼록조각 경계까지의 최단거리 (밖에 있을 때만 쓴다). */
+function distToPieces(p, ps) {
+  let best = Infinity;
+  for (const q of ps) for (let i = 0; i < q.length; i++) {
+    const a = q[i], b = q[(i + 1) % q.length];
+    const ex = b[0] - a[0], ey = b[1] - a[1], L2 = ex * ex + ey * ey;
+    let t = L2 < 1e-12 ? 0 : ((p[0] - a[0]) * ex + (p[1] - a[1]) * ey) / L2;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    const d = Math.hypot(p[0] - a[0] - t * ex, p[1] - a[1] - t * ey);
+    if (d < best) best = d;
+  }
+  return best === Infinity ? 0 : best;
+}
+
+/**
+ * ★ 「충돌 도형이 실물 칼선을 담는가」 — 담기 계측. **NFP 를 쓰지 않는다.**
+ *
+ * 이 프로젝트에서 겹침은 목형 파괴 = critical 이다. 그런데 래스터·RDP·클램프는
+ * 전부 근사라서 도형이 실물보다 **작아질 수 있다.** 작아진 도형은 조용히 위험하다 —
+ * 손배치가 「안 겹친다」고 통과시키고, 인쇄에서 칼선이 서로를 지나간다.
+ * 그래서 근사 결과를 **믿지 않고 재서** 새면 버린다 (rasterDecompose 의 게이트).
+ *
+ * 재는 방법: 실물 폴리라인을 step mm 로 찍어 각 점이 볼록조각 안에 있는지 본다.
+ * 경계 접촉은 안쪽으로 센다(inTriCl 이 부등호에 등호를 포함) — 「닿음은 겹침이 아니다」
+ * 라는 이 파일 전체의 시맨틱과 같다.
+ *
+ * @param cap 이 값을 넘는 순간 계측을 중단한다(bailed). 버릴 후보에 시간을 쓰지 않는다.
+ * @returns {{n:number,out:number,worst:number,bailed:boolean}} worst = 최대 이탈(mm)
+ */
+export function leakOf(polylines, pieces, step = 0.4, cap = Infinity) {
+  let n = 0, out = 0, worst = 0;
+  const hit = q => {
+    n++;
+    if (inPieces(q, pieces)) return false;
+    out++;
+    const d = distToPieces(q, pieces);
+    if (d > worst) worst = d;
+    return worst > cap;
+  };
+  for (const p of polylines || []) {
+    if (p.length === 1) { if (hit(p[0])) return { n, out, worst, bailed: true }; continue; }
+    for (let k = 0; k + 1 < p.length; k++) {
+      const [x0, y0] = p[k], [x1, y1] = p[k + 1];
+      const m = Math.max(1, Math.ceil(Math.hypot(x1 - x0, y1 - y0) / step));
+      for (let t = 0; t <= m; t++)
+        if (hit([x0 + (x1 - x0) * t / m, y0 + (y1 - y0) * t / m]))
+          return { n, out, worst, bailed: true };
+    }
+  }
+  return { n, out, worst: +worst.toFixed(4), bailed: false };
+}
 
 export function overlapAreaSampled(A, B, step = 0.5) {
   const ba = bboxOf(A), bb = bboxOf(B);
