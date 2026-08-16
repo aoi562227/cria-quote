@@ -4,8 +4,15 @@
 //  하는 일 딱 셋: useState(s) 보관 / toQuoteInput → buildQuote 를 **한 번** 호출 /
 //  그 결과를 좌패널 7섹션과 우패널 견적서에 나눠 준다.
 //  표시 로직을 여기 다시 적지 마라 — 각 패널·viz 파일이 소유한다.
+//
+//  ── 화면이 둘이다 (26-08-16) ──────────────────────────────────────
+//  기본 = 실무용 견적 앱(QuoteApp, 아래). URL 해시가 `#showroom` 이면 전시회용
+//  쇼룸 화면(src/showroom/)이 대신 뜬다. 두 화면은 **상태를 공유하지 않는다** —
+//  쇼룸은 자기 입력 몇 개만 갖고 도메인(buildQuote)만 같이 쓴다.
+//  ⚠ 라우팅을 QuoteApp 안에서 조건부 return 으로 하지 마라. 훅 순서가 렌더마다
+//    달라진다(조건부 훅). 그래서 App 은 **분기만** 하고 화면은 각자 컴포넌트다.
 // ══════════════════════════════════════════════════════════════════
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 
 import { getPaperPriceInfo } from "./domain/paper-repo.mjs";
 import { buildQuote } from "./domain/quote.mjs";
@@ -19,11 +26,28 @@ import PrintPanel from "./ui/panels/PrintPanel.jsx";
 import CoatingPanel from "./ui/panels/CoatingPanel.jsx";
 import ProcessPanel from "./ui/panels/ProcessPanel.jsx";
 import DevCostPanel from "./ui/panels/DevCostPanel.jsx";
+import ShowroomPage from "./showroom/ShowroomPage.jsx";
 
 // ══════════════════════════════════════════════════════════════════
-// MAIN
+// ROUTER — 해시 하나로 갈린다. 기본은 실무용 견적 앱이다.
 // ══════════════════════════════════════════════════════════════════
+const isShowroom = h => /^#\/?showroom\b/.test(h || "");
+
 export default function App() {
+  const [hash, setHash] = useState(() =>
+    (typeof window === "undefined" ? "" : window.location.hash));
+  useEffect(() => {
+    const on = () => setHash(window.location.hash);
+    window.addEventListener("hashchange", on);
+    return () => window.removeEventListener("hashchange", on);
+  }, []);
+  return isShowroom(hash) ? <ShowroomPage/> : <QuoteApp/>;
+}
+
+// ══════════════════════════════════════════════════════════════════
+// MAIN — 실무용 견적 앱 (종전 App 그대로. 한 줄도 바꾸지 않았다)
+// ══════════════════════════════════════════════════════════════════
+function QuoteApp() {
   const [s, setS] = useState(INITIAL_STATE);
   const u = (k,v) => setS(p=>({...p,[k]:v}));
 

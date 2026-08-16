@@ -176,18 +176,31 @@ const inTriStrict = (p, a, b, c) => {
   return (s1 > t && s2 > t && s3 > t) || (s1 < -t && s2 < -t && s3 < -t);
 };
 
-/** 단순다각형 → 삼각형 인덱스 목록. 실패(자기교차·퇴화)면 null.
+/** 단순다각형 → 삼각형 인덱스 목록. 실패(자기교차)면 null.
  *  자기교차 링을 조용히 삼각분할하면 **뒤집힌 조각**이 나와 NFP 가 틀린다 — 그래서
- *  귀를 하나도 못 자르는 순간 멈추고 null 을 돌려 폴백으로 보낸다. */
+ *  진짜로 막히면 null 을 돌려 폴백으로 보낸다.
+ *
+ *  ★ 「귀를 못 자르면 곧 실패」는 **틀렸다** (26-08-16 계측으로 잡았다).
+ *    귀 자르기는 마지막에 **면적 0 짜리 공선 잔여물**을 남기는 것이 정상이다. 종전 코드는
+ *    그 정상 종료를 null 로 읽어 폴백시켰다. 빗·계단 모양 — 즉 **날개가 여럿인 전개도** —
+ *    가 정확히 그 모양이라 실무 도형이 통째로 걸렸다:
+ *      빗 3날(14정점)   → 잔여 6정점이 전부 y=10 위 (cr 전부 0.000) → null
+ *      혀+날개(12정점)  → 잔여 4정점이 전부 y=70 위 (cr 전부 0.000) → null
+ *    둘 다 잔여 면적이 **정확히 0** 이고, 실제 면적은 이미 자른 귀들이 전부 갖고 있다.
+ *    그래서 ① 잔여 면적 0 이면 정상 종료 ② 면적이 남았는데 볼록 귀가 없으면 공선 정점을
+ *    하나 지우고 계속(면적 보존) ③ 둘 다 아니면 그때 null.
+ *    ⚠ ① 이 도형을 줄이지 않는다는 것은 추론이 아니라 계측이다 —
+ *      verify-drag-shape §C 가 격자 샘플링으로 「덜 덮었는가」를 직접 잰다. */
 function earClip(pts) {
   const n = pts.length;
   if (n < 3) return null;
   let idx = Array.from({ length: n }, (_, i) => i);
   if (area2(pts) < 0) idx.reverse();                   // CCW 강제
   const tris = [];
+  const ok3 = t => Math.abs(cr(pts[t[0]], pts[t[1]], pts[t[2]])) > 1e-12;  // 퇴화 삼각형 배제
   let guard = 0;
   while (idx.length > 3) {
-    if (guard++ > n * n + 16) return null;
+    if (guard++ > 2 * n * n + 16) return null;
     const m = idx.length;
     let cut = -1;
     for (let i = 0; i < m; i++) {
@@ -203,11 +216,23 @@ function earClip(pts) {
       if (bad) continue;
       tris.push([ia, ib, ic]); cut = i; break;
     }
-    if (cut < 0) return null;
-    idx.splice(cut, 1);
+    if (cut >= 0) { idx.splice(cut, 1); continue; }
+
+    // ① 잔여물의 면적이 0 = 자를 것이 남지 않았다. 버려도 도형이 줄지 않는다.
+    if (Math.abs(area2(idx.map(i => pts[i]))) <= 1e-7) return tris.length ? tris : null;
+    // ② 면적이 남았다 = 공선 정점이 귀를 막고 있다. 하나 지운다 — 공선 정점 제거는
+    //    면적을 보존하므로 이 단계도 도형을 줄이지 않는다.
+    let k = -1;
+    for (let i = 0; i < m; i++) {
+      const a = pts[idx[(i - 1 + m) % m]], b = pts[idx[i]], c = pts[idx[(i + 1) % m]];
+      if (Math.abs(cr(a, b, c)) <= 1e-9) { k = i; break; }
+    }
+    if (k < 0) return null;                            // ③ 진짜로 막혔다 (자기교차)
+    idx.splice(k, 1);
   }
-  tris.push([idx[0], idx[1], idx[2]]);
-  return tris;
+  const last = [idx[0], idx[1], idx[2]];
+  if (ok3(last)) tris.push(last);                      // 마지막 삼각형도 퇴화면 버린다
+  return tris.length ? tris : null;
 }
 
 /** A 와 B 가 공유하는 에지(a→b in A, b→a in B)를 지우고 하나로 합친다.
@@ -262,8 +287,12 @@ function mergeConvex(pts, tris) {
   return polys;
 }
 
-/** 링 하나를 볼록 조각들로. 실패하면 null. */
-function ringToPieces(ring, maxPieces) {
+/** 링 하나를 볼록 조각들로. 실패하면 null.
+ *  export 인 이유: 「오목 링을 볼록으로 쪼갤 때 **면적을 잃지 않는가**」가 이 파일에서
+ *  가장 조용히 틀릴 수 있는 자리다(귀 자르기가 귀를 하나 빼먹어도 조각은 나온다).
+ *  verify-drag-shape §C 가 격자 샘플링으로 그걸 직접 잰다 — NFP 도 이 파일의 겹침
+ *  판정도 쓰지 않는 **독립** 계측이라, 재려면 이 함수가 밖에서 보여야 한다. */
+export function ringToPieces(ring, maxPieces = MAX_PIECES) {
   const tris = earClip(ring);
   if (!tris) return null;
   const pieces = mergeConvex(ring, tris).map(p => canonicalize(p.map(i => ring[i]))).filter(Boolean);
@@ -273,12 +302,37 @@ function ringToPieces(ring, maxPieces) {
 
 // ── 래스터 경로 ────────────────────────────────────────────────────
 //  왜 이게 필요한가 — **실측 3건이 전부 스티칭으로 안 닫힌다.**
-//    소스코   : 끝점이 1.7mm 어긋난다 (338.70,58) vs (337.00,58). 끝점 차수 {1:13, 2:2, 3:1}
+//    소스코   : 끝점 차수 {1:13, 2:2, 3:1} — 열린 끝이 13개다
 //    웨이크버니: T 접합 8곳 (접는선이 칼선에 붙어 있어 어느 가지인지 정보가 없다)
 //    iSHAP   : 176개가 **전부 닫힌 경로**다 — 선이 굵기 윤곽으로 벡터화돼 있다
 //  세 실패 양상이 서로 다르고, 전부 "끝점 위상"으로는 못 푼다. 그래서 위상을 버리고
 //  **면**으로 간다: 선을 격자에 굽고 → 바깥에서 물을 채우고 → 안 잠긴 곳이 전개도다.
-//  틈은 벽을 1칸 부풀려 막는다(2×cell 까지). 그만큼 도형이 커지므로 다시 1칸 깎는다.
+//  틈은 벽을 1칸 부풀려 막는다(2×cell 까지). 부풀린 만큼은 **되깎지 않는다** —
+//  이유는 아래 inB 주석(계측으로 반증된 침식)에 있다.
+//
+//  ★ 소스코(t-sosco)는 래스터로도 **원리적으로 못 푼다** — 규명 결과를 수치로 남긴다.
+//    분해가 어려운 게 아니라 **입력에 벽이 없다.** 채택 후보(chosen, 10 폴리라인 ·
+//    128 선분)의 계측값:
+//      · 열린 끝 13개. 그중 (154.30,15.00) 은 **다른 어떤 폴리라인에서도 130.30mm**
+//        떨어져 있다 (몸통 윗변 y=15 이 x 24~337 구간에서 아예 안 그려져 있다.
+//        텍 혀 바깥선만 있고 혀 밑동 접는선과 그 오른쪽 윗변이 통째로 없다).
+//      · 그린 선 총 길이 1,419.7mm < 「닫힌 윤곽이라면 최소」인 bbox 둘레 1,207.6mm 의
+//        1.18배 — 삼면접착 한 장 치고 턱없이 짧다. 즉 윤곽이 **불완전**하다.
+//    래스터는 벽을 1칸만 부풀리므로 폭 g 인 틈을 막으려면 cell ≥ g/2 가 필요하다.
+//    130.30mm 틈이면 cell ≥ 65.15mm = 부품 짧은변(223.5)의 29% — 그 격자로 만든 도형은
+//    전개도가 아니라 얼룩이다. **어떤 격자로도 못 막는다.**
+//    실제 두 격자 전부 물이 다 들어온다 — 벽을 뺀 「갇힌 내부」가 bbox 의 2.3~3.5% 뿐이다.
+//    그래서 소스코는 **볼록껍질을 유지한다.** 껍질은 실물의 상위집합이라 겹침을 놓치지
+//    않는다(계측: 0.03mm 간격 47,516 표본 전부 도형 안, 이탈 0.0000mm). 고치려면 이
+//    파일이 아니라 추출기(pdf-dieline)가 빠진 벽을 찾아와야 한다 — 없는 선을 여기서
+//    지어내면 그 순간 「그럴듯한데 틀린 도형」이 된다.
+//
+//    ⚠ 여기서 한 번 **잘못 통과시킨 이력**이 있다. earClip 버그를 고치자 소스코가
+//      갑자기 raster 29조각으로 통과했다 — 좋아 보였지만 그 도형은 실물 전개도의
+//      **13%**(10,940 / ≈81,000mm²)였다. 물이 다 새서 「부풀린 벽」만 남은 것이고,
+//      담기 게이트(leakOf)는 칼선이 전부 그 벽 안에 있으니 0mm 로 통과시켰다.
+//      선이 담긴다고 면이 담기는 게 아니다. 그래서 위 inB 절에 **갇힌 내부** 게이트를
+//      따로 세웠다. 「통과했다」를 「맞았다」로 읽지 마라 — 이 파일의 실패는 조용하다.
 /** RDP 단순화 (닫힌 링). tol 은 mm. */
 function rdpRing(ring, tol) {
   if (ring.length < 5) return ring;
@@ -351,11 +405,19 @@ const LEAK_MM = 0.02;
  * **폐기 사유**로만 썼다 — 위 반칸 편차와 합쳐져 PDF 는 늘 bbox·볼록껍질로 떨어졌고
  * 그래서 오목한 틈을 파고드는 맞물림이 원리적으로 불가능했다.
  *
- * 두 단계이고 **둘 다 도형이 작아지지 않는 쪽으로만** 움직인다:
- *  ① bbox 밖 오버행을 자른다 — 칼선 bbox 밖은 실물이 아니므로 잘라도 실물을 덜 덮지 않는다.
- *     (bbox 는 추출기가 이 폴리라인들의 합집합으로 낸 값이고 nW/nH 로 견적에도 그게 갔다.)
+ * 두 단계다:
+ *  ① bbox 밖 오버행을 자른다. 칼선 bbox 밖은 실물이 아니므로 **덩어리로는** 안전하다
+ *     (bbox 는 추출기가 이 폴리라인들의 합집합으로 낸 값이고 nW/nH 로 견적에도 그게 갔다).
+ *     ⚠ 다만 이건 「그러므로 안전하다」가 아니다 — 정점만 clamp 하므로 경계를 **비스듬히**
+ *       가로지르는 에지는 모서리가 잘려 bbox **안쪽**까지 조금 얇아질 수 있다. 즉 ① 은
+ *       국소적으로 위험한 방향으로 틀릴 수 있는 유일한 단계다. 이 파일은 그걸 추론으로
+ *       덮지 않고 **잰다**: 호출부(rasterDecompose)가 곧바로 leakOf 로 실물 칼선을 찍어
+ *       보고 LEAK_MM 를 넘게 새면 그 해를 버린다. 실측 3건은 0.03mm 간격 표본에서
+ *       이탈 0.0000mm 였다(웨이크 p0 65,013 · p1 63,592 · iSHAP 408,751 표본).
  *  ② 그래도 bbox 를 못 채우면 **늘린다** — sx,sy ≥ 1 만 쓴다. 줄이는 스케일은 안 쓴다:
  *     실물보다 작아지면 손배치가 「안 겹친다」고 통과시키고 인쇄에서 겹친다.
+ *     ★ 이 파일 전체의 기울기다: 도형이 **작아지면 겹친다(위험) · 커지면 up 만 준다(안전).**
+ *       그래서 반올림·클램프·스케일이 갈릴 때마다 **큰 쪽**을 고른다.
  * @returns {{ring:number[][], over:number[], stretch:number[]}|null}
  */
 function fitRingToBox(ring, w, h, cell) {
@@ -430,11 +492,36 @@ function rasterDecompose(polylines, bb, maxPieces) {
     //   "겹칠 수도 있지만 잘 붙는다" 와 "확실히 안 겹치지만 덜 붙는다" 중 후자를 고른다.
     const inB = new Uint8Array(nx * ny);
     for (let i = 0; i < inB.length; i++) inB[i] = out[i] ? 0 : 1;
-    let cnt = 0; for (const v of inB) if (v) cnt++;
-    if (cnt * cell * cell < bb.w * bb.h * 0.12) {                   // 물이 새어 들어갔다
-      rw.push(`격자 ${cell.toFixed(2)}mm: 안쪽 면적이 bbox 의 ${(100 * cnt * cell * cell / (bb.w * bb.h)).toFixed(0)}% 뿐 (칼선에 틈이 있어 물이 새어들어갔다)`);
+
+    // ★ 물 샘 판별 — 「안쪽」이 아니라 **갇힌 내부**를 재야 한다 (26-08-16 계측으로 고침)
+    //   ─────────────────────────────────────────────────────────
+    //   종전 게이트는 `안쪽 면적 ≥ bbox 의 12%` 였다. **물이 새면 정확히 그 값이 남는다** —
+    //   물이 다 들어와도 부풀린 벽 자체는 안 잠기므로 「안쪽 = 벽」이 되고, 벽 면적은
+    //   선 길이 × 3칸이라 12% 를 쉽게 넘긴다. t-sosco 가 그렇게 통과했다:
+    //     cell 2.54 → 안쪽 12,187mm² (bbox 의 14.3%) 인데 그중 벽이 10,259mm² 다.
+    //     그 결과 충돌 도형이 실물 전개도(≈81,000mm²)의 **13%** 밖에 안 됐다.
+    //     담기 게이트(leakOf)는 이걸 **못 잡는다** — 칼선(선)은 전부 두꺼운 벽 안에 있다.
+    //     빈 곳은 종이인데 도형이 비어 있으니 이웃 부품이 몸통 한가운데로 파고든다 =
+    //     엔진은 「안 겹친다」, 인쇄는 겹친다. 이 파일에서 가장 위험한 실패 양상이다.
+    //   그래서 벽을 빼고 **진짜로 갇힌 칸**만 센다. 실측 분리도(두 격자 모두):
+    //     t-sosco 2.3~3.5% of bbox · 안쪽의 15.8~36.2%   ← 물이 샘
+    //     t-wake2 p0 62.9~74.9% · 76.9~88.6% / p1 66.0~74.3% · 74.5~86.5%
+    //     t-ishap    42.1~50.5% · 69.5~80.6%
+    //   문턱 25% / 50% 는 그 사이에 있고 정상쪽 최솟값(42.1% · 69.5%)에서 1.7배·1.4배 뜬다.
+    //   ⚠ 이 게이트가 잡는 것은 **전면 누수**다. 칸막이 하나만 빠진 부분 누수는 원리적으로
+    //     못 잡는다 — 그건 추출기가 잃은 벽이다. 그래서 아래 note 에 채움률을 숫자로 실어
+    //     사람이 보게 한다(13% 짜리 도형은 한눈에 이상하다). 조용히 넘기지 않는 것이 요점이다.
+    let cnt = 0, core = 0;
+    for (let i = 0; i < inB.length; i++) if (inB[i]) { cnt++; if (!wd[i]) core++; }
+    const A = cell * cell, bA = bb.w * bb.h;
+    const corePct = 100 * core * A / bA, coreOfIn = 100 * core / Math.max(1, cnt);
+    if (corePct < 25 || coreOfIn < 50) {
+      rw.push(`격자 ${cell.toFixed(2)}mm: 벽을 뺀 **갇힌 내부**가 bbox 의 ${corePct.toFixed(1)}% ` +
+              `(안쪽 면적의 ${coreOfIn.toFixed(0)}%) 뿐 — 칼선에 틈이 있어 물이 새어들어갔고 ` +
+              `「벽만 남은 도형」이 됐다. 그대로 쓰면 몸통 한가운데가 빈 곳으로 잡힌다`);
       continue;
     }
+    const fillPct = 100 * cnt * A / bA;
 
     // 안쪽 칸 경계에지 → 닫힌 윤곽. 면적 최대 = 바깥 윤곽 (안쪽 구멍은 무시 = 보수적)
     const emap = new Map();
@@ -467,8 +554,9 @@ function rasterDecompose(polylines, bb, maxPieces) {
 
     // 반칸 보정(위 HALF_CELL 주석) — 이 한 항이 없으면 축당 +1칸 커진다
     const mm = outer.map(([x, y]) => [(x - M - HALF_CELL) * cell, (y - M - HALF_CELL) * cell]);
-    // 물 샘 감지 — 12% 면적 문턱을 통과했어도 윤곽이 칼선보다 몇 칸씩 크면 새어들어간
-    // 것이다. 그 상태로 아래 clamp 를 걸면 「bbox 사각형」을 정밀한 윤곽으로 위장한다.
+    // 물 샘 감지 ② — 위 「갇힌 내부」 문턱을 통과했어도 윤곽이 칼선보다 몇 칸씩 크면
+    // 새어들어간 것이다. 그 상태로 아래 clamp 를 걸면 「bbox 사각형」을 정밀한 윤곽으로
+    // 위장한다. (앞 문턱은 면적을, 이건 **테두리 위치**를 본다 — 서로 못 잡는 것이 다르다.)
     const rb0 = bboxOf([mm]);
     if (rb0.w > bb.w + LEAK_CELLS * cell || rb0.h > bb.h + LEAK_CELLS * cell) {
       rw.push(`격자 ${cell.toFixed(2)}mm: 윤곽 ${rb0.w.toFixed(1)}×${rb0.h.toFixed(1)} 가 칼선 ${bb.w}×${bb.h} 보다 ${LEAK_CELLS}칸 넘게 크다 (물 샘)`);
@@ -499,7 +587,9 @@ function rasterDecompose(polylines, bb, maxPieces) {
         if (!worstLeak || leak.worst < worstLeak) worstLeak = leak.worst;
         continue;
       }
-      return { pieces, cell, verts: ring.length, tol, over: fit.over, stretch: fit.stretch, leak };
+      // ring 을 같이 돌려준다 — 이 오목 링이 아래 pieces 의 **원본**이고,
+      // 「분해가 원본을 덜 덮지 않는가」를 밖에서 재려면 둘 다 필요하다.
+      return { pieces, ring, cell, verts: ring.length, tol, over: fit.over, stretch: fit.stretch, leak, fillPct };
     }
     if (worstLeak != null)
       rw.push(`격자 ${cell.toFixed(2)}mm: 윤곽이 실물 칼선을 ${worstLeak.toFixed(2)}mm 못 덮었다 (담기 게이트)`);
@@ -528,13 +618,13 @@ export function decomposePolylines(polylines, bb, maxPieces = MAX_PIECES) {
       let ring = dropCollinear(outer, 0.03);
       for (let t = 0.08; ring.length > RING_MAX && t <= 4; t *= 2) ring = dropCollinear(ring, t);
       const pieces = ring.length <= RING_MAX ? ringToPieces(ring, maxPieces) : null;
-      if (pieces) return { pieces, mode: "stitched", why: "" };
+      if (pieces) return { pieces, ring, mode: "stitched", why: "" };
       why = `윤곽 ${ring.length}정점을 볼록 ${maxPieces}조각 이하로 못 나눴다`;
     }
   }
   const r = rasterDecompose(polylines, bb, maxPieces);
-  if (r.pieces) return { pieces: r.pieces, mode: "raster", why: "", cell: r.cell, verts: r.verts,
-                         tol: r.tol, over: r.over, stretch: r.stretch, leak: r.leak };
+  if (r.pieces) return { pieces: r.pieces, ring: r.ring, mode: "raster", why: "", cell: r.cell, verts: r.verts,
+                         tol: r.tol, over: r.over, stretch: r.stretch, leak: r.leak, fillPct: r.fillPct };
   return { pieces: null, mode: "hull", why: `${why}; 래스터도 실패 — ${r.why}` };
 }
 
@@ -555,11 +645,11 @@ export function makeDragPart(src) {
   const w = +src?.w, h = +src?.h;
   if (!(w > 0 && h > 0)) return null;
 
-  let pieces = null, mode = "bbox", why = "", cell = 0, over = null, stretch = null, leak = null;
+  let pieces = null, mode = "bbox", why = "", cell = 0, over = null, stretch = null, leak = null, fillPct = null;
   if (src.pieces?.length) { pieces = src.pieces; mode = "exact"; }
   else if (src.polylines?.length) {
     const r = decomposePolylines(src.polylines, { w, h });
-    if (r.pieces) { pieces = r.pieces; mode = r.mode; cell = r.cell || 0; over = r.over; stretch = r.stretch; leak = r.leak; }
+    if (r.pieces) { pieces = r.pieces; mode = r.mode; cell = r.cell || 0; over = r.over; stretch = r.stretch; leak = r.leak; fillPct = r.fillPct ?? null; }
     else {
       why = r.why;
       const pts = [];
@@ -598,6 +688,10 @@ export function makeDragPart(src) {
             `실물 칼선 표본 ${(leak?.n ?? 0).toLocaleString()}개가 전부 이 도형 안에 있다(이탈 ` +
             `${(leak?.worst ?? 0).toFixed(3)}mm) — 그래서 **겹침을 놓치지 않는다.** ` +
             `대신 도형이 한 변당 최대 ${(cell * 1.5).toFixed(1)}mm 두꺼워서 그만큼 **덜 붙는다**(up 이 줄 수 있다). ` +
+            // 채움률을 굳이 화면에 싣는 이유: 물이 **부분적으로** 새면(칸막이 하나만 빠진
+            // 경우) 자동 게이트가 원리적으로 못 잡는다. 그때 도형은 실물보다 작고 =
+            // 겹침을 놓친다. 사람은 「전개도가 판의 13% 뿐」을 한눈에 알아본다.
+            `이 도형은 칼선 bbox 의 ${(fillPct ?? 0).toFixed(0)}% 를 채운다(전개도 모양과 견주어 보라). ` +
             `바깥 테두리는 칼선 bbox ${w}×${h} 로 되잘랐다(오버행 ${(over?.[0] ?? 0).toFixed(2)}/${(over?.[1] ?? 0).toFixed(2)}mm` +
             `${stretch && (stretch[0] > 0.005 || stretch[1] > 0.005) ? `, 미달 ${stretch[0].toFixed(2)}/${stretch[1].toFixed(2)}mm 는 바깥으로 늘림` : ""}).`
         : mode === "hull" ? `⚠ 칼선 폴리곤을 볼록 분해하지 못해 **볼록껍질**로 스냅한다 — ${why}. 오목한 틈(맞물림)은 못 파고든다.`
@@ -804,8 +898,16 @@ export function leakOf(polylines, pieces, step = 0.4, cap = Infinity) {
   const hit = q => {
     n++;
     if (inPieces(q, pieces)) return false;
-    out++;
+    // ⚠ 경계에 **정확히** 놓인 표본은 밖으로 세지 않는다.
+    //   inTriCl 은 등호를 포함하지만 부동소수라, 변 위의 점에서 세 외적 중 하나가
+    //   −1e-13 처럼 떨어져 세 부채꼴 전부를 빠져나간다. 그러면 이탈거리는 0.0000mm 인데
+    //   out 만 수백 개로 찍혀 「샌다」로 읽힌다 — 실측: t-sosco 볼록껍질에서
+    //   28,579 표본 중 460개(전부 d=0)가 그렇게 잡혔다. 껍질은 정의상 상위집합이라
+    //   샐 수가 없다. TOUCH 는 1nm 라 실제 겹침(0.02mm 게이트)과는 6자리 떨어져 있다.
+    const TOUCH = 1e-6;
     const d = distToPieces(q, pieces);
+    if (d <= TOUCH) return false;
+    out++;
     if (d > worst) worst = d;
     return worst > cap;
   };
