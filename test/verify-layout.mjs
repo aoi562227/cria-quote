@@ -1,25 +1,33 @@
-// 물림(BITE) · 판걸이 수율 역산 검증
+// ══════════════════════════════════════════════════════════════════
+//  이 파일은 src/domain/data/sheets.mjs 와 src/domain/dieline/index.mjs 를
+//  **직접 import** 한다. 종전에는 판형표·인쇄기 상한·전개도 공식을 전부 복제했고,
+//  그 복제본의 전개도 공식은 2세대 전(맞뚜껑 D/2+20 · 삼면 0.059D+12.65) 이었다.
 //
-// 견적서 「단위」 열 = 실제 주문 재단 크기.
-// 전개도 크기가 명시된 건 + 판형 최대크기 + 견적서 up 을 대조해서
-//   ① 물림(gripper margin)이 실제로 몇 mm인지
-//   ② 판걸이 수율이 대략 몇 %로 나오는지
-// 를 역산한다.
+//  물림(BITE) · 판걸이 수율 역산 검증
+//
+//  견적서 「단위」 열 = 실제 주문 재단 크기.
+//  전개도 크기가 명시된 건 + 판형 최대크기 + 견적서 up 을 대조해서
+//    ① 물림(gripper margin)이 실제로 몇 mm인지
+//    ② 판걸이 수율이 대략 몇 %로 나오는지
+//  를 역산한다.
+// ══════════════════════════════════════════════════════════════════
+import {
+  BASE_SHEETS, PRESS_MAX_LONG, PRESS_MAX_SHORT, effectiveSheet,
+} from "../src/domain/data/sheets.mjs";
+import { calcNetSize } from "../src/domain/dieline/index.mjs";
 
-const SHEET = {
-  "46":   { w:788, h:1091, cut:1, label:"46전지" },
-  "4x62": { w:788, h:545,  cut:2, label:"4×62"  },
-  "4x63": { w:788, h:363,  cut:3, label:"4×63"  },
-  "4x64": { w:394, h:545,  cut:4, label:"4×64"  },
-  "guk":  { w:636, h:939,  cut:1, label:"국전"   },
-  "guk2": { w:636, h:469,  cut:2, label:"국2"   },
-  "ha":   { w:889, h:1194, cut:1, label:"하전지" },
-  "ha2":  { w:889, h:597,  cut:2, label:"하2"   },
-  "ha3":  { w:889, h:398,  cut:3, label:"하3"   },
-  "ha4":  { w:444, h:597,  cut:4, label:"하4"   },
-};
+// 판형표는 실코드에서 온다. label 은 표 폭에 맞춰 괄호(크기)만 떼어 쓴다.
+const SHEET = Object.fromEntries(
+  BASE_SHEETS.filter(s => !s.custom)
+    .map(s => [s.id, { ...s, label: s.label.split("(")[0].trim() }]));
 
-/** 물림 bite(mm, 총량)를 적용한 유효 인쇄영역에 netW×netH 를 몇 개 앉힐 수 있나 */
+/**
+ * 물림 bite(mm, 총량)를 적용한 유효 인쇄영역에 netW×netH 를 몇 개 앉힐 수 있나.
+ * ⚠ 이건 앱 로직의 미러가 아니다 — **물림 후보값을 스캔하는 문서형 도구**다.
+ *   앱은 축별 비대칭 물림(짧은변 30 / 긴변 20)을 쓰고 맞물림까지 계산하지만,
+ *   여기서는 "물림이 몇 mm 여야 견적서 up 이 나오나" 를 단순 격자로 훑는다.
+ *   실제 배치 재현은 verify-net · scorecard-unit 이 solveImposition 으로 본다.
+ */
 function upOn(netW, netH, sw, sh, bite) {
   const pw = sw - bite, ph = sh - bite;
   if (pw <= 0 || ph <= 0) return 0;
@@ -143,29 +151,25 @@ for (const [a,b,nm] of ALL_UNITS) {
 }
 console.log(`「단위」 ${ALL_UNITS.length}종 최대 긴변  ${maxL}mm  (${nl})`);
 console.log(`「단위」 ${ALL_UNITS.length}종 최대 짧은변 ${maxS}mm  (${ns})`);
-console.log(`→ 인쇄기 최대 판 = ${maxL}×${maxS}  (990×720 초과 단위 0건)`);
+console.log(`→ 인쇄기 최대 판 = ${maxL}×${maxS}`);
+const pressOk = maxL <= PRESS_MAX_LONG && maxS <= PRESS_MAX_SHORT;
+console.log(`   sheets.mjs PRESS_MAX = ${PRESS_MAX_LONG}×${PRESS_MAX_SHORT}  ` +
+            `${pressOk ? "✓ 초과 단위 0건" : "✗ 상한을 넘는 단위가 있다"}`);
+if (!pressOk) process.exitCode = 1;
 
-const PL = 990, PS = 720;
-const eff = sid => { const s = SHEET[sid]; const l = Math.max(s.w,s.h), sh = Math.min(s.w,s.h);
-  return [Math.min(l,PL), Math.min(sh,PS), Math.min(l,PL) < l || Math.min(sh,PS) < sh]; };
 console.log("\n판형     원지        유효 인쇄판     재단 필요?");
 for (const sid of Object.keys(SHEET)) {
-  const s = SHEET[sid], [l,sh,cap] = eff(sid);
-  console.log(`${SHEET[sid].label.padEnd(9)}${`${Math.max(s.w,s.h)}×${Math.min(s.w,s.h)}`.padEnd(12)}${`${l}×${sh}`.padEnd(16)}${cap?"⚠ 예":"아니오"}`);
+  const s = SHEET[sid], e = effectiveSheet(s.w, s.h);
+  console.log(`${s.label.padEnd(9)}${`${Math.max(s.w,s.h)}×${Math.min(s.w,s.h)}`.padEnd(12)}` +
+              `${`${e.long}×${e.short}`.padEnd(16)}${e.capped?"⚠ 예":"아니오"}`);
 }
 
 console.log("\n═══ E. up 재현 — 인쇄기 제약 적용 전/후 ══════════════════════════════════");
-function net(W,D,H,t){
-  if(t==="gtype"){const r=D/H; return r>0.8?{nw:W+4*D+14,nh:2*H+3*D+1}:{nw:W+2*D+14,nh:H+2*D};}
-  const nw=2*(W+D)+14.3; let tl,bf;
-  if(t==="tuck_both"){tl=D<=15?D/2+50:D/2+20; bf=D<=15?D/2+55:D/2+15;}
-  else if(t==="cross"){tl=D*7/8+5.5; bf=D*7/8+5.5;}
-  else {tl=Math.round(D*0.059+12.65); bf=D*0.65+4;}
-  return {nw,nh:H+tl+bf};
-}
+// 전개도는 calcNetSize(실코드) 로 낸다. 물림은 후보 20mm 로 고정 — 이 절의 관심사는
+// 「원지 최대크기로 재면 up 이 과대평가되는가」이지 물림 방침 자체가 아니다.
 const UPC = [
-  ["삼면B",210,90,180,"glue_3side","46",3],   ["G형B",220,210,110,"gtype","46",1],
-  ["G형A",350,280,70,"gtype","46",1],          ["G형C",130,130,55,"gtype","46",1],
+  ["삼면B",210,90,180,"glue_3side","46",3],   ["G형B",220,210,110,"gtype_tray","46",1],
+  ["G형A",350,280,70,"gtype_tray","46",1],     ["G형C",130,130,55,"gtype_tray","46",1],
   ["삼면F",90,90,250,"glue_3side","4x62",2],   ["십자A",47,47,176,"cross","4x62",6],
   ["삼면E",90,70,130,"glue_3side","4x64",2],   ["삼면C",52,50,90,"glue_3side","4x64",4],
   ["삼면A",120,55,180,"glue_3side","ha4",2], ["십자B",70,70,55,"cross","ha4",4],
@@ -175,15 +179,20 @@ console.log("케이스".padEnd(14)+"구조".padEnd(12)+"판형".padEnd(9)+"공�
 console.log("-".repeat(88));
 let a0=0, a1=0;
 for (const [nm,W,D,H,t,sid,real] of UPC) {
-  const n = net(W,D,H,t), s = SHEET[sid];
-  const raw = upOn(n.nw,n.nh,Math.max(s.w,s.h),Math.min(s.w,s.h),20);
-  const [l,sh] = eff(sid);
-  const cap = upOn(n.nw,n.nh,l,sh,20);
+  const n = calcNetSize(W,D,H,t), s = SHEET[sid];
+  const raw = upOn(n.netW,n.netH,Math.max(s.w,s.h),Math.min(s.w,s.h),20);
+  const e = effectiveSheet(s.w, s.h);
+  const cap = upOn(n.netW,n.netH,e.long,e.short,20);
   if (raw===real) a0++; if (cap===real) a1++;
-  console.log(nm.padEnd(14)+t.padEnd(12)+s.label.padEnd(9)+`${n.nw.toFixed(0)}×${n.nh.toFixed(0)}`.padEnd(14)+
+  console.log(nm.padEnd(14)+t.padEnd(12)+s.label.padEnd(9)+`${n.netW.toFixed(0)}×${n.netH.toFixed(0)}`.padEnd(14)+
     String(raw).padStart(5)+(raw===real?"✓":" ")+String(cap).padStart(10)+(cap===real?"✓":" ")+String(real).padStart(8));
 }
 console.log("-".repeat(88));
-console.log(`원지 최대 기준 ${a0}/${UPC.length}  →  인쇄기 제약(990×720) 적용 ${a1}/${UPC.length}`);
-console.log(`\n※ 남은 불일치는 전부 전개도 공식 오차 — 맞뚜껑(D≤15) / 십자조립 / G형 3개 공식이`);
-console.log(`   실측 대비 틀림. 정확한 전개도 실측값이 있어야 고칠 수 있음.`);
+console.log(`원지 최대 기준 ${a0}/${UPC.length}  →  인쇄기 제약(${PRESS_MAX_LONG}×${PRESS_MAX_SHORT}) 적용 ${a1}/${UPC.length}` +
+            `   ⚠ 이 표는 앱 up 이 아니다 — 앱 점수는 verify-net 「판걸이 up 재현」`);
+console.log(`
+※ G형 3건은 gtype_tray(뚜껑일체) 공식으로 갱신했다 — 종전에는 이 파일이 복제한
+  옛 gtype 공식(W+4D+14 / 2H+3D+1)을 썼고, G형A 350×280×70 을 1484×981 로 내서
+  물리적으로 불가능한 크기였다(칼선 실측 4건으로 확정된 공식은 674.5×789.5).
+※ 이 표는 맞물림을 계산하지 않는 단순 격자다. 앱의 실제 up 은 맞물림·엇갈림까지
+  보는 nest 엔진이 낸다 → verify-net 「판걸이 up 재현」이 그쪽 점수다.`);

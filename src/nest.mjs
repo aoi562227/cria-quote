@@ -232,6 +232,89 @@ export function overlaps(part, t, sameOrient) {
   return false;
 }
 
+// ══ 자세(pose) 계층 ════════════════════════════════════════════════
+//  왜 여기 있나 — 격자 솔버는 자기 안에서 자세를 다룬다(g=0/90 × FLIP_RULES).
+//  그런데 **격자가 아닌** 배치(손배치 · 자유배치)도 같은 판정이 필요하다. 그 판정을
+//  각자 짜면 「자동은 되는데 손으로는 안 되는」 자리가 생긴다 — 겹침 기준이 갈리면
+//  한쪽이 반드시 틀리고, 틀린 쪽이 목형을 깬다. 그래서 **한 곳**에 둔다.
+//  ⚠ 정책은 없다. 판형·물림·발자국은 여전히 imposition.mjs 의 일이다.
+//
+//  배치 1개 = { x, y, flipped, rotated } 이고 x,y 는 **발자국 bbox 의 좌상단**이다
+//  (solveLayout 의 cells 와 같은 규약 — 그래서 자동 배치를 그대로 씨앗으로 쓸 수 있다).
+
+/** 0° 와 90° 부품을 한 벌로. 90° 는 조각을 돌려 **따로 한 벌 더** 깐다 —
+ *  같은 방향끼리는 정확한 NFP 로 판정하기 위해서다. */
+export function makePart(rawPieces) {
+  const base = preparePart(rawPieces);
+  if (!base) return null;
+  const rot = preparePart(rot90(base.pieces));
+  if (!rot) return null;
+  const w = base.netW, h = base.netH;
+  const rect = (a, b) => [[0, 0], [a, 0], [a, b], [0, b]];
+  return {
+    base, rot, w, h, pieces: base.pieces,
+    // 방향이 다른 쌍(0°×90°)용 **bbox** NFP. 첫째=고정, 둘째=이동 (부호 규약 위 참조).
+    // ⚠ 볼록조각쌍 NFP 를 새로 깔지 않고 bbox 로 보수적으로 막는다 — 겹침을 놓치는
+    //   쪽이 아니라 **더 막는** 쪽으로 틀린다. 못 붙이는 것보다 겹치는 것이 나쁘다.
+    nfpCross: [minkowski(rect(w, h), rect(h, w), -1),
+               minkowski(rect(h, w), rect(w, h), -1)],
+  };
+}
+
+export const itemW = (P, it) => (it.rotated ? P.h : P.w);
+export const itemH = (P, it) => (it.rotated ? P.w : P.h);
+
+/** 고정 a 에 대해 이동 b 를 판정할 때 쓸 NFP 집합과 이동벡터 부호.
+ *  부호 규약은 verifyNoOverlap 과 **똑같다**: t = sg·(b.pos − a.pos) 이고
+ *  「a 가 반전, b 가 정방향」일 때만 sg = −1 이다. */
+export function nfpSetOf(P, a, b) {
+  if (!!a.rotated === !!b.rotated) {
+    const part = a.rotated ? P.rot : P.base;
+    if (!!a.flipped === !!b.flipped) return { set: part.N_same, sg: 1 };
+    return { set: part.N_op, sg: a.flipped ? -1 : 1 };
+  }
+  return { set: [P.nfpCross[a.rotated ? 1 : 0]], sg: 1 };
+}
+
+/** 두 배치가 겹치는가 (닿음은 겹침이 아니다 — strictlyInside 시맨틱). */
+export function pairOverlaps(P, a, b) {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  // bbox 프리필터 — 대부분 즉시 기각 (verifyNoOverlap 과 같은 수법)
+  if (dx >= itemW(P, a) - 1e-7 || -dx >= itemW(P, b) - 1e-7) return false;
+  if (dy >= itemH(P, a) - 1e-7 || -dy >= itemH(P, b) - 1e-7) return false;
+  const { set, sg } = nfpSetOf(P, a, b);
+  const t = [sg * dx, sg * dy];
+  for (const N of set) if (strictlyInside(N, t)) return true;
+  return false;
+}
+
+/** it 가 others 전부와 안 겹치는가 */
+export const freeAt = (P, it, others) => !others.some(o => pairOverlaps(P, o, it));
+
+/** v 방향 직선 위에서 「겹치는 s 구간」들. 구간 끝이 곧 딱 닿는 자리다.
+ *  from 은 **이동 부품의 위치**(발자국 좌상단)이고 s 는 거기서 v 방향 이동량이다. */
+export function forbiddenAlong(P, from, moving, others, v) {
+  const ivs = [];
+  for (const o of others) {
+    const { set, sg } = nfpSetOf(P, o, moving);
+    const ov = [sg * (from[0] - o.x), sg * (from[1] - o.y)];
+    const vv = [sg * v[0], sg * v[1]];
+    for (const N of set) {
+      const iv = lineInsideInterval(N, ov, vv);
+      if (iv && Number.isFinite(iv[0]) && Number.isFinite(iv[1])) ivs.push(iv);
+    }
+  }
+  return ivs;
+}
+
+/** 배치 1개의 조각들을 **판 좌표**로. 그림에는 쓰지 않는다(그림은 SVG transform) —
+ *  겹침 샘플링 검증과 스냅 디버깅이 쓴다. */
+export function placedPieces(P, it) {
+  const part = it.rotated ? P.rot : P.base;
+  const src = it.flipped ? part.flipped : part.pieces;
+  return src.map(p => p.map(([x, y]) => [x + it.x, y + it.y]));
+}
+
 // ══ 격자 솔버 ══════════════════════════════════════════════════════
 
 const FLIP_RULES = {
@@ -293,29 +376,52 @@ export function solveLayout(rawPieces, printW, printH, opts = {}) {
     if (netW > printW + EPS || netH > printH + EPS) continue;
 
     for (const [ruleName, flipFn] of Object.entries(FLIP_RULES)) {
-      // ── dy 후보: t = (0, k·dy) → o=(0,0), v=(0,k) 로 클리핑
-      const Rcap = Math.max(1, Math.min(16, Math.floor(printH / Math.max(netH * 0.15, 1)) + 1));
-      const dyForbid = [];
-      for (let k = 1; k <= Rcap; k++) {
-        const same = flipFn(0, 0) === flipFn(0, k);
-        const set = same ? part.N_same : part.N_op;
-        for (const N of set) {
-          const iv = lineInsideInterval(N, [0, 0], [0, k]);
-          if (iv) dyForbid.push(iv);
+      // ⚠ 엇갈림(sx) 루프가 dy 루프 **밖**에 있어야 한다.
+      //   종전에는 dy 후보를 sx=0 으로 먼저 구하고 나서 sx 를 적용했다.
+      //   그래서 '엇갈려야만 가능한 dy' 가 후보에 아예 없었다.
+      //   웨이크버니B 36×36×168: sx=0 이면 겹침 9.0mm 뿐인데
+      //   sx=netW/2 면 32.0mm 가 되어 필요값 25.8mm 를 넘는다.
+      //   깊은 날개(패널2)가 자기 거울상과 겹치는 폭이 netW−2D−2W = 접착탭 폭
+      //   밖에 안 되므로, 엇갈림 없이는 깊은 혀끼리 항상 충돌한다.
+      for (const sxMode of (noIL ? ['none'] : ['none', 'half'])) {
+        // dx 가 정해지기 전이므로 sx ≈ netW/2 로 근사해 dy 후보를 만든다.
+        // 맞물림 배치에서 dx 는 netW 근처이고, 최종 판정은 완전탐색이 한다.
+        const sxEst = sxMode === 'half' ? netW / 2 : 0;
+        // ── dy 후보: t = (k·sx, k·dy) → o=(k·sxEst, 0), v=(0,k)
+        const Rcap = Math.max(1, Math.min(16, Math.floor(printH / Math.max(netH * 0.15, 1)) + 1));
+        const dyForbid = [];
+        for (let k = 1; k <= Rcap; k++) {
+          const same = flipFn(0, 0) === flipFn(0, k);
+          const set = same ? part.N_same : part.N_op;
+          for (const N of set) {
+            const iv = lineInsideInterval(N, [k * sxEst, 0], [0, k]);
+            if (iv) dyForbid.push(iv);
+          }
         }
-      }
-      const dyCands = noIL ? [netH] : (() => {
-        const c = freeCandidates(dyForbid, 0, 4)
-          .map(d => Math.max(d, PITCH_QUANT) + clearance)
-          .filter(d => d <= netH + EPS);
-        if (!c.includes(netH)) c.push(netH);   // 겹침 0 배치도 항상 후보
-        return c;
-      })();
+        const dyCands = noIL ? [netH] : (() => {
+          const c = freeCandidates(dyForbid, 0, 4)
+            .map(d => Math.max(d, PITCH_QUANT) + clearance)
+            .filter(d => d <= netH + EPS);
+          if (!c.includes(netH)) c.push(netH);   // 겹침 0 배치도 항상 후보
+          return c;
+        })();
 
-      for (const dy of dyCands) {
-        // maxUp 은 행에도 걸어야 한다 — 열만 깎으면 행이 단독으로 한도를 넘는다
-        const R = Math.max(1, Math.min(maxUp, Math.floor((printH - netH) / dy + 1e-7) + 1));
-        for (const sxMode of (noIL ? ['none'] : ['none', 'half'])) {
+        // ── 열 방향 엇갈림 sy ─────────────────────────────────────────
+        //   셀 (i,j) 위치 = (i·dx + j·sx,  i·sy + j·dy)
+        //   sx(행 엇갈림)만 있으면 **1행 배치에서 j 가 항상 0 이라 무력**하다.
+        //   실측 근거: iSHAP 생활용품 대지(무제-3.pdf, 페이지가 정확히 788×545 = 4×62)
+        //     전개도 568.9×335.7 두 장이 dx 157.1 / dy 78.1 로 **대각으로** 어긋나
+        //     겹침 x 411.8mm(72%) · y 257.6mm(77%), 서로 180° 반전(정점 65/68 일치).
+        //     배치 외곽 726.0×413.8 로 물림(768/515)도 충족한다 —
+        //     즉 이 건이 1up 으로 나온 원인은 물림이 아니라 sy 부재였다.
+        //   sy 는 NFP 경계에서 dx 와 트레이드오프하므로 1D 로 못 푼다.
+        //   netH 의 1/16 격자로 훑고 각 sy 에서 최소 dx 를 구한 뒤 up·발자국으로 고른다.
+        const syCands = noIL ? [0]
+          : Array.from({ length: 9 }, (_, k) => netH * k / 16);
+        for (const sy of syCands) {
+        for (const dy of dyCands) {
+          // maxUp 은 행에도 걸어야 한다 — 열만 깎으면 행이 단독으로 한도를 넘는다
+          const R = Math.max(1, Math.min(maxUp, Math.floor((printH - netH) / dy + 1e-7) + 1));
           // ── dx 후보: Δ=(Δi,Δj), t = (Δi·dx + Δj·sx, Δj·dy)
           //    sx = dx/2 이면 t.x 가 dx 에 대해 (Δi + Δj/2)·dx → v.x 계수에 반영
           const dxForbid = [];
@@ -327,7 +433,7 @@ export function solveLayout(rawPieces, printW, printH, opts = {}) {
               const coef = di + (sxMode === 'half' ? dj / 2 : 0);
               const same = flipFn(0, 0) === flipFn(di, dj);
               const set = same ? part.N_same : part.N_op;
-              const o = [0, dj * dy];
+              const o = [0, di * sy + dj * dy];   // sy 가 있으면 열 차이도 y 를 움직인다
               if (Math.abs(coef) < EPS) {
                 // dx 와 무관한 제약 — 고정점 판정
                 for (const N of set) if (strictlyInside(N, o)) { dxForbid.push([-Infinity, Infinity]); break; }
@@ -353,30 +459,43 @@ export function solveLayout(rawPieces, printW, printH, opts = {}) {
             // maxUp 초과분은 열 수를 깎는다 — 후보를 조용히 버리면 해가 없는 것처럼 보인다
             let C = Math.max(1, Math.floor((printW - netW - (R - 1) * sx) / dx + 1e-7) + 1);
             C = Math.min(C, Math.max(1, Math.floor(maxUp / R)));
+            // sy 는 열이 늘어날수록 세로로 밀어낸다 — 판 높이에서 역산해 열을 제한한다
+            if (sy > EPS) C = Math.min(C, Math.floor((printH - netH - (R - 1) * dy) / sy + 1e-7) + 1);
             if (C < 1) continue;
 
-            const cells = [];
-            for (let j = 0; j < R; j++) for (let i = 0; i < C; i++)
-              cells.push({ i, j, x: i * dx + j * sx, y: j * dy, flip: flipFn(i, j) });
-
-            const bb = { w: (C - 1) * dx + (R - 1) * sx + netW, h: (R - 1) * dy + netH };
-            if (bb.w > printW + EPS || bb.h > printH + EPS) continue;
-
-            const v = verifyNoOverlap(part, cells, flipFn);
-            if (!v.ok) continue;                            // 후보 폐기 (설계 버그 신호)
-
-            const up = C * R;
-            const foot = (bb.w * bb.h) / (printW * printH);
-            const cand = {
-              up, cols: C, rows: R, dx, dy, sx, rotated: g === 90, flipRule: ruleName,
-              netW, netH, bbox: bb, footprint: foot,
-              interlocked: dx < netW - 0.05 || dy < netH - 0.05,
-              overlapX: Math.max(0, netW - dx), overlapY: Math.max(0, netH - dy),
-              cells, part,
-            };
-            if (!best || cand.up > best.up ||
-                (cand.up === best.up && cand.footprint < best.footprint)) best = cand;
+            // 1D 반사선으로 구한 최소 피치는 열/행 방향만 보장한다. 대각쌍은
+            // 별개 제약이므로 완전검증에서 떨어질 수 있다. 종전에는 그때 후보를
+            // 통째로 버렸는데, 열이나 행을 하나 줄이면 통과하는 경우가 많다.
+            // (웨이크버니 36x36x168: 38mm 물림을 찾아놓고도 3열x2행 을 놓쳤다)
+            // → 격자를 축소해 가며 통과하는 최대 배치를 찾는다.
+            for (let CC = C; CC >= 1; CC--) {
+              let placed = false;
+              for (let RR = R; RR >= 1; RR--) {
+                if (CC * RR <= (best ? best.up : 0)) break;   // 이미 더 좋은 해가 있다
+                const bb = { w: (CC - 1) * dx + (RR - 1) * sx + netW,
+                             h: (CC - 1) * sy + (RR - 1) * dy + netH };
+                if (bb.w > printW + EPS || bb.h > printH + EPS) continue;
+                const cells = [];
+                for (let j = 0; j < RR; j++) for (let i = 0; i < CC; i++)
+                  cells.push({ i, j, x: i * dx + j * sx, y: i * sy + j * dy, flip: flipFn(i, j) });
+                if (!verifyNoOverlap(part, cells, flipFn).ok) continue;
+                const cand = {
+                  up: CC * RR, cols: CC, rows: RR, dx, dy, sx, sy,
+                  rotated: g === 90, flipRule: ruleName, netW, netH,
+                  bbox: bb, footprint: (bb.w * bb.h) / (printW * printH),
+                  interlocked: dx < netW - 0.05 || dy < netH - 0.05,
+                  overlapX: Math.max(0, netW - dx), overlapY: Math.max(0, netH - dy),
+                  cells, part,
+                };
+                if (!best || cand.up > best.up ||
+                    (cand.up === best.up && cand.footprint < best.footprint)) best = cand;
+                placed = true;
+                break;                                       // 이 열수에서 최대 행수를 찾았다
+              }
+              if (!placed && CC === 1) break;
+            }
           }
+        }
         }
       }
     }

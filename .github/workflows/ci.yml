@@ -15,6 +15,12 @@ jobs:
           node-version: 20
       - run: npm install
       - name: 견적 공식 검증 (견적서·칼선 실측 대조)
+        # PDF_ALLOW_SKIP: 칼선 PDF 오라클 8건은 고객사 도면(영업기밀)이라 git 에 없다.
+        #   verify-pdf 는 기본이 「오라클 못 읽으면 exit 1」이므로 CI 에서만 명시적으로 면제한다.
+        #   면제해도 그 실행은 「실측 대조 미실행 — 점수 아님」으로 찍힌다(초록으로 위장하지 않는다).
+        #   실측 회귀는 오라클이 있는 개발 PC 의 `npm run verify` 가 잡는다.
+        env:
+          PDF_ALLOW_SKIP: "1"
         run: npm run verify
       - name: 빌드
         run: npm run build

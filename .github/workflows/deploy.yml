@@ -30,6 +30,9 @@ jobs:
       - run: npm install
 
       - name: 견적 공식 검증 (실패 시 배포 중단)
+        # PDF_ALLOW_SKIP: 칼선 오라클은 고객사 도면이라 git 에 없다 — ci.yml 주석 참조.
+        env:
+          PDF_ALLOW_SKIP: "1"
         run: npm run verify
 
       - name: 빌드

@@ -1,32 +1,23 @@
-// 견적서 전체 금액 재현 검증 — docs/ 견적서를 통째로 계산해서 대조
-// 지대 + 소부 + 인쇄 + 코팅 + 후가공 + 톰슨 + 접착 + 관리비 → 공정합계 · 개당단가
+// ══════════════════════════════════════════════════════════════════
+//  이 파일은 src/domain/quote.mjs 의 buildQuote() 를 **직접 호출**한다.
+//  견적 1건을 통째로 조립해서 docs/ 견적서 금액과 대조한다.
+//  종전에는 지대R·공정R·인쇄수량·코팅·톰슨·접착 식을 전부 복제(미러)했고,
+//  그래서 앱을 고쳐도 이 테스트는 통과했다. 이제 실코드 한 경로만 검산한다.
 //
-// 단가는 견적서에 적힌 값을 그대로 넣는다(시점별로 인상되므로).
-// 이 테스트가 검증하는 것은 **공식**:
-//   지대R · 공정R · 인쇄수량 · 접착 최소 · 지대 공급가 round · 개당단가 round · 합계
+//  ⚠ 분업: 이 스위트는 overrides.up 으로 판걸이를 고정하므로 **배치 회귀를 잡지
+//     못한다.** 배치는 scorecard2 · verify-net · scorecard-unit 의 몫이다.
+//     그래서 케이스의 전개도 크기는 아래 NOMINAL_BOX 하나로 통일했다 —
+//     up 이 override 되면 전개도 크기는 어떤 금액에도 들어가지 않는다.
+//     (여기에 W·D·H 를 적으면 "배치도 검증한다" 는 착각을 만든다)
+// ══════════════════════════════════════════════════════════════════
+import { buildQuote } from "../src/domain/quote.mjs";
 
-const sheetsPerR = cut => 500 * cut;
-const LOSS_BASE=300, LOSS_NOPR=200, LOSS_RATE=0.05, LOSS_BOTHSIDES=100, LOSS_BEDA=100, LOSS_EMB=50;
-const SPOT_WEIGHT = 3;      // 별색 1도 = 인쇄 3회
-const GLUE_MIN_LOT = 50000; // 접착 소량 1식
-
-function estimateLoss(net, o={}) {
-  if (o.manual > 0) return Math.round(o.manual);
-  const base = o.noPrint ? LOSS_NOPR : LOSS_BASE;
-  let l = Math.max(base, Math.round(net*LOSS_RATE));
-  if (o.bothSides) l += LOSS_BOTHSIDES;
-  if (o.beda)      l += LOSS_BEDA;
-  if (o.hasEmb)    l += LOSS_EMB;
-  return l;
-}
-const calcR     = (up,qty,cut,o={}) => { const n=Math.ceil(qty/up);
-  const raw=(n+estimateLoss(n,o))/sheetsPerR(cut);
-  return cut===1 ? Math.ceil(raw*10)/10 : Math.ceil(raw*1000)/1000; };
-const calcProcR = (up,qty) => { const n=Math.ceil(qty/up); return n<1000?1:Math.ceil(n/1000*10)/10; };
-const printQty  = (pR,spot,flat) => Math.ceil(pR*(spot*SPOT_WEIGHT+flat));
+// 배치를 우회하므로 크기는 무의미하다. 규격 미입력이면 buildQuote 가 빈 결과를
+// 내므로 값이 있어야 하기는 하다.
+const NOMINAL_BOX = { mode: "net", netW: 300, netH: 200 };
 
 // ── docs/ 견적서 ───────────────────────────────────────────────────
-// spot=별색도수 flat=원색·먹도수 / uv=UV고정가 / spotUnit=별색 R당단가
+// spot=별색도수 flat=원색(4)+먹(1) / uv=UV고정가 / spotUnit=별색 R당단가
 // coat=[/R 단가…] part=부분코팅 foil=박 emb=형압 / glueEa=원/EA glueLot=1식
 // ...Override = 견적서에 손수정 흔적이 있어 수량×단가와 안 맞는 행
 const CASES = [
@@ -91,13 +82,13 @@ const CASES = [
     real:{ R:15.7, paper:5944208, soboo:44000, print:690000, total:8964208, perEA:299 } },
 
   { name:"십자A 47×47×176 · 350B 4×62 6up 5,000ea (UV+별2+형압)", src:"십자조립단상자47x47x176",
-    up:6, qty:5000, cut:2, paperR:425405, uv:250000,
+    up:6, qty:5000, cut:2, paperR:425405, uv:250000, spot:2,
     sobooDo:2, sobooUnit:11000, coat:[65000], emb:100000, thom:60000,
     glueEa:15, admin:130000, lossManual:366,
     real:{ R:1.2, paper:510486, soboo:22000, print:250000, total:1212486, perEA:242 } },
 
   { name:"십자A 47×47×176 · 10,000ea", src:"십자조립단상자47x47x176",
-    up:6, qty:10000, cut:2, paperR:425405, uv:350000,
+    up:6, qty:10000, cut:2, paperR:425405, uv:350000, spot:2,
     sobooDo:2, sobooUnit:11000, coat:[65000], emb:100000, thom:60000,
     glueEa:15, admin:160000, lossManual:383,
     // ⚠ 견적서 자체 불일치: 공정R 을 1.8 로 씀 (정미 1,667 → 공식은 ceil(1.667)=1.7).
@@ -115,13 +106,21 @@ const CASES = [
   { name:"십자B 70×70×55 · 350ab 하4 4up 8,000ea (양면인쇄)", src:"십자조립단상자70x70x55후면유무별",
     up:4, qty:8000, cut:4, paperR:518196, spot:2, flat:0, spotUnit:50000,
     backFlat:4, backUnit:13000, sobooDo:6, sobooUnit:11000,
-    coat:[30000,60000], thom:50000, glueEa:15, admin:130000, bothSides:true,
+    coat:[30000,60000], thom:50000, glueEa:15, admin:130000,
     real:{ R:1.2, paper:621835, soboo:66000, print:204000, total:1421835, perEA:178 } },
 
   { name:"십자B 70×70×55 · 단면", src:"십자조립단상자70x70x55후면유무별",
     up:4, qty:8000, cut:4, paperR:518196, spot:2, flat:0, spotUnit:50000,
     sobooDo:2, sobooUnit:11000, coat:[60000], thom:50000, glueEa:15, admin:130000,
     real:{ R:1.15, paper:595925, soboo:22000, print:100000, total:1187925, perEA:148 } },
+
+  // 26-08-04 소스코 소스패키지 140×43×130 — 접착 20원·IR 40,000 의 근거 견적서
+  //   4up · 정미 1,000 + 여분 300 = 1,300장 / (500×2) = 1.3R
+  //   합계 817,969 / 4,000ea = 204.49 → 204원
+  { name:"소스코 140×43×130 · 295AB 4×62 4up 4,000ea (원색4·IR·단면접착)", src:"소스코_삼면접착140x43x130",
+    up:4, qty:4000, cut:2, paperR:318438, spot:0, flat:4, printUnit:14000,
+    sobooDo:4, sobooUnit:12000, coat:[40000], thom:50000, glueEa:20, admin:130000,
+    real:{ R:1.3, paper:413969, soboo:48000, print:56000, total:817969, perEA:204 } },
 
   { name:"슬리브 646×258 · 마니라300 4×64 1up 1,000ea (원색4+별1)", src:"슬리브_전체크기646x258",
     up:1, qty:1000, cut:4, paperR:163236, spot:1, flat:4, printUnit:14000,
@@ -152,18 +151,22 @@ const CASES = [
   { name:"트레이B 472×356 · 수입지308 4×64 1up 500ea (양면금박·인쇄無)", src:"전체크기472x356양면금박",
     up:1, qty:500, cut:4, paperR:1160000,
     sobooDo:0, sobooUnit:0, foil:100000, foilSides:2, thom:50000, admin:100000,
-    noPrint:true, lossManual:200,
+    lossManual:200,
     real:{ R:0.35, paper:406000, soboo:0, print:0, total:756000, perEA:1512 } },
 
   { name:"트레이B 472×356 · 1,000ea", src:"전체크기472x356양면금박",
     up:1, qty:1000, cut:4, paperR:1160000,
     sobooDo:0, sobooUnit:0, foil:100000, foilSides:2, thom:50000, admin:130000,
-    noPrint:true, lossManual:240,
+    lossManual:240,
     real:{ R:0.62, paper:719200, soboo:0, print:0, total:1099200, perEA:1099 } },
 
   { name:"G형A 350×280×70 · 400Ab 4×6전지 1up 2,000ea (별1베다+먹)", src:"G형350x280x70",
-    up:1, qty:2000, cut:1, paperR:431272, spot:1, flat:1, spotUnit:75000,
+    up:1, qty:2000, cut:1, paperR:431272, spot:1, flat:1, spotUnit:75000, printUnit:0,
     sobooDo:2, sobooUnit:12000, coat:[112000], thom:70000, admin:200000,
+    // ⚠ 이 케이스만 printUnit:0 이다. 견적서 인쇄비는 150,000 = round(2.0R × 75,000) 뿐 —
+    //   먹 1도를 별색 R단가에 **포함**시켜 적었다. 앱의 printSide 는 rpr 모드에서
+    //   먹을 도당단가로 따로 더하므로, 그 "포함"을 도당단가 0 으로 표현한다.
+    //   (종전 미러는 flat 을 조용히 무시해서 통과했다 — 미러의 위험성 그 자체다)
     real:{ R:4.6, paper:1983851, soboo:24000, print:150000, total:2721851, perEA:1361 } },
 
   { name:"손잡이형 · 295ab라이트 4×63 1up 2,000ea", src:"손잡이형_수량과단위만참고",
@@ -177,36 +180,88 @@ const CASES = [
     real:{ R:0.65, paper:280327, soboo:48000, print:56000, total:629327, perEA:629 } },
 ];
 
+/**
+ * 견적서 케이스 → QuoteInput.
+ *
+ * 옛 견적서는 그 시점 단가로 청구됐다(단가는 2026-04·06 두 번 인상). 그래서
+ * 단가는 전부 overrides 로 주입하고, 단가표(process-prices)는 건드리지 않는다.
+ *   · 코팅·톰슨은 rprById + lotById 에 **같은 값**을 넣는다 —
+ *     소량 1식(isLot) 구간이면 lot, 아니면 round(공정R × rpr) 이 되어
+ *     견적서의 두 표기 방식을 그대로 재현한다.
+ *   · 박·형압·부분코팅은 isLot 분기가 없으므로 rprById 만 필요하다.
+ *   · noPrint / bothSides / beda 는 넘기지 않는다 — 인쇄 설정에서 자동 파생된다.
+ */
+function inputOf(c) {
+  const flat  = c.flat  || 0;          // 4 = 원색, 1 = 먹 (병행 가능)
+  const bFlat = c.backFlat || 0;
+  const coats = c.coat || [];
+  const hasGlue = c.glueEa != null || c.glueLot != null;
+
+  const rprById = {}, lotById = {};
+  if (coats[0] != null) { rprById.coat_front = coats[0]; lotById.coat_front = coats[0]; }
+  if (coats[1] != null) { rprById.coat_back  = coats[1]; lotById.coat_back  = coats[1]; }
+  if (c.thom != null)   { rprById.thomson    = c.thom;   lotById.thomson    = c.thom; }
+  if (c.foil != null)     rprById.foil       = c.foil;
+  if (c.emb  != null)     rprById.emb        = c.emb;
+  if (c.part != null)     rprById.partial_uv = c.part;
+  if (c.glueLot != null)  lotById.glue       = c.glueLot;
+
+  return {
+    qty: c.qty,
+    box: NOMINAL_BOX,
+    // cut(절수)만 재현하면 된다 — 지대R 의 1R 장수가 절수로 결정되므로.
+    // 크기는 overrides.up 이 배치를 우회하니 아무 값이어도 금액이 같다.
+    paper: { paperId: "AB350", sheetId: "custom", custom: { w: 500, h: 400, cut: c.cut } },
+    print: {
+      front: { color: flat  >= 4, spot: c.spot || 0, black: flat  % 4 > 0, uv: !!c.uv },
+      back:  { color: bFlat >= 4, spot: 0,           black: bFlat % 4 > 0, uv: false },
+      beda: false,
+      spotMode: c.spotUnit ? "rpr" : "weight",
+    },
+    finish: {
+      // 코팅 종류는 표기용이다(단가는 override). 전·후면을 다른 id 로 둬야
+      // "양면 1줄 합산" 분기로 빠지지 않고 2줄이 나온다.
+      coatFrontId: coats[0] != null ? "matte" : "none",
+      coatBackId:  coats[1] != null ? "gloss" : "none",
+      thomsonId: "s",
+      glueId: hasGlue ? "dan" : "none",
+      foil: c.foil != null ? { type: "금박", sides: c.foilSides || 1 } : null,
+      emb:  c.emb  != null ? { rpr: c.emb } : null,
+      puv:  c.part != null ? { sides: 1 } : null,
+    },
+    overrides: {
+      up: c.up,
+      lossSheets: c.lossManual,
+      paperPricePerR: c.paperR,
+      // 앱은 도당단가가 양면 공용이다 → 후면 원색 단가를 여기로 넘긴다.
+      printUnit: c.printUnit ?? c.backUnit ?? 0,
+      spotRpr: c.spotUnit,
+      sobooUnit: c.sobooUnit,
+      admin: c.admin,
+      // 1식(glueLot) 케이스는 원/EA 를 0 으로 둬 수량×단가가 최소 1식에 못 미치게 한다
+      glueEa: c.glueEa ?? (c.glueLot != null ? 0 : undefined),
+      rprById, lotById,
+    },
+  };
+}
+
 let pass = 0;
 const fails = [], known = [];
 for (const c of CASES) {
-  const net   = Math.ceil(c.qty / c.up);
-  const R     = calcR(c.up, c.qty, c.cut, { manual:c.lossManual, bothSides:c.bothSides,
-                                            noPrint:c.noPrint, beda:c.beda, hasEmb:!!c.emb });
-  const pR    = calcProcR(c.up, c.qty);
-  const isLot = net < 1000;
+  const q = buildQuote(inputOf(c));
+  const sum   = pred => q.lines.filter(pred).reduce((a, l) => a + (l.amount || 0), 0);
+  const byId  = id => sum(l => l.id === id);
+  const byPre = p  => sum(l => l.id.startsWith(p));
 
-  const paper = Math.round(R * c.paperR);
-  const soboo = (c.sobooDo||0) * (c.sobooUnit||0);
+  const R = q.reams.R, pR = q.reams.processR, isLot = q.reams.isLot, net = q.reams.net;
+  const paper = byId("paper"), soboo = byId("soboo");
 
-  let print;
-  if (c.printOverride != null) print = c.printOverride;
-  else if (c.uv)      print = c.uv;
-  else if (c.spotUnit) print = Math.round(pR * c.spotUnit);            // 별색 R당 고정
-  else if (c.spot || c.flat) print = printQty(pR, c.spot||0, c.flat||0) * (c.printUnit||0);
-  else print = 0;
-  if (c.backFlat) print += printQty(pR, 0, c.backFlat) * c.backUnit;   // 후면 원색
-
-  const coat = c.coatOverride != null ? c.coatOverride
-             : (c.coat||[]).reduce((a,r)=> a + (isLot ? r : Math.round(pR*r)), 0);
-  const part = c.part ? (isLot ? c.part : Math.round(pR*c.part)) : 0;
-  const foil = c.foil ? (isLot ? c.foil : Math.round(pR*c.foil)) * (c.foilSides||1) : 0;
-  const emb  = c.emb  ? (isLot ? c.emb  : Math.round(pR*c.emb))  : 0;
-  const thom = c.thomOverride != null ? c.thomOverride
-             : (isLot ? c.thom : Math.round(pR * c.thom));
-  const glue = c.glueEa ? Math.max(c.qty*c.glueEa, GLUE_MIN_LOT) : (c.glueLot||0);
-
-  const total = paper + soboo + print + coat + part + foil + emb + thom + glue + c.admin;
+  // 견적서 손수정 흔적 — 해당 라인 전부를 최종 금액으로 치환한다.
+  // (도메인에 override 통로를 만들면 안 되는 값이다: 공식이 아니라 사람 손자국이다)
+  let print = byPre("print"), total = q.totals.process;
+  if (c.printOverride != null) { total += c.printOverride - print; print = c.printOverride; }
+  if (c.coatOverride  != null)   total += c.coatOverride - byPre("coat");
+  if (c.thomOverride  != null)   total += c.thomOverride - byId("thomson");
   const perEA = Math.round(total / c.qty);
 
   const chk = [

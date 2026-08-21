@@ -1,36 +1,18 @@
-// 실측 견적서 대조 검증 — App.jsx의 핵심 함수를 그대로 복제해서 검산
-// (App.jsx는 JSX라 직접 import 불가 → 로직 상수/함수만 미러링)
+// ══════════════════════════════════════════════════════════════════
+//  이 파일은 src/domain/reams.mjs · src/domain/data/sheets.mjs 를 **직접 import** 한다.
+//  종전에는 App.jsx 가 JSX 라 import 가 안 된다는 이유로 로직을 복제(미러)했고,
+//  그래서 앱을 고쳐도 이 테스트는 그대로 통과했다. 이제 실코드를 검산한다.
+// ══════════════════════════════════════════════════════════════════
+import { BASE_SHEETS, sheetsPerR } from "../src/domain/data/sheets.mjs";
+import {
+  estimateLoss, calcR, calcProcessR,
+  LOSS_BASE, LOSS_BASE_NOPR, LOSS_RATE, LOSS_BOTHSIDES, LOSS_BEDA, LOSS_EMB,
+} from "../src/domain/reams.mjs";
 
-const BASE_SHEETS = [
-  { id:"46",   cut:1 }, { id:"4x62", cut:2 }, { id:"4x63", cut:3 }, { id:"4x64", cut:4 },
-  { id:"guk",  cut:1 }, { id:"guk2", cut:2 },
-  { id:"ha",   cut:1 }, { id:"ha2",  cut:2 }, { id:"ha3",  cut:3 }, { id:"ha4",  cut:4 },
-  { id:"custom", cut:2 },
-];
-const sheetsPerR = sh => 500 * (sh?.cut || 2);
-
-const LOSS_BASE=300, LOSS_NOPR=200, LOSS_RATE=0.05, LOSS_BOTHSIDES=100, LOSS_BEDA=100, LOSS_EMB=50;
-function estimateLoss(net, o={}) {
-  if (o.manual > 0) return Math.round(o.manual);
-  const base = o.noPrint ? LOSS_NOPR : LOSS_BASE;
-  let l = Math.max(base, Math.round(net*LOSS_RATE));
-  if (o.bothSides) l += LOSS_BOTHSIDES;
-  if (o.beda)      l += LOSS_BEDA;
-  if (o.hasEmb) l += LOSS_EMB;
-  return l;
-}
-function calcR(up, qty, sheet, o={}) {
-  const net = Math.ceil(qty/up);
-  const raw = (net + estimateLoss(net,o)) / sheetsPerR(sheet);
-  return sheet.cut === 1 ? Math.ceil(raw*10)/10 : Math.ceil(raw*1000)/1000;
-}
-function calcProcessR(up, qty) {
-  const net = Math.ceil(qty/up);
-  return net < 1000 ? 1 : Math.ceil((net/1000)*10)/10;
-}
-const S = id => BASE_SHEETS.find(x=>x.id===id);
+const S = id => BASE_SHEETS.find(x => x.id === id);
 
 // ── 실측 케이스 ───────────────────────────────────────────────────
+// docs/ 견적서에서 읽은 기준값이다 — 이건 복제가 아니라 실측이므로 여기 남는다.
 // [이름, 판형, up, 수량, 실측지대R, 실측공정R(코팅/톰슨), 옵션]
 const CASES = [
   ["Q1  맞뚜껑150x20x150",   "4x62", 2,   500, 0.275, 1,   {}],
@@ -102,3 +84,24 @@ if (bad.length) {
   console.log("\n[불일치]");
   for (const [nm,k,real,calc,d] of bad) console.log(`  ${nm}  ${k}: 실측 ${real} / 계산 ${calc}  (Δ ${d>=0?'+':''}${d})`);
 }
+
+// ── 상수·보조식이 실코드와 같은 물건인지 확인 ──────────────────────
+// 상수를 테스트에 다시 적지 않는다. 여기서는 **상수가 식에 어떻게 쓰이는지**만 본다.
+console.log("\n═══ 여분(손지) 규칙 — reams.mjs 상수 직결 ════════════════════════════════");
+const shows = [
+  ["기본",                 estimateLoss(1000, {}),                        LOSS_BASE],
+  ["인쇄없음",             estimateLoss(1000, { noPrint:true }),           LOSS_BASE_NOPR],
+  ["양면 가산",            estimateLoss(1000, { bothSides:true }),         LOSS_BASE + LOSS_BOTHSIDES],
+  ["베다 가산",            estimateLoss(1000, { beda:true }),              LOSS_BASE + LOSS_BEDA],
+  ["형압 가산",            estimateLoss(1000, { hasEmb:true }),            LOSS_BASE + LOSS_EMB],
+  ["대량 5% 구간",         estimateLoss(15000, {}),                        Math.round(15000*LOSS_RATE)],
+  ["수동 입력 우선",       estimateLoss(1000, { manual:"253" }),           253],
+];
+let okC = 0;
+for (const [nm, got, exp] of shows) {
+  const hit = got === exp; if (hit) okC++;
+  console.log(`  ${hit?"✓":"✗"} ${nm.padEnd(16)} 정미 기준 여분 ${String(got).padStart(4)}장  (기대 ${exp})`);
+}
+console.log(`여분 규칙 일치: ${okC}/${shows.length}`);
+console.log(`1R 장수: 전지 ${sheetsPerR(S("46"))} / 2절 ${sheetsPerR(S("4x62"))} / 4절 ${sheetsPerR(S("4x64"))}장`);
+if (okC !== shows.length) process.exitCode = 1;
