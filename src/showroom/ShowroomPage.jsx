@@ -36,7 +36,7 @@ import { findSheetBase, resolveSheet, PRESS_MAX_LONG, PRESS_MAX_SHORT } from "..
 import { readDielineFile } from "../domain/pdf-dieline.mjs";
 // 「고른 후보 → 그 후보의 polygons」 규칙은 state.mjs 가 소유한다 (두 벌 중 어느 쪽이
 // 정답인지 아는 곳은 한 군데여야 한다 — ARCHITECTURE §10). 쇼룸도 같은 함수를 부른다.
-import { pdfPickOf, specHash, customSheetOf } from "../ui/state.mjs";
+import { pdfPickOf, specHash, customSheetOf, noCostOfHash } from "../ui/state.mjs";
 import { BOX_TYPES } from "../ui/box-types.mjs";
 import { resolveDrop, findSpot, itemW, itemH, SNAP_PX } from "../ui/viz/nest-drag.mjs";
 import {
@@ -44,6 +44,11 @@ import {
   quoteInputOf, specSummaryOf, seedFromAuto, capToQuoteUp, seedOf, precisionKeyOf,
   linkStateOf, T, LANGS,
 } from "./showroom-core.mjs";
+// 고객에게 **얼마로 보여줄지**는 price-formula 가 소유한다 — 파서·반올림·통화 표기·
+// 저장·「거부되면 원가로 안 돌아간다」까지 전부. 이 파일은 그 결과만 그린다.
+import {
+  shownPriceOf, adminViewOf, loadPriceCfg, savePriceCfg, isPriceOn, CUR_CHOICES, ADMIN_T,
+} from "./price-formula.mjs";
 
 // ── 색 · 치수 ──────────────────────────────────────────────────────
 //  ★ 회색 두 단의 용도가 갈려 있다 — 섞지 마라.
@@ -171,6 +176,55 @@ export default function ShowroomPage({ carried = null }) {
   const [msg, setMsg] = useState("");
   const [prev, setPrev] = useState(null);               // 드래그 미리보기
   const [dropping, setDropping] = useState(false);
+
+  // ── 고객 표시가 (관리자 수식) ────────────────────────────────────
+  //  ★ 관리자 진입은 **Ctrl+Alt+M** 하나뿐이다. 왜 버튼이 아니고 URL 도 아닌가:
+  //   ① 부스에서 화면을 만지는 것은 **고객의 손가락**이다. 수식자 조합은 터치로
+  //      원리적으로 만들 수 없다 — 눈에 안 띄는 버튼(모서리 3연타 같은 것)은
+  //      우연히 열린다.
+  //   ② 주소창은 **고객 앞에 떠 있다**(§13 이 거래처명을 안 싣는 이유가 그것이다).
+  //      `?admin=1` 은 숨은 모드가 있다고 광고하는 셈이고, 게다가 이 화면은 300ms 마다
+  //      replaceState 로 주소를 자기가 다시 쓴다 — 플래그가 그 동기화와 싸운다.
+  //   ③ 조합을 M 으로 잡은 이유는 **마진**이다. Windows/Chrome 에서 Ctrl+Alt+M 은
+  //      예약 조합이 아니다.
+  //  ⚠ 손배치 단축키(onKey: r · Delete · Ctrl+Z)와 겹치지 않는다 — 그쪽은 판 위에
+  //    포커스가 있을 때만 돌고 수식자 조합도 다르다.
+  const [adminOpen, setAdminOpen] = useState(false);
+  const [priceCfg, setPriceCfg] = useState(loadPriceCfg);
+  // ★ 이 주소가 「가격을 가림」 표시를 달고 왔는가 (state.noCostOfHash · §16).
+  //   달고 왔는데 이 브라우저에 수식이 없으면 = **남에게 보낸 링크를 남이 연 것**이다.
+  //   그때 원가로 접히면 감추려던 수가 그대로 뜬다 — 「—」를 그린다.
+  //   ⚠ 마운트 때 한 번만 읽는다. 아래 syncHash 가 300ms 마다 주소를 다시 쓰므로
+  //     계속 읽으면 우리가 방금 쓴 값을 되읽는 고리가 된다.
+  const [linkNoCost, setLinkNoCost] = useState(
+    () => (typeof window === "undefined" ? false : noCostOfHash(window.location.hash)));
+  useEffect(() => { savePriceCfg(priceCfg); }, [priceCfg]);
+  // 수식을 **전부 비웠다** = 관리자가 「이제 안 가린다」를 명시로 조작한 것이다.
+  // 링크가 달고 온 가림 비트도 같이 내린다 — 안 내리면 화면이 「—」에 갇힌다.
+  // (고객은 이 경로에 못 닿는다. 관리자 패널 안에서만 부른다.)
+  const setCfg = fn => {
+    const next = typeof fn === "function" ? fn(priceCfg) : fn;
+    setPriceCfg(next);
+    if (!isPriceOn(next)) setLinkNoCost(false);
+  };
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const on = e => {
+      if (e.ctrlKey && e.altKey && (e.key === "m" || e.key === "M" || e.code === "KeyM")) {
+        e.preventDefault();
+        setAdminOpen(v => !v);
+      }
+      // ★ 닫기는 **한 손가락**이어야 한다 — 열기와 대칭이 아닌 것이 맞다.
+      //   우연히 닫히는 것은 무해하고, 우연히 열리는 것이 유출이다. 실측 지적:
+      //   패널이 「원가(개당) 345원」을 띄운 채 떠 있는데 빠져나가는 길이 수식자
+      //   두 개 조합과 33×18px 짜리 글자 링크뿐이라, 고객이 다가올 때 급히 못 닫았다.
+      //   ⚠ 판 위 손배치의 Escape(선택 해제)와 안 부딪친다 — 그쪽은 svg 에 포커스가
+      //     있을 때만 돌고, 이 핸들러는 패널이 열려 있을 때만 소비한다.
+      else if (e.key === "Escape") setAdminOpen(v => (v ? false : v));
+    };
+    window.addEventListener("keydown", on);
+    return () => window.removeEventListener("keydown", on);
+  }, []);
 
   const svgRef = useRef(null);
   const dragRef = useRef(null);
@@ -477,6 +531,19 @@ export default function ShowroomPage({ carried = null }) {
 
   // ── 표시값 ───────────────────────────────────────────────────────
   const perEA = qShow?.totals?.perEA ?? null;
+  // ★ 금액 칸은 **이 두 줄이 전부**다. 원가(perEA)는 여기서 price-formula 로 들어가고
+  //   그 뒤로는 화면에 안 나온다 — 고객이 보는 것은 `shown`(원가·수식·이유가 없는
+  //   객체)이고, 원가는 `av`(관리자 몫)에만 있으며 관리자 패널 안에서만 그린다.
+  //   이 분리가 「고객 화면 DOM 에 원가가 없다」를 보증하는 자리다(verify-speclink §M).
+  const shown = useMemo(() => shownPriceOf({ perEA, up, cfg: priceCfg, lang, hideCost: linkNoCost }),
+                        [perEA, up, priceCfg, lang, linkNoCost]);
+  const av = useMemo(() => (adminOpen
+    ? adminViewOf({ perEA, up, cfg: priceCfg, lang, hideCost: linkNoCost }) : null),
+                     [adminOpen, perEA, up, priceCfg, lang, linkNoCost]);
+  // ★ 지금 원가를 가리고 있는가. 두 갈래다 — 이 브라우저에 수식이 있거나(부스 노트북),
+  //   주소가 가림 표시를 달고 왔거나(고객이 받은 링크). 둘 중 하나라도 참이면
+  //   ① 주소에 가림 비트를 싣고 ② 「견적 앱으로 →」 문을 고객 화면에서 치운다.
+  const hiding = isPriceOn(priceCfg) || linkNoCost;
   const sheetLabel = frame ? (frame.sheet.label || frame.sheet.id).trim() : "";
   const netW = part?.w ?? 0, netH = part?.h ?? 0;
   // 자유 배치 제안 — **아직 안 채택했을 때만** 낸다. 조건이 `via === "free"` 가
@@ -532,6 +599,10 @@ export default function ShowroomPage({ carried = null }) {
   //    · 「만졌으면 싣고 안 만졌으면 비운다」는 분기는 **또 하나의 숨은 상태**다.
   //      무엇을 만짐으로 셀지(언어 전환도? 후보 드롭다운도?)가 곧 낡는다.
   //   빈 견적서가 필요하면 주소에서 `?q=…` 를 지우면 된다 — 그게 「사양 없음」이다.
+  //  ⚠ 이 해시에는 가림 비트를 **안 싣는다.** 이 문을 지나는 사람은 관리자뿐이고
+  //    (아래 header 주석 — 가리는 중이면 버튼이 관리자 패널 안으로 들어간다),
+  //    견적 앱은 원가를 보여주는 것이 존재 이유다. 비트를 실으면 「가렸다」고
+  //    적힌 주소가 원가를 다 보여주는 화면을 가리키게 되어 표시가 거짓말이 된다.
   const backHash = () => specHash("", linkState(sheetBase?.id || sheetId));
 
   // ② 주소창 동기화 — **새로고침에 입력을 잃지 않기 위해서다** (적대검증 major ④).
@@ -551,7 +622,10 @@ export default function ShowroomPage({ carried = null }) {
   //  ⚠ **주소를 아직 우리가 쥐고 있을 때만** 쓴다 — 「견적 앱으로 →」로 주소가 넘어간
   //    뒤에 묶어둔 타이머가 깨어나 쇼룸 주소로 되덮으면, 방금 넘긴 사양이 사라진다.
   //    언마운트 정리가 보통 먼저 돌지만 순서에 기대지 않는다.
-  const syncHash = specHash("showroom", linkState(sheetId));
+  //  ★ 가리는 중이면 **가림 비트를 같이 싣는다**(`&nc=1`). 이 주소가 곧 부스 밖으로
+  //    나가는 링크다 — 비트가 없으면 받는 브라우저가 원가로 접힌다(state.noCostOfHash
+  //    주석의 실측 critical). 수식 자체는 여전히 안 싣는다.
+  const syncHash = specHash("showroom", linkState(sheetId), { nc: hiding });
   useEffect(() => {
     if (typeof window === "undefined") return;
     const id = setTimeout(() => {
@@ -584,10 +658,18 @@ export default function ShowroomPage({ carried = null }) {
         </div>
         {/* 해시를 비우면 브라우저마다 hashchange 가 안 뜨는 경우가 있다 —
             **다른 해시**로 바꿔서 App 의 라우터가 확실히 깨어나게 한다.
-            이제 그 해시에 **지금 화면의 사양**이 실린다(backHash 주석 참조). */}
-        <button type="button" data-act="back" onClick={() => { window.location.hash = backHash(); }}
-          style={{ border: "none", background: "none", cursor: "pointer",
-                   fontSize: 12, color: C.sub, font: `12px ${FONT}` }}>{t.back} →</button>
+            이제 그 해시에 **지금 화면의 사양**이 실린다(backHash 주석 참조).
+
+            ★ 가리는 중이면 이 버튼을 **고객 화면에서 치운다**(관리자 패널로 옮긴다).
+            개당가 하나를 감추려고 파서를 짜 놓고, 그 옆에 **원가 전체로 가는 라벨 달린
+            문**을 열어 두면 감춘 것이 아니다 — 실측: 누르면 「공정 합계」·「개당 단가」·
+            「단가 399,651원/R」이 한국어로 뜬다. 호기심 있는 방문객이 누르는 버튼이다.
+            없애지는 않는다(운영자에게는 필요한 문이다) — Ctrl+Alt+M 뒤로 옮길 뿐이다. */}
+        {!hiding && (
+          <button type="button" data-act="back" onClick={() => { window.location.hash = backHash(); }}
+            style={{ border: "none", background: "none", cursor: "pointer",
+                     fontSize: 12, color: C.sub, font: `12px ${FONT}` }}>{t.back} →</button>
+        )}
       </header>
 
       <main style={{ flex: 1, display: "flex", minHeight: 0 }}>
@@ -782,12 +864,19 @@ export default function ShowroomPage({ carried = null }) {
           </div>
 
           {/* ══ 결과 — 이 화면에서 **가장 큰 글씨** ══════════════════ */}
-          <div data-result="1" data-up={up} data-perea={perEA ?? ""}
+          {/* ⚠ data-perea 는 **수식 미설정일 때만** 원가를 싣는다. 종전에는 늘 실었고,
+              수식을 켠 채로 그대로 두면 고객 앞 화면의 DOM 에 한국 원화 원가가
+              남는다 — 화면에는 ¥35 인데 검사도구에는 204 다. 그건 이 기능이 막으려던
+              것과 같은 유출이다. 수식이 켜지면 대신 **보여준 값**만 싣는다
+              (data-shown) — 브라우저 실측이 「화면과 DOM 이 같은 말을 하는가」를
+              잴 수 있어야 하기 때문이다. */}
+          <div data-result="1" data-up={up} data-price-mode={shown.mode} data-cur={shown.cur}
+            data-perea={shown.mode === "cost" ? (perEA ?? "") : ""} data-shown={shown.main}
             style={{ background: C.panel, border: `1px solid ${C.line}`, borderRadius: 10,
                      padding: "16px 22px", display: "flex", alignItems: "flex-end", gap: 34, flexWrap: "wrap" }}>
             <Big value={up > 0 ? String(up) : "—"} unit={t.up}/>
             <div style={{ width: 1, alignSelf: "stretch", background: C.line }}/>
-            <Big value={perEA != null && up > 0 ? perEA.toLocaleString() : "—"} unit={t.won} pre={t.perEA}/>
+            <Big value={shown.main} unit={shown.unitKey ? t[shown.unitKey] : ""} pre={t.perEA}/>
             <div style={{ flex: 1 }}/>
             <div style={{ fontSize: 12, color: C.sub, lineHeight: 1.9, textAlign: "right" }}>
               <div><span style={{ color: C.faint }}>{t.sheetSize}</span>{"  "}
@@ -820,6 +909,24 @@ export default function ShowroomPage({ carried = null }) {
           )}
         </section>
       </main>
+
+      {/* ★ 관리자 패널 — **떠 있다**(position:fixed). 흐름에 넣으면 열 때마다 오른쪽
+          영역이 좁아져 판·도면이 작아진다. 부스에서 관리자가 수식을 만지는 동안에도
+          고객이 보는 그림은 **한 픽셀도 움직이면 안 된다** — 그래서 레이아웃 밖이다.
+          자리는 왼쪽 아래(운영자 쪽 입력 패널 위) — 판과 결과 상자를 가리지 않는다. */}
+      {adminOpen && av && (
+        <AdminPanel a={ADMIN_T} v={av} cfg={priceCfg} set={setCfg} hiding={hiding}
+          onQuote={() => { window.location.hash = backHash(); }}
+          onClose={() => setAdminOpen(false)}/>
+      )}
+
+      {/* ★ 인쇄 — 관리자 패널은 **종이로 나가면 안 된다.** 실측: 이 페이지의 모든
+          스타일시트에 @media print 규칙이 0건이었고, 패널이 position:fixed 라
+          Chrome 인쇄에서 첫 페이지에 원가와 수식이 그대로 찍혔다. 쇼룸을 인쇄할 일이
+          잦지는 않지만 막는 비용이 한 줄이다.
+          ⚠ 이 화면은 스타일이 전부 인라인이라 걸 자리가 없다 — 그래서 <style> 한 조각을
+            둔다. 여기에 다른 규칙을 늘리지 마라(인라인 규율이 무너진다). */}
+      <style>{"@media print{[data-admin]{display:none !important}}"}</style>
     </div>
   );
 }
@@ -1047,6 +1154,123 @@ const Big = ({ value, unit, pre }) => (
 
 const chip = (fg, bg) => ({ fontSize: 11.5, color: fg, background: bg, borderRadius: 999,
                             padding: "4px 11px", fontWeight: 600 });
+
+// ══════════════════════════════════════════════════════════════════
+//  관리자 패널 — **고객은 원리적으로 볼 수 없다** (Ctrl+Alt+M 으로만 열린다)
+// ══════════════════════════════════════════════════════════════════
+//  여기서만 원가·수식·마진이 화면에 나온다. 원가와 적용 결과를 **한 줄에 나란히**
+//  놓는 것이 요점이다 — 부스에서 「204 원이 ¥35 로 맞나」를 눈으로 즉석 검산한다.
+//  거부됐으면 그 이유가 여기에만 뜨고, 고객 화면 금액 자리는 「—」다(원가로 안 돌아간다).
+//  ⚠ 문구는 price-formula 의 ADMIN_T 가 소유한다(한국어 한 벌 — 왜인지는 그 파일 주석).
+const AdminPanel = ({ a, v, cfg, set, hiding, onQuote, onClose }) => {
+  const row = { display: "flex", alignItems: "center", gap: 8 };
+  const lab = { fontSize: 11, color: C.faint, width: 62, flexShrink: 0 };
+  const fx = (key, label) => (
+    <div style={row}>
+      <div style={lab}>{label}</div>
+      <input value={cfg[key]} placeholder={a.ph} spellCheck={false}
+        data-fx={key} onChange={e => set(c => ({ ...c, [key]: e.target.value }))}
+        style={{ flex: 1, minWidth: 0, boxSizing: "border-box", padding: "6px 8px",
+                 borderRadius: 6, border: `1px solid ${v.cur === key && v.mode === "blocked" ? C.bad : C.line}`,
+                 background: "#fff", color: C.ink, font: `13px ${FONT}`,
+                 fontVariantNumeric: "tabular-nums" }}/>
+    </div>
+  );
+  return (
+    <div data-admin="1" style={{
+      position: "fixed", left: 16, bottom: 16, width: 336, zIndex: 60,
+      background: C.panel, border: `1px solid ${C.acc}`, borderRadius: 10,
+      boxShadow: "0 8px 28px rgba(17,22,29,.18)", padding: 14,
+      display: "flex", flexDirection: "column", gap: 9, font: `13px ${FONT}`, color: C.ink }}>
+      <div style={{ ...row, justifyContent: "space-between" }}>
+        <div style={{ fontSize: 12.5, fontWeight: 800, color: C.acc }}>{a.title}</div>
+        <button type="button" data-act="admin-close" onClick={onClose}
+          style={{ border: "none", background: "none", cursor: "pointer",
+                   fontSize: 11.5, color: C.sub, font: `11.5px ${FONT}` }}>{a.close}</button>
+      </div>
+
+      <div style={row}>
+        <div style={lab}>{a.cur}</div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <Select value={cfg.cur} onChange={c => set(p => ({ ...p, cur: c }))} options={CUR_CHOICES}/>
+        </div>
+      </div>
+      {fx("KRW", a.fxKRW)}
+      {fx("JPY", a.fxJPY)}
+
+      {/* 원가 ↔ 적용 결과 — 나란히. 이 줄이 이 패널의 본체다. */}
+      <div style={{ display: "flex", gap: 10, background: C.soft, borderRadius: 8, padding: "9px 11px" }}>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 10.5, color: C.faint }}>{a.cost}</div>
+          <div data-admin-cost={v.cost ?? ""} style={{ fontSize: 17, fontWeight: 700,
+                fontVariantNumeric: "tabular-nums" }}>
+            {v.cost != null ? `${v.cost.toLocaleString()}원` : a.none}
+          </div>
+        </div>
+        <div style={{ width: 1, background: C.line }}/>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 10.5, color: C.faint }}>{a.out} · {v.cur}</div>
+          <div data-admin-out={v.main} style={{ fontSize: 17, fontWeight: 700,
+                color: v.mode === "blocked" ? C.bad : C.ink, fontVariantNumeric: "tabular-nums" }}>
+            {v.main}
+          </div>
+        </div>
+      </div>
+
+      {/* 거부 사유 — **여기에만** 뜬다. mode "hidden"(가림 표시를 달고 온 링크인데
+          이 브라우저에 수식이 없다)도 이유를 말해야 한다 — 안 그러면 운영자가
+          「왜 —만 뜨지」에서 멈춘다. */}
+      {(v.mode === "blocked" || v.mode === "hidden") && (
+        <div data-admin-why="1" style={{ fontSize: 11.5,
+              color: v.mode === "blocked" ? C.bad : C.warn, lineHeight: 1.6 }}>{v.why}</div>
+      )}
+      {/* ★ 상식 밴드 밖 — **거부가 아니라 경고**다(price-formula BAND).
+          ¥0 은 누가 봐도 틀렸지만 `/10` 이 빠진 ¥379 는 진짜처럼 보인다. 그래서 붉게. */}
+      {!!v.warn && (
+        <div data-admin-warn="1" style={{ fontSize: 11.5, color: C.bad, lineHeight: 1.6 }}>{v.warn}</div>
+      )}
+      {/* 「자동」이 통화를 넘겼으면 그 사실을 말한다 — 조용히 넘기면 화면의 ¥ 가 어디서
+          왔는지 아무도 모른다 (price-formula pickCur). */}
+      {!!v.fell && (
+        <div data-admin-fell={v.cur} style={{ fontSize: 10.5, color: C.warn, lineHeight: 1.65 }}>
+          {a.fell(v.cur)}
+        </div>
+      )}
+      {/* 반올림 규칙을 글로 — 숨은 반올림은 부스에서 「왜 계산이 안 맞죠」가 된다 */}
+      <div style={{ fontSize: 10.5, color: C.sub, lineHeight: 1.65 }}>
+        {v.roundNote}
+        {v.mode === "value" && v.exact !== v.value && (
+          <span style={{ color: C.faint }}>{`  (${v.exact} → ${v.value})`}</span>
+        )}
+      </div>
+      <div style={{ fontSize: 10.5, color: C.sub, lineHeight: 1.65 }}>{a.hint}</div>
+      <div style={{ fontSize: 10.5, color: C.sub, lineHeight: 1.65 }}>
+        {v.mode === "cost" ? a.off : v.mode === "hidden" ? a.hidden : a.on}
+      </div>
+      {/* 「자동」으로 두면 새로고침 한 번에 통화가 언어를 따라 돌아간다 — 실측한 함정이다 */}
+      {cfg.cur === "auto" && v.mode !== "cost" && (
+        <div data-admin-autowarn="1" style={{ fontSize: 10.5, color: C.warn, lineHeight: 1.65 }}>
+          {a.autoWarn}
+        </div>
+      )}
+      {/* ★ 링크가 무엇을 싣고 무엇을 안 싣는지 — **안심시키지 않는다.** 종전 문구
+          「링크·주소창에는 싣지 않습니다 (마진 유출 방지)」는 운영자가 「이 링크는
+          보내도 안전하다」로 읽었고, 그때 그 링크는 원가를 완전히 드러내고 있었다
+          (price-formula ⑥ 절 ★★ — 실측 critical). 지금은 비트를 싣고, 문구는
+          「지우면 보인다」까지 적는다. 읽히는 색이어야 한다 — faint 는 안 읽힌다. */}
+      <div style={{ fontSize: 10.5, color: C.sub, lineHeight: 1.65 }}>{a.store}</div>
+      <div data-admin-link="1" style={{ fontSize: 10.5, color: C.sub, lineHeight: 1.65 }}>{a.link}</div>
+      {/* 고객 화면에서 치운 「견적 앱으로 →」 문. 여기에만 둔다(header 주석 참조). */}
+      {hiding && (
+        <button type="button" data-act="admin-toquote" onClick={onQuote}
+          style={{ alignSelf: "flex-start", border: `1px solid ${C.line}`, background: "#fff",
+                   borderRadius: 6, padding: "5px 9px", cursor: "pointer",
+                   font: `11.5px ${FONT}`, color: C.sub }}>{a.toQuote}</button>
+      )}
+      <div style={{ fontSize: 10.5, color: C.faint, lineHeight: 1.65 }}>{a.key}</div>
+    </div>
+  );
+};
 
 const tabStyle = on => ({
   padding: "6px 10px", borderRadius: 6, cursor: "pointer", font: `12.5px ${FONT}`,

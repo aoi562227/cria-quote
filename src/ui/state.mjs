@@ -340,9 +340,27 @@ export function decodeSpec(payload) {
   return out;
 }
 
+// ── ★ 「가격을 가림」 비트 (`nc=1`) — 26-08-26 ─────────────────────────
+//  쇼룸 관리자 표시가(price-formula) 는 마진 보호를 위해 **수식을 해시에 안 싣는다.**
+//  그런데 해시는 **사양 전부**를 싣는다 — 그래서 수식이 없는 브라우저(= 링크를 받은
+//  고객 전원)에서 그 주소를 열면 쇼룸이 원가 원화로 접혀 **감추려던 수가 그대로**
+//  떴다(실측 critical: 부스 ¥59 → 같은 주소를 빈 브라우저에서 「345 원」).
+//
+//  고친 방식 — 수식은 계속 안 싣고 **「가렸다」는 사실 한 비트만** 싣는다.
+//  · 왜 `q` 안이 아닌가 — `q` 는 SPEC_KEYS 와 1:1 이고 그 목록은 「toQuoteInput 이
+//    읽는 키」와 같아야 한다(§A 가 Proxy 로 실측 대조). 표시 레이어의 값을 거기 끼우면
+//    그 계약이 깨진다. 그래서 **형제 파라미터**다 — payloadOfHash 는 `q=` 만 읽으므로
+//    안 건드려도 그대로 돈다.
+//  · 이 비트에 마진은 없다. 1.7 도 1.35 도 주소에 안 나온다.
+//  ⚠ 막는 것은 **실수이지 고의가 아니다** — 주소에서 지우면 원가가 보인다. 계산이
+//    전부 클라이언트에 있는 한 원리적으로 그렇다(price-formula ⑥ 절에 그 논증이 있다).
+export const noCostOfHash = hash => /[?&]nc=1(?:&|$)/.test(String(hash || ""));
+
 /** 사양을 실은 해시. route 는 "" (견적서) 또는 "showroom".
- *  ⚠ App 의 라우터가 `/^#\/?showroom\b/` 이므로 `#/showroom?…` 이 그 정규식에 맞아야 한다. */
-export const specHash = (route, s) => `#/${route}?q=${encodeSpec(s)}`;
+ *  ⚠ App 의 라우터가 `/^#\/?showroom\b/` 이므로 `#/showroom?…` 이 그 정규식에 맞아야 한다.
+ *  ⚠ opt 를 안 주면 **종전과 바이트 동일**하다 — 기존 링크·왕복 게이트가 안 움직인다. */
+export const specHash = (route, s, opt) =>
+  `#/${route}?q=${encodeSpec(s)}${opt?.nc ? "&nc=1" : ""}`;
 
 /** 해시에서 페이로드만 뽑는다. `#/showroom?q=…` · `#showroom?q=…` 둘 다 받는다.
  *  페이로드에 `&` 는 원리적으로 없다 — encodeURIComponent 가 %26 으로 접는다. */
