@@ -158,7 +158,7 @@ export default function PaperPanel({ s, u, sheetInfo, autoPriceInfo, result }) {
       {!s.mR && (
         <div style={{marginTop:8,background:"#0a1828",border:"1px solid #1a3050",borderRadius:4,padding:"8px 10px"}}>
           <Field label="여분(손지) 수동 입력"
-            note="빈값=자동. max(300, 정미×5%) + 양면 100 · 베다 100 · 형압 50 (박은 가산 없음)">
+            note="빈값=자동. max(300, 정미×5%) + 양면 100 · 베다 100 · 형압 50 (박은 가산 없음) — ⚠ 0 은 자동과 같다(여분 없음은 지원하지 않는다). 1 은 먹힌다">
             <div style={{display:"flex",gap:4,alignItems:"center"}}>
               <Input value={s.lossSheets} onChange={v=>u("lossSheets",v)} type="number" placeholder="자동"/>
               <div style={{display:"flex",gap:3}}>

@@ -50,7 +50,14 @@ export const LOSS_BEDA      = 100;   // 베다(바탕 전면 인쇄) 가산 — 
 export const LOSS_EMB       = 50;    // 형압 가산 (박은 가산 없음 — 조립형 금박 2건 여분 300)
 
 /** 여분(손지) 장수 — options.manual 이 있으면 그 값을 그대로 사용.
- *  parseFloat 는 유지 — UI 가 빈 문자열/숫자 문자열을 그대로 넘긴다. */
+ *  parseFloat 는 유지 — UI 가 빈 문자열/숫자 문자열을 그대로 넘긴다.
+ *
+ *  ⚠ 26-08-25 알려진 동작: **0 은 자동과 같다**(여분 300장). 1 은 먹힌다.
+ *    `manual > 0` 이 0 을 빈값과 한 덩어리로 묶기 때문이다. 방향은 안전측이고
+ *    (여분이 붙어 비싸진다) 화면 「▸ 자동 판단: … 여분 300장(표준)」 줄이 간접적으로
+ *    말해 준다. **0 을 진짜 0장으로 받는 분기는 일부러 안 넣었다** — 인쇄 여분 0 은
+ *    실무에서 성립하지 않고, 넣으면 방향이 「싸진다」로 바뀐다.
+ *    입력칸 note(PaperPanel)가 이 사실을 명시한다. */
 export function estimateLoss(net, options = {}) {
   const manual = parseFloat(options.manual);
   if (manual > 0) return Math.round(manual);

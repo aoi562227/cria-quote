@@ -12,7 +12,14 @@
 //  ────────────────────────────────────────────────────
 //   · 색은 **잉크 한 색 + 강조 한 색**. 칸마다 다른 색을 칠하지 않는다(LayoutViz 반면교사).
 //   · 칸 위에 배지·번호를 붙이지 않는다. 선택은 테두리 하나로 말한다.
-//   · 채우기 없음. 판은 흰 종이, 도형은 얇은 검은 선. 실제 인쇄물이 그렇게 생겼다.
+//     (SVG <text> 는 **0개**다. 도면 표기의 이름은 판 밖 HTML 범례가 갖는다 — Legend 참조.)
+//   · 채우기는 **접착면 하나뿐**이고 그것도 칼선과 **같은 잉크의 투명도**다(색 추가 0).
+//     판은 흰 종이, 도형은 얇은 검은 선. 실제 인쇄물이 그렇게 생겼다.
+//     실측: stroke 색이 3종(#1b2129·#d5dae1·#c3cad4) → **2종**(#d5dae1 을 없앴다)으로 줄었다.
+//   · ★ 접착면 표기는 **세 자리가 완전히 같아야 한다** — 미리보기 · 판 · 범례 견본.
+//     한 자리만 해칭이고 나머지가 평톤이면 고객은 범례를 읽고 판에서 그 무늬를 찾다가
+//     못 찾는다(적대검증 실측: 범례 해칭 vs 판 평톤, 둘 사이 거리 0px · 미리보기와 424px).
+//     그래서 셋 다 **평톤 하나**로 통일했다. 왜 해칭을 버렸는지는 GLUE_TONE 주석에 있다.
 //
 //  ★ 겹침은 **절대 그리지 않는다.**
 //    그릴 배치는 전부 showroom-core.auditItems 를 통과해야 한다(commit 이 게이트다).
@@ -29,21 +36,92 @@ import { findSheetBase, resolveSheet, PRESS_MAX_LONG, PRESS_MAX_SHORT } from "..
 import { readDielineFile } from "../domain/pdf-dieline.mjs";
 // 「고른 후보 → 그 후보의 polygons」 규칙은 state.mjs 가 소유한다 (두 벌 중 어느 쪽이
 // 정답인지 아는 곳은 한 군데여야 한다 — ARCHITECTURE §10). 쇼룸도 같은 함수를 부른다.
-import { pdfPickOf } from "../ui/state.mjs";
+import { pdfPickOf, specHash, customSheetOf } from "../ui/state.mjs";
 import { BOX_TYPES } from "../ui/box-types.mjs";
 import { resolveDrop, findSpot, itemW, itemH, SNAP_PX } from "../ui/viz/nest-drag.mjs";
 import {
   SHEET_CHOICES, frameOf, partOf, auditItems, autoPlace, fillMore,
-  quoteInputOf, seedOf, precisionKeyOf, T, LANGS,
+  quoteInputOf, specSummaryOf, seedFromAuto, capToQuoteUp, seedOf, precisionKeyOf,
+  linkStateOf, T, LANGS,
 } from "./showroom-core.mjs";
 
 // ── 색 · 치수 ──────────────────────────────────────────────────────
+//  ★ 회색 두 단의 용도가 갈려 있다 — 섞지 마라.
+//    · sub   #6a7280 = **읽어야 하는 글**. 범례 뜻풀이 · 출처 · 정밀도 · 표준사양 · 재단
+//            안내. 판 배경(#eceff3) 대비 **4.20:1**.
+//    · faint #aab2bd = **값에 붙은 이름표**(「가로 W」「전개도」처럼 옆의 숫자가 뜻을
+//            나르는 것)와 장식. 대비 **1.86:1** — 글을 여기 두면 안 읽힌다.
+//  종전에는 범례 뜻풀이·출처·정밀도가 faint 였다. 이 파일은 오시선 #d5dae1 의 1.41:1 을
+//  「선이 있다는 사실조차 전달하지 못한다 · 부스 조명에서 통째로 소실된다」고 판정해
+//  걷어냈는데(아래 도면 표기 절), **글자에는 그 기준을 안 쓰고 있었다.** 글자는 선보다
+//  더 높은 대비가 필요하다. DOM 에 있는 정직성 문구는 읽히지 않으면 없는 것과 같다.
+//  ⚠ 4.20:1 은 WCAG 1.4.3 의 4.5:1 에 아직 못 미친다. 더 올리려면 #5b6472(5.21:1)가
+//    답인데 그건 **색을 하나 늘리는 것**이고, 이 화면의 규칙(알록달록 금지·색 추가 0)과
+//    맞바꿀 값이 0.3 포인트뿐이다. 글자 크기를 24px 로 키우는 쪽은 레이아웃을 부순다.
 const C = {
   bg: "#eceff3", panel: "#ffffff", line: "#dde2e9", soft: "#f5f7fa",
   ink: "#11161d", sub: "#6a7280", faint: "#aab2bd",
   acc: "#0b62d6", accBg: "#eaf1fd", bad: "#c0362c", warn: "#a15c07",
 };
 const FONT = "'Segoe UI','Noto Sans KR','Noto Sans JP',sans-serif";
+
+// ══════════════════════════════════════════════════════════════════
+//  도면 표기 3종 — 색을 늘리지 않는다. **잉크 한 색의 형태 차이**로만 가른다.
+// ══════════════════════════════════════════════════════════════════
+//  실측 근거 (칼선 PDF 6건 · 고객사 5곳 · 구조 2종):
+//    · 칼선과 오시선은 원본에서 **같은 잉크(K100)·같은 굵기**다. dash 연산자 0회,
+//      선굵기·색 분기 0회, stroke 연산자가 파일당 1~2회 — 한 그래픽 상태로 한 번에
+//      그려진다. 즉 「실선/파선」도 「진함/옅음」도 **원본에는 없고 우리가 얹는 관용**이다.
+//      그래서 색으로 가르지 않고 **파선 하나로만** 가른다 — 원본에 가장 충실하고
+//      화면에서 가장 잘 보인다.
+//    · 종전 오시선 #d5dae1 은 흰 판 대비 **1.41:1** 이었다(칼선 #1b2129 는 16.20:1).
+//      1.41:1 은 「선이 있다」는 사실조차 전달하지 못한다 — 부스 조명·빔프로젝터에서
+//      통째로 소실된다. 되돌리지 마라. 위계를 주고 싶으면 #5b6472(5.98:1) 까지다.
+//  ⚠ dash 값의 단위는 **화면 px** 다 — 폴리라인이 vectorEffect="non-scaling-stroke"
+//    이므로 굵기와 dash 가 둘 다 뷰박스 배율을 타지 않는다. 그래서 판을 작게 그려도
+//    파선이 파선으로 보인다. 값은 가시성 산술로 정했다(실측값이 아니다): 우리가 그리는
+//    가장 짧은 오시선이 접착탭 경계(맞뚜껑 D=15 → 15mm)이고 화면 배율 실측이
+//    0.41~1.62 px/mm(미리보기 0.41~0.44 · 판 1.23~1.62)라 화면 길이가 6~24px 다.
+//    종전 "4 3"(주기 7px)은 대시를 1~2개만 남겨 실선과 구별이 안 됐고,
+//    "2.5 2"(주기 4.5px)면 최소 1.4주기가 남는다.
+//    ★ 브라우저 실측으로 확인했다 — 같은 선을 배율 ×0.44 / ×1 / ×4 로 래스터해서 센 결과
+//      non-scaling-stroke 는 세 배율 전부 **대시 3px · 주기 4.44px** 로 동일했고,
+//      대조군(vectorEffect 없음)은 2.53 / 4.44 / 16.67px 로 배율을 그대로 탔다.
+const INK = "#1b2129";        // 칼선·오시선·접착면 공통 잉크 (K100 먹)
+const CUT_W = 0.9, CUT_W_SEL = 1.15, CUT_W_PREV = 1;
+const CREASE_W = 0.7, CREASE_DASH = "2.5 2", CREASE_DASH_PREV = "3 2.5";
+/**
+ * 접착면 톤 — 같은 잉크의 투명도만 쓴다(색 추가 0). 칼선·오시선이 그 위에 올라간다.
+ *
+ * ⚠ 해칭(45° pattern)을 썼다가 **버렸다.** 두 가지 이유이고 둘 다 실측이다:
+ *   ① `pattern` 은 `vectorEffect="non-scaling-stroke"` 같은 장치가 없어 간격이 mm(사용자
+ *      단위)로 굳는다. 그런데 판의 배율은 컨테이너 크기에 따라 **0.45~1.62 px/mm** 로
+ *      3.6배 움직인다(desktop 0.9351 · tablet 0.4496 · 좁은 판 1.62 실측). 어느 mm 값을
+ *      골라도 한쪽 배율에서는 1px 미만으로 뭉개져 회색 덩어리가 되고, 폭 14.3mm 탭에서는
+ *      그 덩어리가 곧 톤이다 — 즉 해칭은 **배율을 못 버틴다.**
+ *   ② 그래서 해칭이 살아 있던 곳은 높이가 112px 로 **고정된** 미리보기 하나뿐이었고,
+ *      판은 평톤, 범례 견본은 또 해칭이었다. 표기가 세 벌로 갈렸다(위 머리말 참조).
+ *   되돌리려면 판의 실제 CTM 을 측정해 pattern 셀을 px 로 환산해야 한다(ResizeObserver
+ *   + state). 표기 하나에 렌더 루프를 늘릴 값이 없다.
+ *
+ * 값 0.20 은 대비 산술로 정하고 **래스터로 확인했다**(칼선 실측이 주는 값이 아니다):
+ *   흰 판(#fff) 위 #1b2129 α → 종전 0.10 은 **1.24:1** 로 WCAG 1.4.11(의미 있는 그래픽
+ *   3:1)을 크게 밑돌았다. 0.20 은 산술 1.50:1 이고, 판 svg 를 그대로 캔버스에 그려 센
+ *   실측이 **1.52:1** 이다 — desktop(1.26 px/mm · 탭 14×125px, 평균 209.3/255) 과
+ *   tablet(0.45 px/mm · 탭 7×59px, 평균 209.7) 이 **같은 값**이다. 톤은 알파라 배율을
+ *   타지 않는다(해칭을 버린 이유가 여기서 되돌아온다).
+ *   3:1 은 톤으로는 원리적으로 못 넘는다 (#a0a4a9 급이 되어 그 위의 칼선·오시선을
+ *   삼킨다 = 정보를 잃는다). 대신 이 화면에서 접착면의 **경계**는 칼선(16.20:1)과
+ *   오시선이 이미 긋고 있고, 톤이 하는 일은 「이 닫힌 면이 그 면이다」 하나다.
+ *   그 몫에는 1.52:1 이 선다.
+ * ⚠ 테두리를 두르지 마라 — 접착탭의 한 변은 **오시선**이다. 실선 테두리를 깔면 파선의
+ *   빈칸이 잉크로 채워져 「접히는 선」이 「잘리는 선」으로 보인다(표기가 거짓말을 한다).
+ */
+const GLUE_TONE = 0.2;
+/** 범례 견본은 CSS 라 SVG fillOpacity 를 쓸 수 없다 — **같은 잉크·같은 알파**를 rgba 로
+ *  적는다. 27,33,41 = #1b2129(INK). ⚠ 두 값이 갈리는 순간 「범례가 약속한 표기가 판에는
+ *  없다」가 되살아난다. 한쪽만 고치지 마라. */
+const GLUE_FILL_CSS = `rgba(27, 33, 41, ${GLUE_TONE})`;
 /** 클릭과 드래그를 가르는 거리(mm 환산 전 화면 px) */
 const DRAG_MIN_PX = 2;
 const UNDO_MAX = 30;
@@ -56,19 +134,32 @@ const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 // ══════════════════════════════════════════════════════════════════
 //  MAIN
 // ══════════════════════════════════════════════════════════════════
-export default function ShowroomPage() {
+//  ★ `carried` = 견적서 화면에서 URL 해시로 실려 온 **상태 한 벌**(없으면 null).
+//    쇼룸은 그것을 계산의 바탕(base)으로 깔고, 화면에서 만질 수 있는 것만 덮어쓴다.
+//    null 이면 종전 그대로 표준사양으로 돈다 — 단독 진입(#showroom)이 안 깨진다.
+//    ⚠ 렌더 중에 바뀌지 않는다: 해시가 바뀌면 App 이 화면을 통째로 갈아끼운다.
+//      그래서 아래 useState 초기화 함수로 한 번만 읽는다(값이 바뀌어 재초기화되기를
+//      기대하지 마라 — 그건 마운트 때만 돈다).
+export default function ShowroomPage({ carried = null }) {
   const [lang, setLang] = useState("ko");
   const t = T(lang);
 
+  // 전개도 전체크기 직접입력으로 실려 온 사양(슬리브 등)은 W·D·H 공식이 없다.
+  // 훅이 아니라 파생값이다 — carried 는 이 화면이 사는 동안 안 바뀐다.
+  const netDims = carried?.sizeMode === "net";
+
   // ── 입력 (항목을 최소로) ────────────────────────────────────────
+  //  기본값은 실려 온 사양이 있으면 그 값, 없으면 종전 표준 예시값이다.
   const [srcMode, setSrcMode] = useState("box");        // "box" | "pdf"
-  const [boxType, setBoxType] = useState("glue_3side");
-  const [bW, setBW] = useState("140");
-  const [bD, setBD] = useState("43");
-  const [bH, setBH] = useState("130");
+  const [boxType, setBoxType] = useState(() => carried?.boxType || "glue_3side");
+  const [bW, setBW] = useState(() => carried?.bW ?? "140");
+  const [bD, setBD] = useState(() => carried?.bD ?? "43");
+  const [bH, setBH] = useState(() => carried?.bH ?? "130");
+  const [nW, setNW] = useState(() => carried?.nW ?? "");
+  const [nH, setNH] = useState(() => carried?.nH ?? "");
   const [pdfDl, setPdfDl] = useState(null);             // readDieline 결과 + page/pickIdx
-  const [sheetId, setSheetId] = useState("auto");
-  const [qty, setQty] = useState("4000");
+  const [sheetId, setSheetId] = useState(() => carried?.sheetId || "auto");
+  const [qty, setQty] = useState(() => carried?.qty ?? "4000");
 
   // ── 배치 ────────────────────────────────────────────────────────
   const [items, setItems] = useState(null);             // 확정 배치 (null = 아직 안 앉힘)
@@ -88,10 +179,14 @@ export default function ShowroomPage() {
 
   // ── 도면 ────────────────────────────────────────────────────────
   const pick = useMemo(() => (srcMode === "pdf" ? pdfPickOf({ pdfDl }) : null), [srcMode, pdfDl]);
+  // 규격 경로는 셋이다: PDF bbox / 전개도 직접입력 / W·D·H. 뒤 둘은 화면에서 만진다.
   const spec = useMemo(() => ({
-    mode: srcMode, boxType, W: num(bW), D: num(bD), H: num(bH),
-    netW: pick?.bbox?.w ?? 0, netH: pick?.bbox?.h ?? 0, qty: int(qty),
-  }), [srcMode, boxType, bW, bD, bH, pick, qty]);
+    mode: srcMode === "pdf" ? "pdf" : (netDims ? "net" : "box"),
+    boxType, W: num(bW), D: num(bD), H: num(bH),
+    netW: srcMode === "pdf" ? (pick?.bbox?.w ?? 0) : num(nW),
+    netH: srcMode === "pdf" ? (pick?.bbox?.h ?? 0) : num(nH),
+    qty: int(qty), carried,
+  }), [srcMode, netDims, boxType, bW, bD, bH, nW, nH, pick, qty, carried]);
 
   // ── 견적 호출 2회 ────────────────────────────────────────────────
   //  ① qAuto : up 을 안 주고 부른다 → 도메인이 **판형을 고르고** 격자 배치를 푼다.
@@ -108,7 +203,14 @@ export default function ShowroomPage() {
     const id = sheetId !== "auto" ? sheetId : (qAuto?.sheet?.id || null);
     return id ? findSheetBase(id) : null;
   }, [sheetId, qAuto?.sheet?.id]);
-  const frame = useMemo(() => (sheetBase ? frameOf(resolveSheet(sheetBase, null)) : null), [sheetBase]);
+  // ⚠ 주문생산(custom) 판형은 쇼룸 **목록에는 없다**(크기 입력이 따로 필요해 뺐다).
+  //   그런데 견적서에서 **실려 올 수는 있다.** 그때 크기를 같이 넘기지 않으면
+  //   resolveSheet 가 기본값 890×670 으로 접혀서, **그린 판과 다른 판의 금액**이 나간다
+  //   (금액 쪽은 base 의 cusW/cusH 로 제대로 계산된다 — 그래서 조용히 갈린다).
+  //   판 크기를 읽는 규칙은 state.mjs 가 소유하므로 같은 함수를 부른다.
+  const customSheet = useMemo(() => (carried ? customSheetOf(carried) : null), [carried]);
+  const frame = useMemo(() => (sheetBase ? frameOf(resolveSheet(sheetBase, customSheet)) : null),
+                        [sheetBase, customSheet]);
 
   // 부품(충돌 도형 + 그릴 윤곽). dieline 은 **key** 로 의존한다 — 참조로 걸면 글자 한 자
   // 칠 때마다 NFP 사전계산(조각²)이 다시 돈다 (BoxSpec.handPart 와 같은 이유).
@@ -182,8 +284,15 @@ export default function ShowroomPage() {
     } finally { setBusy(""); }
   };
 
+  // 견적서가 판걸이를 고정해 왔으면 자동해를 그 수에 맞춘다 — 많으면 자르고, 적으면
+  // 자유해로 **복원**한다(판정은 showroom-core.seedFromAuto). 복원에 실패하면 조용히
+  // 되돌리지 않고 화면이 말한다 — 그 침묵이 major ⑨(+30%) 의 본체였다.
+  // 사람이 직접 한 행동(+한 장 · 빈 곳 채우기 · 삭제)에는 걸지 않는다 — 아래 한 곳뿐이다.
+
   // ── 자동 배치 ────────────────────────────────────────────────────
-  //  ⚠ 자동 재계산 금지 — 버튼으로만 돈다. 입력이 바뀌면 배치가 지워질 뿐이다.
+  //  ⚠ 자동 재계산 금지 — 입력이 바뀌면 배치는 **지워질 뿐**이고 다시 풀지 않는다.
+  //    거는 자리는 딱 둘이다: 이 버튼과, 사양이 실려 왔을 때의 **마운트 1회**
+  //    (바로 아래 autoRan). 그 둘 말고 어디에도 걸지 마라.
   const runAuto = () => {
     if (!part || !frame) { setMsg(t.needDraw); return; }
     setBusy("auto"); setMsg("");
@@ -198,8 +307,45 @@ export default function ShowroomPage() {
       setAutoInfo(r);
       setSel(null); setUndo([]);
       if (!r.up) { setItems([]); setMsg(r.rejected ? t.overlapRefused : t.noFit); return; }
-      setItems(r.items); setMsg("");
+      // ★ 여기서만 실려 온 고정 판걸이를 반영한다 (major ⑨ — 아래 주석)
+      const s = seedFromAuto(carried, r);
+      setItems(s.items);
+      // 되돌아간 것을 **조용히** 두지 않는다: 되살렸으면 되살렸다고, 못 그렸으면
+      // 못 그렸다고 화면이 말한다. 침묵이 +30% 의 본체였다.
+      setMsg(s.restored ? t.pinRestored(s.restored)
+           : s.shortOf  ? t.pinLost(s.shortOf, s.items.length)
+           : "");
     }, 24);
+  };
+
+  // ── 실려 온 사양은 **들어오자마자 앉힌다** (적대검증 minor ⑤) ────────
+  //  204원을 확정해 넘어왔는데 첫 화면이 「— up · 개당 — 원」이면, 고객 앞에서
+  //  화면을 넘긴 직후 빈 값이 보인다. 사양이 실려 온 것은 「이 값을 보여달라」는
+  //  뜻이므로 버튼을 기다리지 않는다.
+  //  ⚠ 위 「자동 재계산 금지」는 그대로다 — 이건 **마운트 1회**뿐이다(ref 가 막는다).
+  //    입력이 바뀔 때마다 돌리면 치수 칸에 글자 한 자 칠 때마다 최대 200만 회 탐색이
+  //    돈다(실측 최대 153ms). 그 규율을 깨지 않는다.
+  //  ⚠ 단독 진입(#showroom · carried 없음)은 종전 그대로 안내문으로 시작한다 —
+  //    그 화면의 첫 문장이 「「자동 배치」를 누르면 …」이고 그건 온보딩이다.
+  const autoRan = useRef(false);
+  useEffect(() => {
+    if (autoRan.current || !carried || !part || !frame) return;
+    autoRan.current = true;
+    runAuto();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [carried, part, frame]);
+
+  // ── 자유 배치 채택 ───────────────────────────────────────────────
+  //  ★ 자동 배치가 **격자해**를 앉히는 이유는 autoPlace 주석에 있다(두 화면이 같은
+  //    금액을 말해야 한다). 자유해는 버려지지 않고 이 버튼으로 온다 — 실무앱의
+  //    「손배치로 이어받기」와 같은 **확정 절차**다. commit 을 지나므로 겹침 게이트가
+  //    그대로 걸리고, 채택하면 up 이 올라 돌아가는 링크가 판걸이 직접입력으로
+  //    그 up 을 실어 견적서도 같은 수로 청구한다.
+  const adoptFree = () => {
+    const xs = autoInfo?.freeItems;
+    if (!xs?.length) return;
+    setSel(null);
+    if (commit(xs)) setMsg(t.adopted(xs.length));
   };
 
   const runFill = () => {
@@ -220,7 +366,9 @@ export default function ShowroomPage() {
     if (!part || !frame) { setMsg(t.needDraw); return; }
     if (!items) {
       // 씨앗은 자동 격자해 → 없으면 한 장. 한 장도 안 들어가면 켜지 않는다.
-      const seed = seedOf(qAuto?.layout?.up > 0 ? qAuto.layout.boxes : []);
+      // 손배치 씨앗도 고정값을 넘기지 않는다 — 넘치면 자른다(복원은 하지 않는다:
+      // 손배치는 사람이 여기서부터 직접 만드는 자리라 자유해를 몰래 앉히면 안 된다).
+      const seed = capToQuoteUp(carried, seedOf(qAuto?.layout?.up > 0 ? qAuto.layout.boxes : []));
       if (seed.length) setItems(seed);
       else {
         const proto = { x: 0, y: 0, flipped: false, rotated: false };
@@ -331,8 +479,88 @@ export default function ShowroomPage() {
   const perEA = qShow?.totals?.perEA ?? null;
   const sheetLabel = frame ? (frame.sheet.label || frame.sheet.id).trim() : "";
   const netW = part?.w ?? 0, netH = part?.h ?? 0;
-  const gain = autoInfo && autoInfo.via === "free" && autoInfo.freeUp > autoInfo.gridUp
-    ? t.gain(autoInfo.gridUp, autoInfo.freeUp) : null;
+  // 자유 배치 제안 — **아직 안 채택했을 때만** 낸다. 조건이 `via === "free"` 가
+  // 아니게 된 이유는 autoPlace 주석에 있다(이제 자동 배치는 격자해를 앉힌다).
+  // 채택하면 up 이 freeUp 이 되므로 버튼이 스스로 사라진다.
+  const gainUp = autoInfo && autoInfo.freeUp > autoInfo.gridUp && autoInfo.freeItems?.length
+    ? autoInfo.freeUp : 0;
+  const gain = gainUp > up ? t.gain(autoInfo.gridUp, gainUp) : null;
+  // 정밀도 문구. **null 이면 그 줄을 내지 않는다** — 어느 경로가 null 인지와 그 이유는
+  // showroom-core.precisionKeyOf 가 소유한다(치수 경로는 출처 줄이 대신 말한다).
+  const pKey = part ? precisionKeyOf(part.P.mode) : null;
+  const precisionNote = pKey ? t[pKey] : null;
+  // 사양 줄 — 실려 온 사양이 있으면 **실제 견적 라인**에서 뽑아 적는다(showroom-core
+  // 주석 참조). 아직 안 앉혔으면 판을 고르는 호출(qAuto)의 라인을 쓴다: 사양은
+  // up 과 무관하므로 같은 말이 나오고, 「자동 배치」를 누르기 전에도 사양이 보인다.
+  //  ⚠ 라인이 **없을 수도 있다** — 이 전개도가 들어가는 판형이 없으면 buildQuote 가
+  //    빈 결과를 낸다(실측: 슬리브 646×258 을 4×64 에 걸었을 때). 그때 껍데기만 찍으면
+  //    「견적서 사양 · (개당단가는 개발비 제외)」라는 뜻 없는 줄이 남는다. 그러면
+  //    아무 말도 하지 않는다 — 설명할 단가 자체가 없다(결과도 「—」다).
+  //    표준사양 문구로 접으면 안 된다: 실려 온 사양이 아닌 것을 말하게 된다.
+  const specSum = carried ? specSummaryOf((qShow || qAuto)?.lines) : "";
+  const specNote = carried
+    ? (specSum ? `${t.specFrom} · ${specSum} ${t.exDev}` : "")
+    : t.specLine;
+
+  // ── 해시에 실을 상태 한 벌 ───────────────────────────────────────
+  //  ★ **지금 화면의 값을 그대로 들고** 돌아간다. 부스에서 고객이 「조금 키우면?」
+  //    하고 여기서 치수·수량·판형을 만졌는데 견적서가 옛 값으로 돌아가면, 그게 바로
+  //    이번에 고치는 「두 화면이 따로 논다」의 반대 방향이다.
+  //  조립 규칙(판걸이·규격·판형)은 **showroom-core.linkStateOf** 가 소유한다 —
+  //  아래 두 용도가 같은 조립을 쓰게 하려고 함수로 뽑았다. 여기 다시 적지 마라.
+  const linkState = sheetIdForLink => linkStateOf({
+    carried, mode: spec.mode, boxType, bW, bD, bH,
+    netW: spec.netW, netH: spec.netH, sheetId: sheetIdForLink, qty, up,
+    gridUp: qAuto?.layout?.up ?? 0,
+  });
+
+  // ① 「견적 앱으로 →」 — 판형은 **해석된 실제 판형 id**. "auto" 를 실으면 판걸이
+  //    직접입력과 겹쳐 견적서가 4×64 로 갈아타고 29% 싸게 부른다(linkStateOf 주석).
+  //
+  //  ── 「돌아가기」의 착지 상태 — 재확인했고 **유지한다** (적대검증 minor ⑦) ──
+  //   지적: HEAD 는 이 버튼이 `#/` 를 넣어서 견적서가 INITIAL_STATE 로 떴다. 지금은
+  //   사양이 실린다 — **새 버튼을 한 번도 안 눌러도** `#showroom` 단독 진입 후
+  //   「돌아가기」만 하면 쇼룸 표준사양(140×43×130 · 원색4 · 223원)이 견적서에 깔린다.
+  //   실무앱의 기존 동작을 바꾼 것이 맞다. 그래도 유지하는 이유 셋:
+  //    · 이 버튼의 뜻이 「지금 보고 있는 박스를 견적서에서 이어서 보자」다. 방금
+  //      화면에 있던 박스를 버리고 빈 폼을 띄우면 이번 연동의 반대 방향이 된다 —
+  //      단독 진입 화면에서도 운영자는 치수·수량·판형을 만진다(그게 그 화면의 용도다).
+  //    · **조용하지 않다.** 좌패널 7섹션이 실려 온 값을 그대로 표시하고 견적서가 눈앞에서
+  //      다시 계산된다. ⑥ 처럼 「그럴듯한 다른 값이 맞는 값처럼 보이는」 상태가 아니다.
+  //      새 세션에서 링크로 들어온 경우에는 견적서 위 안내 줄이 「링크로 받은 사양입니다」
+  //      라고 명시한다(App.jsx 의 nameNote).
+  //    · 「만졌으면 싣고 안 만졌으면 비운다」는 분기는 **또 하나의 숨은 상태**다.
+  //      무엇을 만짐으로 셀지(언어 전환도? 후보 드롭다운도?)가 곧 낡는다.
+  //   빈 견적서가 필요하면 주소에서 `?q=…` 를 지우면 된다 — 그게 「사양 없음」이다.
+  const backHash = () => specHash("", linkState(sheetBase?.id || sheetId));
+
+  // ② 주소창 동기화 — **새로고침에 입력을 잃지 않기 위해서다** (적대검증 major ④).
+  //    종전에는 해시가 「고객 화면으로 →」·「견적 앱으로 →」를 누를 때만 갱신되어,
+  //    그 사이에 만진 치수·수량·판형이 주소창에 없었다. 부스에서 F5 한 번에
+  //    실려 온 옛 사양으로 되돌아가고 **경고도 없었다**(숫자가 그럴듯해서 되돌아간
+  //    줄도 모른다). 지금 화면이 곧 주소다.
+  //  ⚠ pushState/`location.hash=` 가 아니라 **replaceState** 다:
+  //     · location.hash 대입은 hashchange 를 쏘고, App 이 payload 를 key 로 쓰므로
+  //       화면이 통째로 재마운트된다 — 글자 한 자 칠 때마다 배치·포커스가 날아간다.
+  //     · pushState 는 히스토리를 키스트로크 수만큼 늘려 「돌아가기」를 못 쓰게 만든다.
+  //    replaceState 는 hashchange 를 쏘지 않으므로 App 의 hash 상태는 그대로다(의도).
+  //  ⚠ 판형은 여기서는 **드롭다운 값 그대로**다. 운영자가 고른 「자동」이 새로고침
+  //    한 번에 고정으로 바뀌면 그것도 조용한 사양 변경이다.
+  //  ⚠ 300ms 로 묶는다 — Safari 는 replaceState 호출 빈도에 상한이 있고(초과하면
+  //    예외), 치수 칸은 키스트로크마다 상태가 바뀐다.
+  //  ⚠ **주소를 아직 우리가 쥐고 있을 때만** 쓴다 — 「견적 앱으로 →」로 주소가 넘어간
+  //    뒤에 묶어둔 타이머가 깨어나 쇼룸 주소로 되덮으면, 방금 넘긴 사양이 사라진다.
+  //    언마운트 정리가 보통 먼저 돌지만 순서에 기대지 않는다.
+  const syncHash = specHash("showroom", linkState(sheetId));
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const id = setTimeout(() => {
+      const cur = window.location.hash;
+      if (cur !== syncHash && /^#\/?showroom\b/.test(cur))
+        window.history.replaceState(null, "", syncHash);
+    }, 300);
+    return () => clearTimeout(id);
+  }, [syncHash]);
 
   // ══════════════════════════════════════════════════════════════
   return (
@@ -355,8 +583,9 @@ export default function ShowroomPage() {
           ))}
         </div>
         {/* 해시를 비우면 브라우저마다 hashchange 가 안 뜨는 경우가 있다 —
-            **다른 해시**로 바꿔서 App 의 라우터가 확실히 깨어나게 한다. */}
-        <button type="button" data-act="back" onClick={() => { window.location.hash = "#/"; }}
+            **다른 해시**로 바꿔서 App 의 라우터가 확실히 깨어나게 한다.
+            이제 그 해시에 **지금 화면의 사양**이 실린다(backHash 주석 참조). */}
+        <button type="button" data-act="back" onClick={() => { window.location.hash = backHash(); }}
           style={{ border: "none", background: "none", cursor: "pointer",
                    fontSize: 12, color: C.sub, font: `12px ${FONT}` }}>{t.back} →</button>
       </header>
@@ -412,6 +641,13 @@ export default function ShowroomPage() {
                   </div>
                 )}
               </>
+            ) : netDims ? (
+              // 전개도 전체크기로 실려 온 사양 — 구조 드롭다운도 W·D·H 도 뜻이 없다
+              // (도메인이 "direct" 로 푼다). 두 칸만 낸다.
+              <div style={{ display: "flex", gap: 6 }}>
+                <Num label={t.nw} value={nW} onChange={setNW}/>
+                <Num label={t.nh} value={nH} onChange={setNH}/>
+              </div>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 <Select value={boxType} onChange={setBoxType}
@@ -431,8 +667,14 @@ export default function ShowroomPage() {
           {/* 판형 */}
           <section>
             <Label>{t.sheet}</Label>
+            {/* 실려 온 주문생산 판형은 목록에 없으므로 **한 줄 끼워 넣는다.** 안 넣으면
+                고른 값이 목록에 없어 브라우저가 첫 항목(「자동」)을 보여주는데 상태는
+                여전히 custom 이라, 화면이 실제와 다른 판형을 말한다. */}
             <Select value={sheetId} onChange={setSheetId}
               options={[["auto", `${t.auto}${qAuto?.sheet ? ` · ${(qAuto.sheet.label || "").trim()}` : ""}`],
+                        ...(sheetId === "custom" && frame
+                            ? [["custom", `${(frame.sheet.label || "").split("(")[0].trim()} ` +
+                                          `(${mm1(frame.sheet.w)}×${mm1(frame.sheet.h)})`]] : []),
                         ...SHEET_CHOICES.map(b => [b.id, `${b.label.trim()}`])]}/>
           </section>
 
@@ -443,7 +685,13 @@ export default function ShowroomPage() {
           </section>
 
           <div style={{ flex: 1 }}/>
-          <div style={{ fontSize: 10.5, color: C.faint, lineHeight: 1.7 }}>{t.specLine}</div>
+          {/* 사양 — 이것도 정직성 줄이다(이 단가가 **어느 사양의** 값인지 말한다).
+              출처 줄과 같은 등급이므로 같은 색을 쓴다 — C 주석의 sub/faint 규칙.
+              ⚠ 견적서에서 사양이 실려 오면 이 줄이 **그 사양**을 말해야 한다. 표준사양
+                문구를 그대로 두면 화면은 295AB 로 계산하고 글은 AB350 이라고 적는
+                거짓말이 된다 (data-spec 으로 실측 확인한다). */}
+          <div data-spec={carried ? "carried" : "std"}
+            style={{ fontSize: 10.5, color: C.sub, lineHeight: 1.7 }}>{specNote}</div>
         </aside>
 
         {/* ══ 오른쪽 — 판 · 결과 ═══════════════════════════════════ */}
@@ -479,7 +727,15 @@ export default function ShowroomPage() {
               </div>
             )}
             <div style={{ flex: 1 }}/>
-            {gain && <span data-gain="1" style={chip(C.acc, C.accBg)}>{gain}</span>}
+            {/* ★ 칩이 아니라 **버튼**이다 — 누르지 않으면 화면 금액이 견적서와 같은
+                격자 기준을 유지한다(autoPlace 주석: 고객 앞 화면이 청구보다 싸면 안 된다). */}
+            {gain && (
+              <button type="button" data-act="adopt-free" data-gain="1" onClick={adoptFree}
+                disabled={!!busy} style={{ ...chip(C.acc, C.accBg), border: `1px solid ${C.acc}`,
+                                           cursor: busy ? "default" : "pointer", font: `600 11.5px ${FONT}` }}>
+                {gain}
+              </button>
+            )}
           </div>
 
           {/* 판 */}
@@ -496,11 +752,30 @@ export default function ShowroomPage() {
             )}
           </div>
 
+          {/* 도면 범례 — 고객이 「어디가 잘리고 어디가 접히고 어디에 풀이 발리는지」를
+              읽는 자리. 구분이 없으면 도면이 아니라 선 뭉치로 보인다.
+              ⚠ 출처 줄은 **세 갈래**다. 조건이 `folds.length` 인 이유:
+                G형·G형트레이는 dieline/index.mjs 의 `if (!st.polygon)` 분기로 빠져
+                전개도가 **직사각 1조각**이다(cuts 1 · folds 0 · glue 0 — ARCHITECTURE
+                「폴리곤 미확정 → 직사각」). 그 구조에 srcBox(「날개 모양은 표준형
+                근사입니다」)를 내면 사실과 다르다 — 근사된 날개가 아니라 날개·오시선·
+                접착면이 **아예 없다**. folds 가 0 이라는 것이 그 분기의 관측 가능한
+                흔적이고(폴리곤이 확정된 구조는 folds 가 원리적으로 0 이 될 수 없다),
+                그래서 화면 코드가 구조 id 목록을 들고 있지 않아도 갈릴 수 있다. */}
+          {part && (
+            <Legend t={t} crease={!!part.folds?.length} glue={!!part.glue?.length}
+              note={srcMode === "pdf" ? t.srcPdf
+                  : netDims ? t.srcNet
+                  : (part.folds?.length ? t.srcBox : t.srcOutline)}/>
+          )}
+
           {/* 안내 · 경고 한 줄 */}
           <div style={{ minHeight: 18, fontSize: 12, color: msg ? C.warn : C.sub }} data-msg="1">
             {msg || (!items ? t.hintStart : hand ? t.hintHand : "")}
             {frame?.capped && !msg && (
-              <span style={{ color: C.faint, marginLeft: 10 }}>
+              // 「원지를 인쇄기 크기로 재단해서 겁니다」 — 고객이 「판형 788×1091 을
+              // 골랐는데 화면 판은 990×720 이다」를 묻는 자리다. 읽혀야 하는 글이다.
+              <span style={{ color: C.sub, marginLeft: 10 }}>
                 {t.cappedNote(frame.sheet.w, frame.sheet.h, PRESS_MAX_LONG, PRESS_MAX_SHORT)}
               </span>
             )}
@@ -524,12 +799,23 @@ export default function ShowroomPage() {
             </div>
           </div>
 
-          {/* 정밀도 한 줄 — 근사면 근사라고 적는다. 작게, 그러나 반드시 */}
-          {part && (
-            <div data-precision={part.P.mode} style={{ fontSize: 10.5, color: C.faint, lineHeight: 1.6 }}>
-              {t[precisionKeyOf(part.P.mode)]}
-              {autoInfo?.budgetHit && <span style={{ color: C.warn, marginLeft: 8 }}>· {t.budget}</span>}
-              {!drawable && <span style={{ color: C.bad, marginLeft: 8 }}>· {t.overlapRefused}</span>}
+          {/* 정밀도 한 줄 — 근사면 근사라고 적는다. 작게, 그러나 반드시.
+              ⚠ 치수 입력 경로에서는 **이 줄이 나오지 않는다**(precisionKeyOf 가 null).
+              precisionKeyOf 는 「충돌 도형」의 정밀도이고 **그림의 정밀도가 아니다** —
+              치수 경로에서 「칼선 폴리곤 그대로(근사 없음)」를 내면 같은 화면 173px 위의
+              출처 줄 「날개 모양은 표준형 근사입니다」와 정면 충돌하고, 두 줄이 같은
+              크기·같은 대비라 **더 확언조인 쪽**(근사 없음)이 이긴다. 치수 경로의 정직성은
+              출처 줄이 이미 소유한다. 판정은 showroom-core.precisionKeyOf 가 갖는다.
+              (경고 두 개는 경로와 무관하므로 이 줄이 비어도 그대로 뜬다.) */}
+          {part && (precisionNote || autoInfo?.budgetHit || !drawable) && (
+            <div data-precision={part.P.mode} style={{ fontSize: 10.5, color: C.sub, lineHeight: 1.6 }}>
+              {precisionNote}
+              {autoInfo?.budgetHit && (
+                <Bit color={C.warn} first={!precisionNote}>{t.budget}</Bit>
+              )}
+              {!drawable && (
+                <Bit color={C.bad} first={!precisionNote && !autoInfo?.budgetHit}>{t.overlapRefused}</Bit>
+              )}
             </div>
           )}
         </section>
@@ -583,14 +869,27 @@ function Sheet({ innerRef, frame, part, items, sel, hand, blocked, onDown, onMov
               fill={on ? "rgba(11,98,214,0.06)" : "transparent"}
               stroke={on ? C.acc : "none"} strokeWidth={on ? 1.4 : 0}
               vectorEffect="non-scaling-stroke"/>
+            {/* ⚠ 세 종류 모두 이 <g> **안쪽**이어야 한다. 밖에 두면 위 히트영역
+                rect(fill="transparent") 를 덮어 드래그가 죽는다 (ARCHITECTURE §10). */}
             <g transform={flip} fill="none" pointerEvents="none">
+              {/* 접착면 — **평톤**. 미리보기·범례 견본과 **완전히 같은 표기**다
+                  (GLUE_TONE 주석: 해칭은 판 배율 0.45~1.62 px/mm 를 못 버틴다).
+                  이 배율에서 접착탭은 폭 6~23px 뿐이고 판에는 그 탭이 up 개(4~6) 뜬다 —
+                  톤이 조용하다. ⚠ 부모 <g> 에 fill="none" 이 걸려 있어 fill 을
+                  **명시**해야 칠해진다. 테두리는 그리지 않는다(GLUE_TONE 주석 마지막 줄:
+                  탭의 한 변이 오시선이라 실선 테두리가 파선을 실선으로 만든다). */}
+              {(part.glue || []).map((g, k) => (
+                <polygon key={"g" + k} points={pts(g)} stroke="none"
+                  fill={blocked ? "#9aa3ae" : INK} fillOpacity={GLUE_TONE}/>
+              ))}
               {(part.folds || []).map((f, k) => (
-                <polyline key={"f" + k} points={pts(f)} stroke="#d5dae1" strokeWidth={0.7}
-                  strokeDasharray="4 3" vectorEffect="non-scaling-stroke"/>
+                <polyline key={"f" + k} points={pts(f)}
+                  stroke={on ? C.acc : (blocked ? "#9aa3ae" : INK)} strokeWidth={CREASE_W}
+                  strokeDasharray={CREASE_DASH} vectorEffect="non-scaling-stroke"/>
               ))}
               {(part.cuts || []).map((c, k) => (
                 <polyline key={"c" + k} points={pts(c)}
-                  stroke={on ? C.acc : (blocked ? "#9aa3ae" : "#1b2129")} strokeWidth={on ? 1.15 : 0.9}
+                  stroke={on ? C.acc : (blocked ? "#9aa3ae" : INK)} strokeWidth={on ? CUT_W_SEL : CUT_W}
                   strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke"/>
               ))}
             </g>
@@ -605,18 +904,26 @@ const pts = poly => poly.map(([x, y]) => `${x},${y}`).join(" ");
 /** 왼쪽 도면 미리보기 — 판과 **같은 도형·같은 선**으로 그린다 */
 function DrawPreview({ part, label }) {
   const M = Math.max(part.w, part.h) * 0.04;
+  const vh = part.h + 2 * M;
   return (
     <section>
       <div style={{ border: `1px solid ${C.line}`, borderRadius: 8, background: C.soft, padding: 10 }}>
-        <svg data-preview="1" viewBox={`${-M} ${-M} ${part.w + 2 * M} ${part.h + 2 * M}`}
+        <svg data-preview="1" viewBox={`${-M} ${-M} ${part.w + 2 * M} ${vh}`}
           style={{ width: "100%", height: 112, display: "block" }}>
+          {/* 접착면 — 판·범례와 **같은 평톤**. 종전에는 여기만 45° 해칭이었는데, 이 svg 는
+              높이가 112px 로 고정이라 pattern 셀을 mm 로 굳혀도 배율이 안 변했기 때문이다.
+              판은 그렇지 않다(0.45~1.62 px/mm) — 그래서 표기가 미리보기/판/범례 세 벌로
+              갈렸다. 이 자리에서만 맞는 최적화보다 세 자리가 같은 것이 낫다. */}
           <g fill="none">
+            {(part.glue || []).map((g, k) => (
+              <polygon key={"g" + k} points={pts(g)} fill={INK} fillOpacity={GLUE_TONE} stroke="none"/>
+            ))}
             {(part.folds || []).map((f, k) => (
-              <polyline key={"f" + k} points={pts(f)} stroke="#d5dae1" strokeWidth={0.7}
-                strokeDasharray="4 3" vectorEffect="non-scaling-stroke"/>
+              <polyline key={"f" + k} points={pts(f)} stroke={INK} strokeWidth={CREASE_W}
+                strokeDasharray={CREASE_DASH_PREV} vectorEffect="non-scaling-stroke"/>
             ))}
             {(part.cuts || []).map((c, k) => (
-              <polyline key={"c" + k} points={pts(c)} stroke="#1b2129" strokeWidth={1}
+              <polyline key={"c" + k} points={pts(c)} stroke={INK} strokeWidth={CUT_W_PREV}
                 strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke"/>
             ))}
           </g>
@@ -629,11 +936,75 @@ function DrawPreview({ part, label }) {
 }
 
 // ══════════════════════════════════════════════════════════════════
+//  범례 — 판 밖 한 줄. **HTML 이다** (SVG <text> 를 늘리지 않는다)
+// ══════════════════════════════════════════════════════════════════
+//  ⚠ 왜 도면 안에 「접착」 글자를 안 넣는가 — **읽히지 않기 때문이다.** 브라우저 실측:
+//  접착탭(14.3mm)의 화면 폭이 미리보기 **5.9px**(0.41 px/mm) · 판 **13~23px**
+//  (1.23~1.62 px/mm)이다. 탭 안에 세로로 세운 글자는 글자 높이가 탭 폭을 넘을 수 없어
+//  최대 6~23px 인데, 미리보기 쪽은 6px 로 원리적으로 못 읽는다. 판 쪽은 읽힐 크기지만
+//  탭이 up 개(4~6) 뜨고 180° 반전 칸에서는 글자가 거꾸로 뒤집힌다 — 「칸 위에 배지를
+//  붙이지 않는다」는 이 화면의 규칙과 정면으로 부딪친다.
+//  (같은 판단의 선례: 니크 0.89mm · 뚜껑 오시선 0.5mm 오프셋도 쇼룸 배율에서 1px 미만이라
+//   그리지 않기로 했다. 읽히지 않는 표기는 정보가 아니라 잡티다.)
+//  그래서 **견본(swatch)은 도형과 완전히 같은 표기**로 그리고 글자는 여기 둔다.
+//  ※ 판 뷰의 선택된 칸 하나에만 라벨을 붙이는 것은 가능하다(판 배율이면 읽힌다) —
+//    필요해지면 그때 넣어라. 지금은 SVG <text> 를 0 으로 유지하는 편을 택했다.
+//
+//  ★ 자기검증 — 범례는 **화면에 실제로 있는 것만** 말한다. folds·glue 가 비면
+//    그 줄을 아예 내지 않는다. 그래서 「범례에는 있는데 도면에는 없다」가 원리적으로
+//    불가능하다. PDF 모드가 정확히 그 경우다(오시선·접착면 표기가 원본에 없다) —
+//    빠진 이유는 note 줄이 말한다.
+function Legend({ t, crease, glue, note }) {
+  return (
+    <div data-legend="1" style={{ display: "flex", flexWrap: "wrap", alignItems: "center",
+                                 gap: "5px 20px", fontSize: 11.5, color: C.sub }}>
+      <Key name={t.lgCut} sub={t.lgCutSub} kind="cut"
+        sw={{ height: 0, borderTop: `${CUT_W_PREV + 0.4}px solid ${INK}` }}/>
+      {crease && (
+        <Key name={t.lgCrease} sub={t.lgCreaseSub} kind="crease"
+          sw={{ height: 0, borderTop: `${CREASE_W + 0.4}px dashed ${INK}` }}/>
+      )}
+      {glue && (
+        // 견본 = 판 위 접착면의 **축소 모형**이다. 안은 GLUE_FILL_CSS(판의 fillOpacity 와
+        // 같은 알파), 둘레는 1px INK — 판에서 접착면의 경계를 긋는 것이 칼선·오시선(같은
+        // 잉크)이기 때문이다. ⚠ 견본에만 있는 무늬를 넣지 마라(종전 45° 해칭이 그랬다).
+        <Key name={t.lgGlue} sub={t.lgGlueSub} kind="glue"
+          sw={{ height: 10, border: `1px solid ${INK}`, background: GLUE_FILL_CSS }}/>
+      )}
+      {/* ★ 출처 — 이 줄이 정직성 게이트다. 빠지면 고객이 우리 관용을 실측으로 읽는다.
+          그래서 **읽히는 색**이어야 한다(C.sub). 안 읽히는 정직성은 정직성이 아니다. */}
+      <div data-source="1" style={{ flexBasis: "100%", fontSize: 10.5, color: C.sub,
+                                    lineHeight: 1.65 }}>{note}</div>
+    </div>
+  );
+}
+
+const Key = ({ sw, name, sub, kind }) => (
+  <span data-key={kind} style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>
+    <span data-sw={kind} style={{ width: 20, flexShrink: 0, ...sw }}/>
+    {/* 이름은 줄바꿈 금지 — 좁은 창에서 「오시\n선」으로 쪼개져 고장난 것처럼 보였다.
+        이름은 3~4자(≤30px)라 어느 폭에서도 한 줄에 들고, 뜻풀이는 그대로 접히므로
+        nowrap 을 이름에만 준다(둘 다 주면 범례가 판 폭을 넘겨 가로 스크롤이 생긴다). */}
+    <span style={{ color: C.ink, fontWeight: 600, whiteSpace: "nowrap" }}>{name}</span>
+    {/* 뜻풀이는 **글**이다 — C.sub. faint 로 두면 이름(칼선/오시선/접착면)만 읽히고
+        뜻이 사라져 범례가 반만 전달된다 (C 주석 참조). */}
+    <span style={{ color: C.sub }}>{sub}</span>
+  </span>
+);
+
+// ══════════════════════════════════════════════════════════════════
 //  작은 조각들 (이 화면 전용 — 다크 테마인 ui/primitives 와 섞지 않는다)
 // ══════════════════════════════════════════════════════════════════
 const Label = ({ children }) => (
   <div style={{ fontSize: 10.5, fontWeight: 700, color: C.faint, letterSpacing: ".14em",
                 textTransform: "uppercase", marginBottom: 7 }}>{children}</div>
+);
+
+/** 정밀도 줄의 뒷조각(예산·겹침거부). 「·」는 **앞에 말이 있을 때만** 붙인다 —
+ *  치수 경로는 정밀도 문구가 없어서(위 참조) 첫 조각이 이것일 수 있고, 그때 「·」로
+ *  시작하면 앞말이 잘려나간 것처럼 읽힌다. */
+const Bit = ({ color, first, children }) => (
+  <span style={{ color, marginLeft: first ? 0 : 8 }}>{first ? "" : "· "}{children}</span>
 );
 
 const Row = ({ label, children }) => (

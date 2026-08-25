@@ -4,7 +4,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "verify": "node test/verify-dieline.mjs && node test/verify-nest.mjs && node test/verify-r.mjs && node test/verify-print.mjs && node test/verify-total.mjs && node test/verify-net.mjs && node test/verify-imposition.mjs && node test/verify-interlock.mjs && node test/verify-layout.mjs && node test/verify-pdf.mjs && node test/verify-autonest.mjs && node test/verify-drag-shape.mjs && node test/scorecard2.mjs && node test/scorecard-nest.mjs && node test/scorecard-unit.mjs",
+    "verify": "node test/verify-dieline.mjs && node test/verify-nest.mjs && node test/verify-r.mjs && node test/verify-print.mjs && node test/verify-total.mjs && node test/verify-net.mjs && node test/verify-imposition.mjs && node test/verify-interlock.mjs && node test/verify-layout.mjs && node test/verify-pdf.mjs && node test/verify-autonest.mjs && node test/verify-drag-shape.mjs && node test/verify-speclink.mjs && node test/scorecard2.mjs && node test/scorecard-nest.mjs && node test/scorecard-unit.mjs",
     "guard:public": "node -e \"const fs=require('fs'),p=require('path'),bad=[];(function w(d){if(!fs.existsSync(d))return;for(const e of fs.readdirSync(d,{withFileTypes:true})){const f=p.join(d,e.name);if(e.isDirectory())w(f);else if(/[.]pdf$/i.test(e.name))bad.push(f)}})('public');if(bad.length){console.error('배포 중단 — public/ 에 PDF 가 있다: '+bad.join(', ')+'\\n  vite build 가 public/ 을 dist/ 로 복사하고 gh-pages 가 dist 를 공개 사이트로 올린다 (고객사 도면 유출).\\n  test-pdf/ 로 옮겨라 — dev 서버에서 /test-pdf/<파일>.pdf 로 읽히고 빌드에는 안 들어간다.');process.exit(1)}\"",
     "predeploy": "npm run guard:public && npm run build",
     "deploy": "gh-pages -d dist"

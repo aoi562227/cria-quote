@@ -9,8 +9,11 @@
 const inp = { background:"#111d33", border:"1px solid #223355", borderRadius:4, color:"#e8f0ff", fontSize:13, padding:"6px 10px", width:"100%", boxSizing:"border-box", outline:"none" };
 const sel = { ...inp, cursor:"pointer" };
 
-export function Input({ value, onChange, placeholder, type="text", small }) {
-  return <input type={type} value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder} style={{...inp,fontSize:small?11:13}}/>;
+// min/max/step 은 **브라우저 힌트일 뿐**이다(스피너 한계·모바일 키패드). 도메인이
+// 범위를 다시 보는 것이 정본이다 — 붙여넣기·자동완성은 이 속성을 우회한다.
+export function Input({ value, onChange, placeholder, type="text", small, min, max, step }) {
+  return <input type={type} value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder}
+                min={min} max={max} step={step} style={{...inp,fontSize:small?11:13}}/>;
 }
 export function Select({ value, onChange, options }) {
   return <select value={value} onChange={e=>onChange(e.target.value)} style={sel}>
