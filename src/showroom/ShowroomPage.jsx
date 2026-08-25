@@ -190,6 +190,17 @@ export default function ShowroomPage({ carried = null }) {
   //  ⚠ 손배치 단축키(onKey: r · Delete · Ctrl+Z)와 겹치지 않는다 — 그쪽은 판 위에
   //    포커스가 있을 때만 돌고 수식자 조합도 다르다.
   const [adminOpen, setAdminOpen] = useState(false);
+  //  제목 3연타 → 관리자. 마지막 클릭에서 800ms 안에 세 번이어야 한다.
+  //  ref 로 세는 이유: 카운터를 state 로 두면 클릭마다 화면 전체가 다시 그려진다
+  //  (부스에서 도면·판이 깜빡인다). 화면에 나타날 값이 아니므로 ref 가 맞다.
+  const tapRef = useRef({ n: 0, t: 0 });
+  const bumpTitleTap = () => {
+    const now = performance.now();
+    const r = tapRef.current;
+    r.n = now - r.t > 800 ? 1 : r.n + 1;
+    r.t = now;
+    if (r.n >= 3) { r.n = 0; setAdminOpen(v => !v); }
+  };
   const [priceCfg, setPriceCfg] = useState(loadPriceCfg);
   // ★ 이 주소가 「가격을 가림」 표시를 달고 왔는가 (state.noCostOfHash · §16).
   //   달고 왔는데 이 브라우저에 수식이 없으면 = **남에게 보낸 링크를 남이 연 것**이다.
@@ -648,7 +659,16 @@ export default function ShowroomPage({ carried = null }) {
       {/* ── 머리 ─────────────────────────────────────────────────── */}
       <header style={{ display: "flex", alignItems: "center", gap: 12, padding: "0 20px",
                        height: 52, background: C.panel, borderBottom: `1px solid ${C.line}`, flexShrink: 0 }}>
-        <div style={{ fontSize: 15, fontWeight: 800, letterSpacing: ".02em" }}>{t.title}</div>
+        {/* ★ 26-08-26 — 제목 **3번 클릭**으로도 관리자가 열린다.
+            왜 필요했나: Ctrl+Alt+M 하나만 두었더니 **화면에 단서가 0** 이라 운영자가
+            제 관리자 패널을 못 찾았다(사용자 지적 「관리자페이지는 어딨지?」).
+            게다가 가리는 중에는 「견적 앱으로 →」를 관리자 패널로 옮겨 둔 터라,
+            패널을 못 열면 **견적 화면으로 돌아갈 길도 같이 막힌다.**
+            왜 3번인가 — 고객이 제목을 우연히 세 번 연속 누르지는 않는다(라벨도 배지도
+            커서 변화도 없다). 단축키를 못 쓰는 상황(맥 키보드·IME·터치)에서도 열린다.
+            ⚠ 눈에 보이는 「관리자」 버튼으로 만들지 마라 — 그 순간 고객이 누른다. */}
+        <div onClick={bumpTitleTap} style={{ fontSize: 15, fontWeight: 800, letterSpacing: ".02em",
+                                             userSelect: "none" }}>{t.title}</div>
         <div style={{ flex: 1 }}/>
         <div style={{ display: "flex", gap: 2 }}>
           {LANGS.map(([id, label]) => (
@@ -1188,6 +1208,9 @@ const AdminPanel = ({ a, v, cfg, set, hiding, onQuote, onClose }) => {
           style={{ border: "none", background: "none", cursor: "pointer",
                    fontSize: 11.5, color: C.sub, font: `11.5px ${FONT}` }}>{a.close}</button>
       </div>
+
+      {/* 여는 법을 패널 안에 적는다 — 화면 밖에 적으면 고객이 읽는다. */}
+      <div style={{ fontSize: 11, color: C.sub, font: `11px ${FONT}`, marginTop: -4 }}>{a.howto}</div>
 
       <div style={row}>
         <div style={lab}>{a.cur}</div>

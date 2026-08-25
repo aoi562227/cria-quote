@@ -1,0 +1,10 @@
+# 이 저장소는 Windows 에서 작업하는데 .gitattributes 가 없어
+# 편집 도구가 파일을 CRLF 로 다시 쓰는 사고가 실제로 났다.
+# 그때 test/verify-speclink.mjs 의 eval 게이트가 거짓 실패했다 —
+# JS 의 . 이 CR 을 안 먹어 주석 제거 정규식이 통째로 무력해지고,
+# 「eval 을 쓰지 않는다」고 적은 주석이 스스로를 잡았다.
+# 줄바꿈 하나에 안전 게이트가 뒤집힌다. 그래서 LF 로 못박는다.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.pdf binary

@@ -549,6 +549,9 @@ export function loadPriceCfg() {
 export const ADMIN_T = {
   title: "관리자 — 고객 표시가",
   close: "닫기",
+  // ★ 여는 법을 **패널 안에** 적는다. 화면 밖에 적으면 고객이 읽는다.
+  //   한 번 열어 본 운영자가 다음에 안 헤매는 것이 목적이다.
+  howto: "여는 법 — Ctrl+Alt+M 또는 왼쪽 위 제목 3번 클릭 · 닫기 Esc",
   cur: "통화",
   fxKRW: "원화 수식", fxJPY: "엔화 수식",
   ph: "예: *1.7/10",

@@ -1001,7 +1001,12 @@ console.log("\n── §M  관리자 수식 → 고객 표시가 ─────
       const txt = readFileSync(f, "utf8");
       txt.split("\n").forEach((ln, i) => {
         // 주석 줄은 뺀다 — 「왜 안 쓰는가」를 적은 줄이 스스로를 잡으면 안 된다.
-        const code = ln.replace(/^\s*(\/\/|\*|\/\*).*$/, "");
+        // CR 을 먼저 턴다 — 작업 트리가 CRLF 가 되면 JS 의 . 이 CR 을 안 먹어
+        // .*$ 가 줄 끝에 못 닿고 주석 제거가 통째로 실패한다. 그러면 price-formula
+        // 머리말의 「eval 을 쓰지 않는다」 주석이 스스로를 잡아 이 게이트가 거짓 실패한다.
+        // 실제로 한 번 그렇게 빨개졌다. 정규식에 CR 을 직접 적지 마라 — 날 CR 은
+        // 정규식 리터럴을 끊는다. trimEnd() 는 이스케이프가 없어 도구를 안 탄다.
+        const code = ln.trimEnd().replace(/^\s*(\/\/|\*|\/\*).*$/, "");
         if (NAMES.some(re => re.test(code))) hits.push(`${f.pathname.split("/src/")[1]}:${i + 1}`);
       });
     }
