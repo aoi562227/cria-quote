@@ -885,8 +885,67 @@ async function run(doc, data, ctm0, res, resources, depth, st8) {
 
 // ══════════════════════════════════════════════════════════════════
 // 7. 연결성분 분해 — flaps.py segs()/components() 포팅
-//    좌표를 0.01mm 격자로 반올림해 같은 점을 같은 노드로 본다.
+//    ① 좌표를 0.01mm 격자로 반올림해 「완전히 같은 점」을 같은 노드로 본다.
+//    ② 그 다음 허용오차(JOIN_TOL) 안의 **열린 폴리라인 끝점**을 병합한다.
+//
+//  ⚠ ① 만으로는 **원리적으로** 부족하다 — 격자 반올림은 칸 경계를 사이에 둔 두 점을
+//    절대 못 붙인다. 0.04mm 떨어진 점이 경계 양쪽에 앉으면 격자를 0.1mm 로 키워도
+//    1mm 로 키워도 영영 다른 노드다(칸이 커질수록 경계에 걸릴 확률만 줄 뿐이다).
+//    그러면서 진짜로 떨어져 있는 점은 붙여 버리니 GRID 를 키우는 것은 양쪽으로 손해다.
+//    → **다음 사람에게: GRID 를 거칠게 만드는 땜질은 이미 시도됐고 틀렸다. 병합해라.**
+//    실제 사고(26-08-26): 아르토 클립클로우(13948) 한 장짜리 도면이 이음새 0.040mm
+//    때문에 다섯 조각(185.0×184.0 / 86.5×356.0 / 65.2×166.1 / 137.3×34.0 ×2)으로
+//    갈려 나왔고, 사용자는 드롭다운에서 조각밖에 고를 수 없었다.
 // ══════════════════════════════════════════════════════════════════
+
+/** 노드 병합 허용오차(mm). **열린 폴리라인의 끝점끼리** · 이 안에서만 같은 점으로 본다.
+ *
+ *  ★ 이 값은 동시에 「한 노드로 접히는 군의 **지름 상한**」이다. 아래 ② 가
+ *    완전연결(complete-linkage)이라 같은 노드가 되는 두 점 사이 거리는 JOIN_TOL 을
+ *    절대 넘지 않는다 — 즉 **실효 병합 반경 = JOIN_TOL** 이 코드가 보장하는 사실이고,
+ *    그래야 아래 니크 안전 논거가 말이 된다.
+ *    ⚠ 종전에는 이 보장이 없었다. union-find 가 추이적이라 0.28 짜리 이음이 사슬로
+ *      이어지며 지름 1.0689mm 짜리 군을 만들었다 — 끊어야 할 니크 0.89 보다 크다
+ *      (26-08-26 소스코 C5AF4AD1 실측. 웨이크A 0.7159 · 웨이크B 0.7139 · 도솔 0.7533 도
+ *       구조 치수 0.700 을 넘었다). 주석은 「니크보다 한참 아래」라고 적어 두고 코드는
+ *      그 상한을 지키지 않았다. **지름 상한을 빼면 그 상태로 돌아간다.**
+ *
+ *  값의 근거 — 짐작이 아니다. 16개 파일(오라클 9건 + 십자조립 5벌 + 칼선-10 + 소스코
+ *  C5AF4AD1) 전수에서 **실제로 병합된 쌍의 거리를 전부** 재고, TOL 을 0.05~1.00 으로
+ *  쓸어 16개 결과가 어디서 바뀌는지 확인해서 잡았다(26-08-26 실측):
+ *
+ *   이어야 함 — 실제로 이어지는 거리 **전수** (최소 0.0100 · 최대 0.2746)
+ *     0.0100  소스코C5AF · 니치어 · 아르토
+ *     0.0400  아르토 — 다섯 조각을 가르던 진짜 이음새 **이 버그의 원인** · 칼선-09
+ *     0.0200 0.0224 0.0361 0.0424 0.0447 0.0671 0.0707 0.0985 0.1105 0.1253 0.1300
+ *     0.1503 0.1700 0.1749 0.1811 0.1844 0.1879 0.1942 0.2081 0.2100 0.2110 0.2220
+ *     0.2300 0.2377 0.2419 0.2500 0.2532 0.2581 0.2702
+ *     0.2746  칼선-14 모서리 필렛 T 접합 — **이어지는 것의 최대값**
+ *       (쌍 수: 소스코C5AF 30 · 아르토 19 · 니치어 4 · 칼선-14 1 · 칼선-09 1 · 나머지 11개 파일 0)
+ *   ── 관측 안정대: TOL 0.25~0.30 에서 16개 파일 결과가 **완전히 같다.** 0.275 는 그 한가운데 ──
+ *     0.3000  소스코 삼면접착 — 여기부터 결과가 바뀐다(채택 도형 선분 128 → 130)
+ *   끊어야 함
+ *     0.700   텍 혀 모서리가 몸통 접는선에서 물러난 폭(= 구조 치수 D−0.7).
+ *             TOL 을 0.7 로 올리면 16개 중 13개가 이 거리를 잇는다.
+ *     0.890   **니크** — 목형이 오시선을 끊어 놓는 폭. 소스코 가로 오시선 3/3 이 이 값이다
+ *             (ARCHITECTURE §9). 이으면 오시선이 칼선 성분에 흡수돼 도형이 뭉개진다.
+ *
+ *  ⚠⚠ **bbox 오라클은 이 과병합을 못 잡는다 — 여기서 오라클은 눈이 없다.**
+ *     오시선도 텍 혀 이음도 칼선 윤곽 **안쪽**에 있어서 니크를 이어도 bbox 가 안 변한다.
+ *     실측: TOL=0.95 로 올리면 소스코 삼면접착의 최대 군 지름이 0.8900(= 니크)이 되는데
+ *     bbox 는 380.3×223.5 그대로고 9건 오라클 전부 초록이다. 바뀌는 것은 채택 도형의
+ *     **선분 수**(128 → 170)와 polygons — 3단계 드래그 배치가 쓰는 충돌 도형이다.
+ *     → 그러니 이 값을 「오라클이 안 깨지니까」로 올리지 마라. 올릴 근거는 구조 치수(0.700)와
+ *       니크(0.890) **아래**라는 것 하나뿐이고, 0.275 는 그 3.2분의 1 이다.
+ *
+ *  ⚠ 0.275 가 격자(0.01mm)의 배수가 **아닌 것은 일부러다.** 좌표가 0.01 격자에 얹혀 있어
+ *    두 점 사이 d² 는 언제나 1e-4 × 정수인데 T² = 1e-4 × 756.25 라 **정수가 될 수 없다** —
+ *    어떤 쌍도 문턱에 정확히 얹히지 못한다. 종전 0.28(= 0.01×28)에서는 d² = T² 인 쌍이
+ *    실제로 나왔고 부동소수 잔차로 갈렸다: iSHAP 무제-3 의 dx=0 · dy=0.280 짜리 6쌍이
+ *    3쌍은 병합 3쌍은 미병합이었다(같은 도면의 기하학적으로 똑같은 간극이다).
+ *    값을 옮길 일이 있으면 **0.005 의 홀수배**로 유지해라 — 0.265 · 0.275 · 0.285 …  */
+const JOIN_TOL = 0.275;
+
 function buildComponents(subpaths) {
   const key = new Map();             // "x|y" → node id
   const px = [], py = [];
@@ -897,10 +956,8 @@ function buildComponents(subpaths) {
     if (id === undefined) { id = px.length; key.set(k, id); px.push(xi / GRID); py.push(yi / GRID); }
     return id;
   };
-  // 선분 목록 (중복·길이0 제거) + 폴리라인 보존
-  const polys = [];                  // [[nodeId,...], ...]
-  const edges = [];                  // [a,b]
-  const eSeen = new Set();
+  // ── ① 폴리라인 → 노드 id 열 (격자로 「완전히 같은 점」만 합쳐진 상태) ──
+  const rawPolys = [];               // [[nodeId,...], ...]
   for (const sp of subpaths) {
     const ids = [];
     for (const [x, y] of sp) {
@@ -908,32 +965,149 @@ function buildComponents(subpaths) {
       if (!ids.length || ids[ids.length - 1] !== id) ids.push(id);
     }
     if (ids.length < 2) continue;
-    polys.push(ids);
-    for (let i = 0; i + 1 < ids.length; i++) {
-      const a = ids[i], bq = ids[i + 1];
+    rawPolys.push(ids);
+  }
+
+  // ── ② 허용오차 병합 — **열린 폴리라인의 끝점끼리만** ─────────────
+  //  ★ 왜 「끝점끼리만」인가. 성분이 끊기는 자리는 경로의 **끝**이다 — 이어져야 할 두
+  //    경로는 끝에서 끝으로 만난다. 반대로 경로 **중간** 정점에 남의 점이 닿는 것은
+  //    「끊긴 것」이 아니라 그림이 겹쳐 지나간 것(아트워크를 칼선 위에 그린 것)이다.
+  //    실측: 더파이러츠 맞뚜껑의 아트워크 띠(518.29×23.0, 오른쪽으로 도련 3.0mm 삐져나감)는
+  //    칼선 몸통의 끝점에 **0.010mm** 로 닿는데 띠 쪽은 경로 중간 정점이다. 끝점-끝점
+  //    조건이 없으면 허용오차를 0.05 로 줘도 이 띠를 삼켜 몸통이 530.30 → 533.30 이 된다
+  //    (견적 netW 가 3mm 부푼다. 종전 flaps2.py 가 정확히 그 값을 냈고 그래서 틀렸다).
+  //
+  //  ★ 왜 「열린」인가 — 이 단어가 빠져 있어서 위 방어가 **작동한 적이 거의 없었다.**
+  //    닫힌 서브패스(`h` · `re`)는 시작점을 끝에 다시 push 하므로 ids[0] === ids[last] 다.
+  //    닫힌 도형에는 「끊긴 끝」이 없고, 그 시작 정점은 경로를 어디서부터 그렸느냐가 정한
+  //    **임의의 점**이다 — 위 문단이 배제하려던 「경로 중간 정점」과 성질이 똑같다.
+  //    종전 코드는 그것을 끝점으로 등록했다. 26-08-26 실측으로 센 「닫힌 시작점이 낀
+  //    병합쌍」 비율: 웨이크A 850/850 · 웨이크B 1075/1075 · 바이오머 17/17 · 도솔 27/27 ·
+  //    소스코C5AF 302/343. 즉 실제로 작동한 방어는 허용오차 하나뿐이었다.
+  //    닫힌 것을 빼면 그 파일들의 병합이 사실상 사라지는데 **오라클 bbox 는 9건 전부
+  //    불변**이고 아르토·니치어는 그대로 고쳐진다 — 잃는 것 없이 주석과 코드가 일치한다.
+  const nPar = new Int32Array(px.length);
+  for (let i = 0; i < nPar.length; i++) nPar[i] = i;
+  const nFind = i => { while (nPar[i] !== i) { nPar[i] = nPar[nPar[i]]; i = nPar[i]; } return i; };
+  const isEnd = new Uint8Array(px.length);
+  const ends = [];
+  for (const ids of rawPolys) {
+    if (ids[0] === ids[ids.length - 1]) continue;   // 닫힌 경로엔 끊긴 끝이 없다
+    const a = ids[0], b = ids[ids.length - 1];
+    if (!isEnd[a]) { isEnd[a] = 1; ends.push(a); }
+    if (!isEnd[b]) { isEnd[b] = 1; ends.push(b); }
+  }
+  // 격자 버킷 — 칸을 JOIN_TOL 로 잡으면 3×3 이웃만 보면 된다. 오라클 중에 선분
+  // 5,633개(노드 365,319)짜리가 있어 O(n²) 는 못 쓴다. 담는 것은 끝점뿐이라 버킷은 작다.
+  const cellOf = v => Math.floor(v / JOIN_TOL);
+  const bk = new Map();
+  for (const i of ends) {
+    const k = cellOf(px[i]) + "|" + cellOf(py[i]);
+    let v = bk.get(k); if (!v) { v = []; bk.set(k, v); } v.push(i);
+  }
+  const T2 = JOIN_TOL * JOIN_TOL;
+  const pairs = [];
+  for (const i of ends) {
+    const cx = cellOf(px[i]), cy = cellOf(py[i]);
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+      const v = bk.get((cx + dx) + "|" + (cy + dy));
+      if (!v) continue;
+      for (const j of v) {
+        if (j <= i) continue;                    // 같은 쌍을 두 번 보지 않는다
+        const ex = px[i] - px[j], ey = py[i] - py[j];
+        const d2 = ex * ex + ey * ey;
+        if (d2 > T2) continue;
+        pairs.push([d2, i, j]);
+      }
+    }
+  }
+  //  ★ 완전연결(complete-linkage) — **이것이 과병합을 막는 마지막 자물쇠다.**
+  //    union-find 는 추이적이라, 문턱 안의 쌍을 그냥 union 하면 0.27+0.27+0.27… 이
+  //    사슬로 이어져 실효 병합 반경이 **무제한**이 된다(실측 지름 1.0689mm — 니크보다 크다).
+  //    그래서 「합친 뒤에도 군 안의 **모든** 쌍이 JOIN_TOL 이내」일 때만 잇는다.
+  //    가까운 쌍부터(거리 오름차순, 동점은 노드 번호순) 처리해 가장 확실한 이음이 이기게
+  //    하고, 정렬 키가 완전해서 결과가 입력 순서에 흔들리지 않는다.
+  //    비용: 격자가 0.01mm 라 지름 0.275 짜리 원 안에 들어가는 **서로 다른** 노드는
+  //    많아야 28×28 = 784 개다. 군이 그 위로 자랄 수 없어 |A|×|B| 검사가 유계다.
+  pairs.sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2]);
+  const mem = new Map();               // 뿌리 → [군에 든 노드]. 단독 노드는 안 담는다
+  const refused = [];                  // 문턱 안인데 지름 상한 때문에 못 이은 쌍
+  for (const [d2, a, b] of pairs) {
+    const ra = nFind(a), rb = nFind(b);
+    if (ra === rb) continue;           // 이미 같은 군
+    const GA = mem.get(ra) ?? [ra], GB = mem.get(rb) ?? [rb];
+    let ok = true;
+    outer:
+    for (const u of GA) for (const w of GB) {
+      const ex = px[u] - px[w], ey = py[u] - py[w];
+      if (ex * ex + ey * ey > T2) { ok = false; break outer; }
+    }
+    if (!ok) { refused.push([a, b, Math.sqrt(d2)]); continue; }
+    nPar[ra] = rb;
+    mem.set(rb, GA.concat(GB)); mem.delete(ra);
+  }
+
+  // ── ③ 대표 노드로 좌표를 모은다 ─────────────────────────────────
+  //  좌표를 안 맞추면 헛일이다 — 성분만 붙고 폴리라인은 여전히 서로 다른 점을 지나서
+  //  그림에 0.04mm 짜리 틈이 남고, polygons 를 이어 붙이려는 다음 단계가 다시 깨진다.
+  //  대표 좌표는 묶음의 **평균**이다. 아무 하나(예: 먼저 그려진 쪽)를 고르면 bbox 가
+  //  최대 JOIN_TOL 만큼 통째로 튄다 — 평균이면 최대 이동이 그 절반이고 편향도 없다.
+  //  새 id 는 「묶음에서 가장 작은 옛 id」 순이라 종전 노드 순서가 그대로 보존된다
+  //  (성분 순서가 바뀌면 동점 후보의 순위가 흔들린다).
+  const groups = new Map();          // 대표 → [옛 노드 id]
+  for (let i = 0; i < px.length; i++) {
+    const r = nFind(i);
+    let g = groups.get(r); if (!g) { g = []; groups.set(r, g); }
+    g.push(i);
+  }
+  const remap = new Int32Array(px.length);
+  const qx = [], qy = [];
+  for (const g of groups.values()) {
+    const id = qx.length;
+    if (g.length === 1) { qx.push(px[g[0]]); qy.push(py[g[0]]); remap[g[0]] = id; continue; }
+    let sx = 0, sy = 0;
+    for (const i of g) { sx += px[i]; sy += py[i]; remap[i] = id; }
+    qx.push(Math.round(sx / g.length * GRID) / GRID);
+    qy.push(Math.round(sy / g.length * GRID) / GRID);
+  }
+
+  // ── ④ 선분·폴리라인을 대표 id 로 다시 쓴다 (중복·길이0 제거) ────
+  const polys = [];                  // [[nodeId,...], ...]
+  const edges = [];                  // [a,b]
+  const eSeen = new Set();
+  for (const ids of rawPolys) {
+    const m = [];
+    for (const i of ids) { const r = remap[i]; if (!m.length || m[m.length - 1] !== r) m.push(r); }
+    if (m.length < 2) continue;      // 병합으로 한 점이 된 자투리 선분
+    polys.push(m);
+    for (let i = 0; i + 1 < m.length; i++) {
+      const a = m[i], bq = m[i + 1];
       const k = a < bq ? a + "," + bq : bq + "," + a;
       if (eSeen.has(k)) continue;
       eSeen.add(k); edges.push([a, bq]);
     }
   }
-  // union-find
-  const par = new Int32Array(px.length);
+  // ── ⑤ 성분 union-find ───────────────────────────────────────────
+  const par = new Int32Array(qx.length);
   for (let i = 0; i < par.length; i++) par[i] = i;
   const find = i => { while (par[i] !== i) { par[i] = par[par[i]]; i = par[i]; } return i; };
   for (const [a, bq] of edges) { const ra = find(a), rb = find(bq); if (ra !== rb) par[ra] = rb; }
 
   const comps = new Map();           // root → { nodes, segs, x0,y0,x1,y1 }
-  for (let i = 0; i < px.length; i++) {
+  for (let i = 0; i < qx.length; i++) {
     const r = find(i);
     let cc = comps.get(r);
     if (!cc) { cc = { nodes: [], segs: 0, x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity, polys: [] }; comps.set(r, cc); }
     cc.nodes.push(i);
-    if (px[i] < cc.x0) cc.x0 = px[i]; if (px[i] > cc.x1) cc.x1 = px[i];
-    if (py[i] < cc.y0) cc.y0 = py[i]; if (py[i] > cc.y1) cc.y1 = py[i];
+    if (qx[i] < cc.x0) cc.x0 = qx[i]; if (qx[i] > cc.x1) cc.x1 = qx[i];
+    if (qy[i] < cc.y0) cc.y0 = qy[i]; if (qy[i] > cc.y1) cc.y1 = qy[i];
   }
   for (const [a] of edges) comps.get(find(a)).segs++;
   for (const ids of polys) comps.get(find(ids[0])).polys.push(ids);
-  return { comps: [...comps.values()], px, py };
+  // 지름 상한에 걸려 못 이은 쌍은 **대표 id 로 옮겨서** 넘긴다 — 부르는 쪽이 「채택한
+  // 도형 위에 그런 자리가 있나」를 물어볼 수 있어야 조용히 지나가지 않는다.
+  return { comps: [...comps.values()], px: qx, py: qy,
+           refused: refused.map(([a, b, d]) => [remap[a], remap[b], d]) };
 }
 
 const bboxOf = c => ({ x0: c.x0, y0: c.y0, x1: c.x1, y1: c.y1, w: +(c.x1 - c.x0).toFixed(2), h: +(c.y1 - c.y0).toFixed(2) });
@@ -1116,7 +1290,7 @@ export async function readDieline(bytes, opt = {}) {
   for (const e of new Set(st8.errors)) warnings.push(`XObject 처리 경고: ${e}`);
 
   // ── 성분 분해 ──
-  const { comps, px, py } = buildComponents(res);
+  const { comps, px, py, refused } = buildComponents(res);
   if (!comps.length) throw new Error(`벡터 도형이 없다 (이미지만 있는 PDF 일 수 있다): ${source}`);
 
   // ── 후보 만들기 ──────────────────────────────────────────────────
@@ -1250,11 +1424,29 @@ export async function readDieline(bytes, opt = {}) {
   //   문장은 근거의 세기에 맞춘다: 선분이 적으면 배경 윤곽이라고 말하고, 많으면
   //   「도련까지 포함했는지 확인해라」로 낮춘다. 실측 8건 중 2건(82%·91%)이 진짜 칼선이라
   //   둘을 한 문장으로 쓰면 진짜 칼선을 배경이라고 단정하게 된다.
+  //   ⚠ 후보가 **하나뿐이면** 「화면에서 확인해라」로 끝내지 않는다. UI 는 후보가 2개
+  //     이상일 때만 드롭다운을 띄우므로(BoxSpec·쇼룸 둘 다 `candidates.length > 1`),
+  //     확인하라고 말해 놓고 바꿔 볼 것을 하나도 안 주는 화면이 된다. 아르토 클립클로우가
+  //     정확히 그 모양이었다(93% · 후보 1개). 무엇을 할 수 있는지까지 말해야 경고다.
+  const soleTxt = scored.length > 1 ? "" :
+    " 후보가 이것 하나뿐이라 화면에서 바꿀 다른 도형이 없다 — 값이 틀렸으면 규격을 직접 입력해라.";
   if (pick.ratio >= 0.80)
-    warnings.push(pick.g.segs <= BACK_SEGS
+    warnings.push((pick.g.segs <= BACK_SEGS
       ? `고른 도형이 페이지 면적의 ${(pick.ratio * 100).toFixed(0)}% 인데 선분이 ${pick.g.segs}개뿐이다 (${pick.bb.w}×${pick.bb.h}) — 칼선이 아니라 대지·배경 윤곽일 수 있다.`
-      : `고른 도형이 페이지 면적의 ${(pick.ratio * 100).toFixed(0)}% 다 (${pick.bb.w}×${pick.bb.h}) — 대지 테두리나 도련을 함께 잡았는지 화면에서 확인해라.`);
+      : `고른 도형이 페이지 면적의 ${(pick.ratio * 100).toFixed(0)}% 다 (${pick.bb.w}×${pick.bb.h}) — 대지 테두리나 도련을 함께 잡았는지 화면에서 확인해라.`) + soleTxt);
   if (pick.g.parts > 1) warnings.push(`칼선을 ${pick.g.parts}개 성분에서 합쳤다 (텍 혀·날개가 본체와 떨어져 있다).`);
+  // 지름 상한이 **채택한 도형 위에서** 이음을 거부했으면 알린다 — 거기서 거부된 이음은
+  // 곧 「이 도형이 조각난 채로 남았을 수 있다」는 뜻이고, 그 값이 그대로 견적으로 간다.
+  // (도형 밖 아트워크의 거부는 알리지 않는다. 16개 파일 실측에서 그쪽이 대부분이고,
+  //  견적에 닿지 않는 경고를 매번 띄우면 진짜 경고가 묻힌다.)
+  if (refused.length) {
+    const on = new Set(pick.g.nodes);
+    const hit = refused.filter(([a, b]) => on.has(a) || on.has(b));
+    if (hit.length) warnings.push(
+      `고른 도형 위에서 끝점 ${hit.length}쌍을 허용오차(${JOIN_TOL}mm) 안인데도 잇지 않았다 ` +
+      `(최대 ${Math.max(...hit.map(h => h[2])).toFixed(3)}mm) — 이으면 한 점으로 접히는 폭이 ` +
+      `허용오차를 넘어 오시선·니크까지 삼킬 자리다. 칼선이 조각난 채 남았을 수 있으니 화면에서 확인해라.`);
+  }
 
   const maxC = opt.maxCandidates ?? 12;
   // ⚠ 채택한 것(pick)은 **반드시** 후보 목록에 들어가야 한다. pick 은 점수 1순위가 아니라
