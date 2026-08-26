@@ -21,6 +21,9 @@ import { fmtR, fmtMM } from "../format.mjs";
 // 「지금 고른 후보 → 그 후보의 polygons」 규칙은 state.mjs 가 소유한다 (두 벌 중
 // 어느 쪽이 정답인지 아는 곳이 한 군데여야 3단계가 다른 걸 읽지 않는다).
 import { pdfPickOf, customSheetOf } from "../state.mjs";
+// 「이 구조가 어떤 노브를 읽는가」의 정본은 레지스트리다 — 화면이 구조 id 로 if 를
+// 쓰기 시작하면 구조를 하나 더할 때 화면까지 같이 고쳐야 한다(§3 계약이 깨진다).
+import { DIE_OPTS, rejectedDieOpt } from "../../domain/dieline/index.mjs";
 import NetDiagram from "../viz/NetDiagram.jsx";
 import LayoutViz from "../viz/LayoutViz.jsx";
 import SheetCompare from "../viz/SheetCompare.jsx";
@@ -530,6 +533,71 @@ export default function BoxSpec({
           <Field label="높이 H mm"><Input value={s.bH} onChange={v=>u("bH",v)} placeholder="mm" type="number"/></Field>
         </Row3>
       )}
+
+      {/* ★ 목형별 구조 옵션 (26-08-25) — 규격 바로 아래.
+          왜 화면에 내놓나: 같은 W·D·H 라도 **목형이 다르면 판걸이가 다르다.** 실측 5벌에서
+          삼면접착 깊은 날개 위치가 두 계열로 갈리고, 십자 접착탭은 12.03~24.03 으로 흩어진다.
+          한 공식으로 못 덮는 것이 확정 사실이라 봉투(=크게 그리기)로 닫아 뒀는데, 그러면
+          목형을 아는 건에서도 견적서보다 비싸게 부른다(LUXEN 2→1up · 십자B 4→3up).
+          ⚠ 이 프로젝트의 정직성 규약 — **자동인지 목형 지정인지 화면이 말한다.**
+             「자동」은 안전한 가정이지 정답이 아니고, 견적이 그 가정 위에 서 있다는 사실을
+             숨기면 사용자는 확인할 기회를 잃는다. 그래서 미지정일 때 무슨 값으로 계산됐는지
+             그대로 찍는다. */}
+      {s.sizeMode === "box" && (DIE_OPTS[s.boxType] || []).length > 0 && (() => {
+        const knobs = DIE_OPTS[s.boxType];
+        const KEY = { deepFlap: "dieDeep", glueTabW: "dieTabW" };
+        // 「지정됨」의 정본은 화면 입력칸이 아니라 **도메인이 실제로 받은 값**이다
+        // (buildDieline 이 pickDieOpt 로 거른 뒤의 dieline.dieOpt). 범위 밖 오타를
+        // 도메인이 접었으면 여기도 「미지정」으로 보여야 두 벌이 안 갈린다.
+        const applied = dieline?.dieOpt || {};
+        const on = knobs.filter(k => applied[k.key] !== undefined);
+        // ★ 26-08-25 — 노브 값을 화면 문구로 옮기는 규칙 두 개.
+        //   ① choice 는 **id 가 아니라 options.label** 을 찍는다. 종전엔 「아래 띠 깊은
+        //      날개 far 으로 계산했다」처럼 내부 식별자가 그대로 새어 나왔다.
+        //   ② 종전 「… far 으로 계산했다」는 조사도 틀렸다(받침 없는 말에 「으로」).
+        //      값이 숫자·영문·괄호로 끝나 받침 판정이 불안정하므로 **조사를 쓰지 않는
+        //      어순**으로 바꾼다 — 「이 값으로 계산했다: …」. 문법 헬퍼가 필요 없다.
+        const shown = k => k.kind === "choice"
+          ? (k.options.find(o => o.id === applied[k.key])?.label ?? applied[k.key])
+          : `${applied[k.key]}${k.unit || ""}`;
+        const phrase = on.map(k => `${k.label} = ${shown(k)}`).join(" · ");
+        // 넣었는데 도메인이 거부한 값 — 접힌 사실을 **먼저** 말한다.
+        const bad = rejectedDieOpt(s.boxType, {
+          ...(s.dieDeep ? { deepFlap: s.dieDeep } : {}),
+          ...(s.dieTabW !== "" && s.dieTabW != null ? { glueTabW: s.dieTabW } : {}),
+        });
+        return (
+          <div style={{background:"#0a0f20",border:`1px solid ${on.length?"#2a5a3a":"#2a3a5a"}`,
+                       borderRadius:4,padding:"8px 10px",marginBottom:8}}>
+            <div style={{fontSize:9.5,color:on.length?"#66cc99":"#ffaa44",lineHeight:1.7,marginBottom:6}}>
+              {on.length
+                ? <>✓ <b>목형 지정</b> — 이 값으로 계산했다: {phrase}</>
+                : <>⚠ <b>목형 미지정 — 표준 가정</b>으로 계산했다 ({knobs.map(k=>k.auto).join(" · ")}).
+                    실측 목형을 알면 아래에 넣어라. 가정은 <b>안전측</b>(크게 그림)이라
+                    판걸이가 실제보다 적게 나올 수 있다 = 견적이 비싸진다.</>}
+            </div>
+            {bad.length > 0 && (
+              <div style={{fontSize:9.5,color:"#ff8866",background:"#2a1008",border:"1px solid #663322",
+                           borderRadius:4,padding:"6px 9px",marginBottom:6,lineHeight:1.7}}>
+                ⚠ <b>범위 밖 — 표준 봉투로 접었다.</b>{" "}
+                {/* 「허용 …」 문장은 레지스트리(rejectedDieOpt.allow)가 소유한다 —
+                    여기서 min~max 를 조립하면 choice 노브가 「허용 undefined~undefined」가 된다 */}
+                {bad.map(r=>`${r.label} ${r.raw}${r.unit} (허용 ${r.allow})`).join(" · ")}
+                {" "}— 이 값은 <b>견적에 쓰이지 않았다.</b>
+              </div>
+            )}
+            {knobs.map(k => (
+              <Field key={k.key} label={`${k.label}${k.unit?` (${k.unit})`:""}`} note={k.note}>
+                {k.kind === "choice"
+                  ? <Select value={s[KEY[k.key]]} onChange={v=>u(KEY[k.key],v)} options={k.options}/>
+                  : <Input value={s[KEY[k.key]]} onChange={v=>u(KEY[k.key],v)}
+                           placeholder={k.placeholder} type="number"
+                           min={k.min} max={k.max} step={k.step}/>}
+              </Field>
+            ))}
+          </div>
+        );
+      })()}
 
       {/* 전개도 치수 */}
       {netSize && (

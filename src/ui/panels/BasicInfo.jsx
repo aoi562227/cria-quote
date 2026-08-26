@@ -11,7 +11,8 @@ export default function BasicInfo({ s, u }) {
       <Field label="거래처"><Input value={s.customer} onChange={v=>u("customer",v)}/></Field>
       <Field label="품목명"><Input value={s.product}  onChange={v=>u("product",v)}/></Field>
       <Row2>
-        <Field label="수량(EA)"><Input value={s.qty} onChange={v=>u("qty",v)} type="number"/></Field>
+        {/* min/step 은 스피너 힌트일 뿐이다 — 음수는 domain/quote.mjs normQty 가 접는다 */}
+        <Field label="수량(EA)"><Input value={s.qty} onChange={v=>u("qty",v)} type="number" min={1} step={1}/></Field>
         <Field label="날짜"><Input value={s.date} onChange={v=>u("date",v)} small/></Field>
       </Row2>
     </Section>
