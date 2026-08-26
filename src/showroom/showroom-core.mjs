@@ -450,6 +450,11 @@ export const baseOf = carried => carried || { ...INITIAL_STATE, ...STD };
 export const SHOWROOM_SPEC_KEYS = [
   "paperId",                                              // 지종
   "fpColor", "fpSp", "fpBk", "bpColor", "bpSp", "bpBk",   // 인쇄 도수 앞/뒤
+  // ★ 26-08-26 — UV 인쇄를 넣는다(사용자 지시). 뺀 칸 중 이동폭이 가장 컸다 —
+  //   소스코 140×43×130 · 4,000 에서 앞면 UV 하나가 223 → 271원(+21%) 이다.
+  //   부스에서 「UV 올리면 얼마」는 실제로 나오는 대화고, 그걸 몸 바꾸려면
+  //   운영자가 견적 앱으로 돌아가야 했다 — 그 화면은 원가가 다 보인다.
+  "fpUv", "bpUv",                                         // UV 인쇄 앞/뒤
   "fcId", "bcId",                                         // 코팅 앞/뒤
   "foil", "emb", "puv",                                   // 후가공 박·형압·부분UV
   "glueId", "thomId",                                     // 접착 · 톰슨
@@ -726,7 +731,7 @@ const KO = {
   secSpec: "사양", fPaper: "지종", fPrint: "인쇄", fCoat: "코팅",
   fFinish: "후가공", fGlue: "접착", fThom: "톰슨",
   sideF: "앞", sideB: "뒤",
-  oCmyk: "원색4", oSpot: "별색", oBlack: "먹",
+  oCmyk: "원색4", oSpot: "별색", oBlack: "먹", oUv: "UV",
   oFoil: "박", oEmb: "형압", oPuv: "부분UV",
   // 수량별 개당단가 — 「1,000개면 얼마, 5,000개면 얼마」가 부스 대화의 본체다.
   qtyScale: "수량별 개당",
@@ -817,7 +822,7 @@ const JA = {
   secSpec: "仕様", fPaper: "用紙", fPrint: "印刷", fCoat: "コーティング",
   fFinish: "後加工", fGlue: "貼り", fThom: "打ち抜き",
   sideF: "表", sideB: "裏",
-  oCmyk: "プロセス4色", oSpot: "特色", oBlack: "スミ",
+  oCmyk: "プロセス4色", oSpot: "特色", oBlack: "スミ", oUv: "UV",
   oFoil: "箔押し", oEmb: "エンボス", oPuv: "部分UV",
   qtyScale: "数量別の単価",
   btnAuto: "自動面付け", btnHand: "手動で配置", btnHandOff: "配置を終える", btnReset: "リセット",

@@ -944,6 +944,9 @@ export default function ShowroomPage({ carried = null }) {
                       onClick={() => put(`${sd}pColor`, !over[`${sd}pColor`])}>{t.oCmyk}</Pill>
                     <Pill on={!!over[`${sd}pBk`]} data-fx-print={`${sd}Bk`}
                       onClick={() => put(`${sd}pBk`, !over[`${sd}pBk`])}>{t.oBlack}</Pill>
+                    {/* UV 인쇄 — 부스 이동폭 1위(+21%). 알약 하나면 된다. */}
+                    <Pill on={!!over[`${sd}pUv`]} data-fx-print={`${sd}Uv`}
+                      onClick={() => put(`${sd}pUv`, !over[`${sd}pUv`])}>{t.oUv}</Pill>
                     <span style={{ fontSize: 11, color: C.faint, marginLeft: 2 }}>{t.oSpot}</span>
                     <input value={over[`${sd}pSp`]} inputMode="numeric" data-fx-spot={sd}
                       onChange={e => putSp(`${sd}pSp`, e.target.value)}
