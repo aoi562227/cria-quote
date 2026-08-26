@@ -36,18 +36,23 @@ import { findSheetBase, resolveSheet, PRESS_MAX_LONG, PRESS_MAX_SHORT } from "..
 import { readDielineFile } from "../domain/pdf-dieline.mjs";
 // 「고른 후보 → 그 후보의 polygons」 규칙은 state.mjs 가 소유한다 (두 벌 중 어느 쪽이
 // 정답인지 아는 곳은 한 군데여야 한다 — ARCHITECTURE §10). 쇼룸도 같은 함수를 부른다.
-import { pdfPickOf, specHash, customSheetOf, noCostOfHash } from "../ui/state.mjs";
+// nextThomId — 구조가 톰슨 기본값을 선언했으면 그걸로 바꾼다. 견적 앱(App.jsx 의
+// handleBoxType)과 **같은 함수**를 부른다: 여기서 따로 적으면 같은 구조를 골라도 두 화면의
+// 톰슨이 갈린다. (⚠ BoxSpec.jsx 에는 이 호출이 없다 — 대조하려면 App.jsx 를 열어라.)
+import { pdfPickOf, specHash, customSheetOf, noCostOfHash, nextThomId } from "../ui/state.mjs";
 import { BOX_TYPES } from "../ui/box-types.mjs";
 import { resolveDrop, findSpot, itemW, itemH, SNAP_PX } from "../ui/viz/nest-drag.mjs";
 import {
   SHEET_CHOICES, frameOf, partOf, auditItems, autoPlace, fillMore,
   quoteInputOf, specSummaryOf, seedFromAuto, capToQuoteUp, seedOf, precisionKeyOf,
-  linkStateOf, T, LANGS,
+  linkStateOf, baseOf, specOf, qtyStepsOf, qtyRowsOf, upForPrice, resetKindOf,
+  paperChoices, coatChoices, glueChoices, thomChoices, T, LANGS,
 } from "./showroom-core.mjs";
 // 고객에게 **얼마로 보여줄지**는 price-formula 가 소유한다 — 파서·반올림·통화 표기·
 // 저장·「거부되면 원가로 안 돌아간다」까지 전부. 이 파일은 그 결과만 그린다.
 import {
-  shownPriceOf, adminViewOf, loadPriceCfg, savePriceCfg, isPriceOn, CUR_CHOICES, ADMIN_T,
+  shownPriceOf, shownRowsOf, adminViewOf, loadPriceCfg, savePriceCfg, isPriceOn,
+  CUR_CHOICES, ADMIN_T,
 } from "./price-formula.mjs";
 
 // ── 색 · 치수 ──────────────────────────────────────────────────────
@@ -130,6 +135,12 @@ const GLUE_FILL_CSS = `rgba(27, 33, 41, ${GLUE_TONE})`;
 /** 클릭과 드래그를 가르는 거리(mm 환산 전 화면 px) */
 const DRAG_MIN_PX = 2;
 const UNDO_MAX = 30;
+/** 판만 바뀌었을 때 「다시 앉히기」를 묶는 시간(ms).
+ *  수량 칸은 키스트로크마다 상태가 바뀌고 그때도 자동판형이 뒤집힐 수 있다 —
+ *  묶지 않으면 「5000」 네 글자에 최대 200만 회 탐색이 네 번 돈다(실측 1회 최대 153ms).
+ *  400 = 사람이 다음 글자를 치기 전에 멈추는 시간보다 길고, 부스 대화에서 기다림으로
+ *  느껴지기 전이다. 아래 reseat 효과 주석 참조. */
+const RESEAT_MS = 400;
 
 const num = v => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
 const int = v => { const n = parseInt(v, 10); return Number.isFinite(n) ? n : 0; };
@@ -166,8 +177,29 @@ export default function ShowroomPage({ carried = null }) {
   const [sheetId, setSheetId] = useState(() => carried?.sheetId || "auto");
   const [qty, setQty] = useState(() => carried?.qty ?? "4000");
 
+  // ── ★ 고객과 같이 넣는 사양 한 벌 (26-08-26) ─────────────────────
+  //  사용자 요구: 「고객이랑 같이 화면 보면서 이거 사양을 넣어야하는데?」 종전에는 도수·
+  //  지종·코팅을 바꾸려면 원가 전체가 뜨는 견적 앱으로 돌아가야 했다 — 고객 앞에서 못 연다.
+  //  ★ 칸 목록·초기값·거르기는 전부 showroom-core 가 소유한다(SHOWROOM_SPEC_KEYS / specOf).
+  //    여기서 키를 다시 적으면 계산·링크·화면이 세 벌로 갈린다.
+  //  ★ 초기값이 `baseOf(carried)` 인 것이 요점이다 — 계산의 바탕과 **같은 출처**라서,
+  //    아무것도 안 만진 상태의 화면 값과 계산 값이 원리적으로 같다(단독 진입 223원 · 실려
+  //    온 사양 204원이 그대로 산다). 상태 14칸을 따로 두면 그 둘이 조용히 갈린다.
+  //  ⚠ 훅 하나에 묶은 이유: 칸마다 useState 를 두면 14개가 되고, quoteInputOf 에 넘길 때
+  //    다시 객체로 모아야 해서 목록이 이 파일에 한 벌 더 생긴다.
+  const [over, setOver] = useState(() => specOf(baseOf(carried)));
+  const put = (k, v) => setOver(p => ({ ...p, [k]: v }));
+  // 별색은 0~8 — 견적 앱(PrintPanel)과 같은 범위로 접는다. 여기서 넓히면 두 화면이 갈린다.
+  const putSp = (k, v) => put(k, String(Math.max(0, Math.min(8, parseInt(v, 10) || 0))));
+
   // ── 배치 ────────────────────────────────────────────────────────
-  const [items, setItems] = useState(null);             // 확정 배치 (null = 아직 안 앉힘)
+  const [items, setItemsRaw] = useState(null);          // 확정 배치 (null = 아직 안 앉힘)
+  // ★ 그 배치가 **어느 판의 것인지**를 같이 든다 (26-08-26 · 적대검증 minor ⑥).
+  //   배치 좌표는 판 좌표 mm 라, 판이 바뀌면 같은 배열이 **다른 판의 배치**를 뜻하게 된다.
+  //   그 사이 한 렌더에서 「새 판 + 옛 up」으로 금액이 나가는 것을 upForPrice 가 막는다
+  //   (판정은 showroom-core 가 소유한다 — 왜 그 프레임이 위험한지도 거기 적혀 있다).
+  //   ⚠ setItems 를 지나지 않는 배치 갱신을 만들지 마라 — 그 순간 짝이 어긋난다.
+  const [itemsSheet, setItemsSheet] = useState(null);
   const [hand, setHand] = useState(false);
   const [sel, setSel] = useState(null);
   const [undo, setUndo] = useState([]);
@@ -245,13 +277,17 @@ export default function ShowroomPage({ carried = null }) {
   // ── 도면 ────────────────────────────────────────────────────────
   const pick = useMemo(() => (srcMode === "pdf" ? pdfPickOf({ pdfDl }) : null), [srcMode, pdfDl]);
   // 규격 경로는 셋이다: PDF bbox / 전개도 직접입력 / W·D·H. 뒤 둘은 화면에서 만진다.
+  //  ★ `over` 가 여기 실리면 지종·도수·코팅·후가공·접착·톰슨이 **한 덩어리로** 흐른다:
+  //    아래 qAuto(판형 추천) · qShow(단가) · qtyRows(수량별) · linkState(링크)가 전부
+  //    이 한 객체를 편다. 그래서 지종을 바꾸면 판형 추천도 같이 움직인다(실측: 아코팩350 →
+  //    4×62 4up 에서 4×64 2up 으로 판형이 뒤집힌다).
   const spec = useMemo(() => ({
     mode: srcMode === "pdf" ? "pdf" : (netDims ? "net" : "box"),
     boxType, W: num(bW), D: num(bD), H: num(bH),
     netW: srcMode === "pdf" ? (pick?.bbox?.w ?? 0) : num(nW),
     netH: srcMode === "pdf" ? (pick?.bbox?.h ?? 0) : num(nH),
-    qty: int(qty), carried,
-  }), [srcMode, netDims, boxType, bW, bD, bH, nW, nH, pick, qty, carried]);
+    qty: int(qty), over, carried,
+  }), [srcMode, netDims, boxType, bW, bD, bH, nW, nH, pick, qty, over, carried]);
 
   // ── 견적 호출 2회 ────────────────────────────────────────────────
   //  ① qAuto : up 을 안 주고 부른다 → 도메인이 **판형을 고르고** 격자 배치를 푼다.
@@ -277,6 +313,12 @@ export default function ShowroomPage({ carried = null }) {
   const frame = useMemo(() => (sheetBase ? frameOf(resolveSheet(sheetBase, customSheet)) : null),
                         [sheetBase, customSheet]);
 
+  // ★ 배치를 놓는 **유일한 문**. 배치와 「그 배치가 놓인 판」을 **한 번에** 갱신한다 —
+  //   따로 두면 둘이 어긋나는 렌더가 생기고, 그게 minor ⑥ 이 잡은 −39% 저가 프레임이다.
+  //   ⚠ setItemsRaw 를 직접 부르지 마라(여기 말고는 부를 이유가 없다).
+  //   ⚠ 갱신함수 꼴(prev => next)은 안 받는다 — 지금 호출부가 전부 값을 준다.
+  const setItems = next => { setItemsRaw(next); setItemsSheet(sheetBase?.id ?? null); };
+
   // 부품(충돌 도형 + 그릴 윤곽). dieline 은 **key** 로 의존한다 — 참조로 걸면 글자 한 자
   // 칠 때마다 NFP 사전계산(조각²)이 다시 돈다 (BoxSpec.handPart 와 같은 이유).
   const dlKey = qAuto?.dieline?.key || "";
@@ -288,13 +330,34 @@ export default function ShowroomPage({ carried = null }) {
 
   // 도형이나 판이 바뀌면 앉힌 배치는 **뜻을 잃는다**(좌표가 다른 판의 좌표가 된다).
   // 조용히 남겨두면 옛 배치의 up 으로 새 도형의 단가가 나간다 — 지우고 다시 앉히게 한다.
-  const resetKey = `${srcMode}|${dlKey}|${pick?.bbox?.w ?? 0}x${pick?.bbox?.h ?? 0}` +
-                   `|${pdfDl?.pickIdx ?? 0}|${pdfDl?.page ?? 0}|${sheetBase?.id ?? ""}`;
+  //
+  // ★ 26-08-26 2차 — 키를 **둘로 갈랐다**(적대검증 major ①). 「도형이 바뀐 것」과
+  //   「판만 바뀐 것」은 다른 사건이고, 뒤쪽이 **부스 표준 경로**다: 지종 드롭다운 한 번에
+  //   자동판형이 뒤집히고(AB라이트295 → 두성 디프매트308 에서 4×62 → 4×64) 종전에는
+  //   그 한 번에 배치·금액·수량표가 통째로 사라졌다. 판정은 showroom-core.resetKindOf.
+  const shapeKey = `${srcMode}|${dlKey}|${pick?.bbox?.w ?? 0}x${pick?.bbox?.h ?? 0}` +
+                   `|${pdfDl?.pickIdx ?? 0}|${pdfDl?.page ?? 0}`;
+  const resetKey = `${shapeKey}|${sheetBase?.id ?? ""}`;
+  const lastShape = useRef(shapeKey);
+  // 판만 바뀌었을 때 「다시 앉히기」를 예약하는 카운터. 값 자체에는 뜻이 없다 —
+  // **바뀌었다는 사실**만으로 아래 예약 효과를 다시 돌려 앞선 타이머를 지운다(= 디바운스).
+  const [reseat, setReseat] = useState(0);
   useEffect(() => {
-    setItems(null); setHand(false); setSel(null); setUndo([]); setAutoInfo(null); setMsg("");
+    // ⚠ items 는 의존 배열에 없다 — 이 효과가 도는 순간의 items 는 **방금 뜻을 잃은
+    //   그 배치**이고, 우리가 알고 싶은 것은 「지울 것이 있었나」뿐이다.
+    const kind = resetKindOf(lastShape.current, shapeKey, (items?.length || 0) > 0);
+    lastShape.current = shapeKey;
+    setItems(null); setHand(false); setSel(null); setUndo([]); setAutoInfo(null);
+    // 침묵을 깬다 — 금액이 「—」로 가고 판이 빈 사각형이 되는 이유를 화면이 말한다.
+    setMsg(kind === "sheet" ? t.sheetChanged : "");
+    if (kind === "sheet") setReseat(n => n + 1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resetKey]);
 
-  const up = items?.length || 0;
+  // ★ 금액에 쓸 판걸이 수 — **배치가 지금 그리는 판의 것일 때만** 센다.
+  //   판정은 showroom-core.upForPrice(그 주석이 −39% 저가 프레임의 실측을 갖고 있다).
+  //   그래서 과도기 프레임의 금액은 원리적으로 「—」다.
+  const up = upForPrice(items, itemsSheet, sheetBase?.id ?? null);
   const qShow = useMemo(() => {
     if (!(up > 0) || !sheetBase) return null;
     try { return buildQuote(quoteInputOf({ ...spec, sheetId: sheetBase.id, up })); }
@@ -356,11 +419,19 @@ export default function ShowroomPage({ carried = null }) {
 
   // ── 자동 배치 ────────────────────────────────────────────────────
   //  ⚠ 자동 재계산 금지 — 입력이 바뀌면 배치는 **지워질 뿐**이고 다시 풀지 않는다.
-  //    거는 자리는 딱 둘이다: 이 버튼과, 사양이 실려 왔을 때의 **마운트 1회**
-  //    (바로 아래 autoRan). 그 둘 말고 어디에도 걸지 마라.
-  const runAuto = () => {
+  //    거는 자리는 **셋뿐**이다: 이 버튼 · 사양이 실려 왔을 때의 **마운트 1회**
+  //    (바로 아래 autoRan) · **판만 바뀌었을 때의 다시 앉히기**(그 아래 reseat).
+  //    그 셋 말고 어디에도 걸지 마라.
+  //  ★ 셋째를 26-08-26 2차에 더했다(major ①). 그 규율이 막으려던 것은 「글자 한 자 칠
+  //    때마다 최대 200만 회 탐색」(실측 153ms)이고, 셋째는 그 경우가 **아니다**:
+  //     · **도형이 그대로일 때만** 돈다(치수를 치면 도형이 바뀌므로 종전대로 안 돈다).
+  //     · 400ms 디바운스라 수량을 「5 → 50 → 500 → 5000」으로 쳐도 **한 번만** 돈다.
+  //    @param noteOf 성공했는데 고정 판걸이 안내가 없을 때 적을 말. (n) => string
+  const runAuto = (noteOf) => {
     if (!part || !frame) { setMsg(t.needDraw); return; }
-    setBusy("auto"); setMsg("");
+    // ⚠ 다시 앉히는 중(noteOf)에는 **먼저 뜬 말을 지우지 않는다** — 지우면 그 사이
+    //   온보딩 문구(「「자동 배치」를 누르면 …」)가 깜빡이고, 그건 지금 상황이 아니다.
+    setBusy("auto"); if (!noteOf) setMsg("");
     // 진행 표시를 **먼저 그리게** 한 뒤 계산한다. 같은 프레임에서 돌리면
     // 「계산 중…」이 화면에 뜨지 않고 브라우저만 멈춰 보인다.
     setTimeout(() => {
@@ -379,6 +450,7 @@ export default function ShowroomPage({ carried = null }) {
       // 못 그렸다고 화면이 말한다. 침묵이 +30% 의 본체였다.
       setMsg(s.restored ? t.pinRestored(s.restored)
            : s.shortOf  ? t.pinLost(s.shortOf, s.items.length)
+           : typeof noteOf === "function" ? noteOf(s.items.length)
            : "");
     }, 24);
   };
@@ -399,6 +471,24 @@ export default function ShowroomPage({ carried = null }) {
     runAuto();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [carried, part, frame]);
+
+  // ── ★ 판만 바뀌었을 때 **같은 도형을 새 판에 다시 앉힌다** (적대검증 major ①) ──
+  //  부스 표준 경로다: 고객 앞에서 지종을 바꾸면 자동판형이 뒤집히고(4×62 → 4×64)
+  //  종전에는 그 한 번에 금액이 「—」로 가고 판이 빈 사각형이 됐다. 도형은 그대로이므로
+  //  재배치가 정당하고, 겹침 게이트(autoPlace 안의 auditItems)는 그대로 걸린다.
+  //  ⚠ **여기서 판단하지 않는다** — 「판만 바뀌었나」는 showroom-core.resetKindOf 가
+  //    위 리셋 효과에서 이미 정했고, 여기는 그 예약을 실행할 뿐이다.
+  //  ⚠ 400ms 디바운스인 이유: 수량 칸은 키스트로크마다 상태가 바뀌고 그때도 자동판형이
+  //    뒤집힐 수 있다(「5 → 50 → 500 → 5000」). 묶지 않으면 탐색이 네 번 돈다.
+  //    reseat 가 다시 바뀌면 아래 정리 함수가 앞선 타이머를 지운다 = 마지막 한 번만.
+  //  ⚠ 이 효과는 **runAuto 아래**에 있어야 한다 — 위에 두면 클로저가 옛 판의 frame·part
+  //    를 물고 있어 방금 바뀐 판이 아니라 **옛 판**에 앉힌다.
+  useEffect(() => {
+    if (!reseat) return;
+    const id = setTimeout(() => runAuto(n => t.sheetReseated(n)), RESEAT_MS);
+    return () => clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reseat]);
 
   // ── 자유 배치 채택 ───────────────────────────────────────────────
   //  ★ 자동 배치가 **격자해**를 앉히는 이유는 autoPlace 주석에 있다(두 화면이 같은
@@ -551,6 +641,25 @@ export default function ShowroomPage({ carried = null }) {
   const av = useMemo(() => (adminOpen
     ? adminViewOf({ perEA, up, cfg: priceCfg, lang, hideCost: linkNoCost }) : null),
                      [adminOpen, perEA, up, priceCfg, lang, linkNoCost]);
+
+  // ── ★ 수량별 개당 — 「1,000개면 얼마, 5,000개면 얼마」 ─────────────
+  //  ★ 이 파일은 **원가를 한 번도 만지지 않는다.** qtyRowsOf 가 도메인(buildQuoteRange)에서
+  //    받은 원가 배열을 shownRowsOf 가 곧바로 표시값으로 바꾸고, 화면은 그 결과만 그린다 —
+  //    큰 글씨(shown)와 **완전히 같은 구조**다. 그래서 「고객 화면 DOM 에 원가가 없다」가
+  //    표에도 그대로 성립한다(verify-speclink §N · §M ⑯ 이 다섯 수량 전부를 훑는다).
+  //  ⚠ 판형·판걸이는 화면 그대로 고정한 채 수량만 바꾼다 — 표 한 칸이 화면에 없는 판의
+  //    금액이 되면 한 화면이 스스로와 갈린다. 대가와 그 방향은 qtyRowsOf 주석에 있다
+  //    (⚠ 그 대가가 **늘 안전 방향은 아니다** — 105칸 중 8칸이 반대다. 거기 적었다).
+  //  ⚠ **수식 미설정(mode "cost")이면 shownRowsOf 가 빈 배열을 준다 = 표가 안 뜬다.**
+  //    그 판단은 price-formula 가 소유한다(원가 노출면이 1개 → 5개가 되는 것을 막는다).
+  //    여기서 `qtyShown.length` 로만 표를 내는 것이 그래서 맞다 — 조건을 늘리지 마라.
+  const qtySteps = useMemo(() => qtyStepsOf(int(qty)), [qty]);
+  const qtyRows = useMemo(() => ((up > 0 && sheetBase)
+    ? qtyRowsOf({ ...spec, sheetId: sheetBase.id, up }, qtySteps) : []),
+                          [spec, sheetBase?.id, up, qtySteps]);
+  const qtyShown = useMemo(
+    () => shownRowsOf({ rows: qtyRows, cfg: priceCfg, lang, hideCost: linkNoCost }),
+    [qtyRows, priceCfg, lang, linkNoCost]);
   // ★ 지금 원가를 가리고 있는가. 두 갈래다 — 이 브라우저에 수식이 있거나(부스 노트북),
   //   주소가 가림 표시를 달고 왔거나(고객이 받은 링크). 둘 중 하나라도 참이면
   //   ① 주소에 가림 비트를 싣고 ② 「견적 앱으로 →」 문을 고객 화면에서 치운다.
@@ -575,7 +684,7 @@ export default function ShowroomPage({ carried = null }) {
   //    「견적서 사양 · (개당단가는 개발비 제외)」라는 뜻 없는 줄이 남는다. 그러면
   //    아무 말도 하지 않는다 — 설명할 단가 자체가 없다(결과도 「—」다).
   //    표준사양 문구로 접으면 안 된다: 실려 온 사양이 아닌 것을 말하게 된다.
-  const specSum = carried ? specSummaryOf((qShow || qAuto)?.lines) : "";
+  const specSum = carried ? specSummaryOf((qShow || qAuto)?.lines, t) : "";
   const specNote = carried
     ? (specSum ? `${t.specFrom} · ${specSum} ${t.exDev}` : "")
     : t.specLine;
@@ -587,7 +696,7 @@ export default function ShowroomPage({ carried = null }) {
   //  조립 규칙(판걸이·규격·판형)은 **showroom-core.linkStateOf** 가 소유한다 —
   //  아래 두 용도가 같은 조립을 쓰게 하려고 함수로 뽑았다. 여기 다시 적지 마라.
   const linkState = sheetIdForLink => linkStateOf({
-    carried, mode: spec.mode, boxType, bW, bD, bH,
+    carried, over, mode: spec.mode, boxType, bW, bD, bH,
     netW: spec.netW, netH: spec.netH, sheetId: sheetIdForLink, qty, up,
     gridUp: qAuto?.layout?.up ?? 0,
   });
@@ -752,7 +861,12 @@ export default function ShowroomPage({ carried = null }) {
               </div>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                <Select value={boxType} onChange={setBoxType}
+                {/* ⚠ 구조를 바꾸면 톰슨도 같이 바꾼다 — 견적 앱(App.jsx 의 handleBoxType)이
+                    nextThomId 로 하는 것과 **같은 함수·같은 순서**다. 안 걸면 G형을 골라도 톰슨이
+                    「일반형」에 남아 두 화면 금액이 갈린다(그 판정의 정본은 구조 파일의
+                    thomsonDefault 이고 화면은 읽기만 한다). */}
+                <Select value={boxType}
+                  onChange={v => { setBoxType(v); put("thomId", nextThomId(v, over.thomId)); }}
                   options={BOX_TYPES.map(b => [b.id, b.label])}/>
                 <div style={{ display: "flex", gap: 6 }}>
                   <Num label={t.w} value={bW} onChange={setBW}/>
@@ -786,6 +900,71 @@ export default function ShowroomPage({ carried = null }) {
             <Num value={qty} onChange={setQty} suffix={t.ea} wide/>
           </section>
 
+          {/* ══ 사양 — ★ 고객과 **같이 넣는** 칸 (26-08-26) ═══════════
+              왜 왼쪽 아래인가 — 이 화면의 주인공은 도면과 판이다. 사양은 운영자가
+              만지고 고객은 오른쪽에서 결과를 본다. 오른쪽에 두면 판이 그만큼 작아진다
+              (실측: 결과 상자 아래에 한 줄 늘 때마다 판 높이가 ~30px 줄어든다).
+              이 aside 는 overflowY:auto 라 여기서 늘어나도 **판은 한 픽셀도 안 줄어든다.**
+              ⚠ 새 탭·새 화면을 만들지 않는다 — 구조·치수·판형·수량과 **한 덩어리**여야
+                「이 박스를 이 사양으로」가 한 눈에 읽힌다.
+              ⚠ 여기 칸을 늘리기 전에 showroom-core.SHOWROOM_SPEC_KEYS 주석의 「뺀 것과
+                근거」를 읽어라. 특히 단가 직접입력·개발비는 **원가 구조 그 자체**다. */}
+          <section>
+            <Label>{t.secSpec}</Label>
+            <Row label={t.fPaper}>
+              <Select value={over.paperId} onChange={v => put("paperId", v)} options={paperChoices(lang)}/>
+            </Row>
+
+            {/* 인쇄 도수 — 앞/뒤 한 줄씩. 알약 두 개 + 별색 숫자 한 칸이면 부스 대화가 된다
+                (「원색 4도에 별색 하나 더요」). 도수를 세는 것은 도메인이 한다 — 화면은
+                켜고 끄기만 하고, 실제 도수·소부 판수는 사양 줄(specSummaryOf)이 말한다. */}
+            <Row label={t.fPrint}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                {[["f", t.sideF], ["b", t.sideB]].map(([sd, sl]) => (
+                  <div key={sd} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                    <span style={{ fontSize: 11, color: C.faint, width: 15, flexShrink: 0 }}>{sl}</span>
+                    <Pill on={!!over[`${sd}pColor`]} data-fx-print={`${sd}Color`}
+                      onClick={() => put(`${sd}pColor`, !over[`${sd}pColor`])}>{t.oCmyk}</Pill>
+                    <Pill on={!!over[`${sd}pBk`]} data-fx-print={`${sd}Bk`}
+                      onClick={() => put(`${sd}pBk`, !over[`${sd}pBk`])}>{t.oBlack}</Pill>
+                    <span style={{ fontSize: 11, color: C.faint, marginLeft: 2 }}>{t.oSpot}</span>
+                    <input value={over[`${sd}pSp`]} inputMode="numeric" data-fx-spot={sd}
+                      onChange={e => putSp(`${sd}pSp`, e.target.value)}
+                      style={{ width: 34, boxSizing: "border-box", padding: "4px 5px", borderRadius: 5,
+                               border: `1px solid ${C.line}`, background: "#fff", color: C.ink,
+                               font: `12px ${FONT}`, textAlign: "center",
+                               fontVariantNumeric: "tabular-nums" }}/>
+                  </div>
+                ))}
+              </div>
+            </Row>
+
+            {/* 코팅 앞/뒤 — 한 줄에 둘. 종류 이름이 짧아(무광·유광·IR) 좁아도 읽힌다 */}
+            <Row label={t.fCoat}>
+              <div style={{ display: "flex", gap: 5 }}>
+                <Select value={over.fcId} onChange={v => put("fcId", v)} options={coatChoices(lang)}/>
+                <Select value={over.bcId} onChange={v => put("bcId", v)} options={coatChoices(lang)}/>
+              </div>
+            </Row>
+
+            {/* 후가공 — 켜고 끄기만. 박 종류·면수는 도면이 확정된 뒤의 이야기라 뺐다
+                (SHOWROOM_SPEC_KEYS 주석). 켜면 도메인이 1면 기본으로 계산한다. */}
+            <Row label={t.fFinish}>
+              <div style={{ display: "flex", gap: 4 }}>
+                <Pill on={!!over.foil} data-fx-fin="foil" onClick={() => put("foil", !over.foil)}>{t.oFoil}</Pill>
+                <Pill on={!!over.emb} data-fx-fin="emb" onClick={() => put("emb", !over.emb)}>{t.oEmb}</Pill>
+                <Pill on={!!over.puv} data-fx-fin="puv" onClick={() => put("puv", !over.puv)}>{t.oPuv}</Pill>
+              </div>
+            </Row>
+
+            <Row label={t.fGlue}>
+              <Select value={over.glueId} onChange={v => put("glueId", v)} options={glueChoices(lang)}/>
+            </Row>
+            <Row label={t.fThom}>
+              <Select value={over.thomId} onChange={v => put("thomId", v)} options={thomChoices(lang)}/>
+            </Row>
+          </section>
+
           <div style={{ flex: 1 }}/>
           {/* 사양 — 이것도 정직성 줄이다(이 단가가 **어느 사양의** 값인지 말한다).
               출처 줄과 같은 등급이므로 같은 색을 쓴다 — C 주석의 sub/faint 규칙.
@@ -801,7 +980,7 @@ export default function ShowroomPage({ carried = null }) {
 
           {/* 버튼 줄 */}
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-            <button type="button" data-act="auto" onClick={runAuto} disabled={!part || !!busy}
+            <button type="button" data-act="auto" onClick={() => runAuto()} disabled={!part || !!busy}
               style={btnStyle("primary", !!part && !busy)}>
               {busy === "auto" ? t.working : t.btnAuto}
             </button>
@@ -892,8 +1071,12 @@ export default function ShowroomPage({ carried = null }) {
               잴 수 있어야 하기 때문이다. */}
           <div data-result="1" data-up={up} data-price-mode={shown.mode} data-cur={shown.cur}
             data-perea={shown.mode === "cost" ? (perEA ?? "") : ""} data-shown={shown.main}
+            // ⚠ 줄바꿈 간격(rowGap)을 열 간격과 **가르는** 이유: 아래 수량 줄은
+            //   flexBasis 100% 라 늘 새 줄이고, 종전처럼 gap 34 하나면 그 34px 이 통째로
+            //   판 높이에서 빠진다(실측 1280×800: 판 465 → 387px). 열 간격은 그대로 34 다.
             style={{ background: C.panel, border: `1px solid ${C.line}`, borderRadius: 10,
-                     padding: "16px 22px", display: "flex", alignItems: "flex-end", gap: 34, flexWrap: "wrap" }}>
+                     padding: "16px 22px", display: "flex", alignItems: "flex-end",
+                     columnGap: 34, rowGap: 10, flexWrap: "wrap" }}>
             <Big value={up > 0 ? String(up) : "—"} unit={t.up}/>
             <div style={{ width: 1, alignSelf: "stretch", background: C.line }}/>
             <Big value={shown.main} unit={shown.unitKey ? t[shown.unitKey] : ""} pre={t.perEA}/>
@@ -903,9 +1086,59 @@ export default function ShowroomPage({ carried = null }) {
                 {sheetLabel} · {mm1(frame?.drawW ?? 0)} × {mm1(frame?.drawH ?? 0)} mm</div>
               <div><span style={{ color: C.faint }}>{t.netSize}</span>{"  "}
                 {mm1(netW)} × {mm1(netH)} mm</div>
-              <div><span style={{ color: C.faint }}>{t.qtyShort}</span>{"  "}
-                {int(qty).toLocaleString()} {t.ea}</div>
+              {/* ⚠ 수량은 **지금 수량이 아래 표에 없을 때만** 여기서 말한다. 표에 있으면
+                  강조된 칸으로 이미 크게 떠 있어 같은 값을 두 번 말하는 셈이고
+                  (이 화면의 「같은 값을 두 번 말하지 않는다」 규칙 — specSummaryOf 주석),
+                  그 한 줄이 판 높이를 22px 먹는다.
+                  ★ 26-08-26 2차 — 조건이 종전 `length <= 1` 이었는데 **표준 눈금 4칸이 늘
+                    있어서** 수량이 무효(빈칸·0·음수·문자)여도 거짓이었다. 실측: 큰 글씨는
+                    「—」인데 표는 자신 있게 네 값을 말하고 강조된 칸이 하나도 없어, **지금
+                    무엇을 견적한 것인지 화면이 안 말했다**(적대검증 minor ⑤).
+                    개수가 아니라 「지금 수량이 표에 있는가」로 판정한다 — 수량이 문턱
+                    (QTY_PIN_MIN) 아래일 때도 여기서 말하게 되는 것이 덤이다. */}
+              {!qtyShown.some(r => r.qty === int(qty)) && (
+                <div><span style={{ color: C.faint }}>{t.qtyShort}</span>{"  "}
+                  {int(qty).toLocaleString()} {t.ea}</div>
+              )}
             </div>
+
+            {/* ══ ★ 수량별 개당 — 부스 대화의 본체 ═══════════════════
+                「1,000개면 얼마, 5,000개면 얼마」. 별도 표가 아니라 **결과 상자 안의 한 줄**
+                이다: 큰 글씨 바로 아래에 놓아야 「지금 값」과 「수량을 바꾸면」이 한 눈에
+                읽히고, 판을 잡아먹지 않는다(한 줄 ~36px · 표로 만들면 ~150px).
+                ⚠ 누르는 칩이 **아니다.** 눌러서 수량을 바꾸면 판형 추천이 뒤집힐 수 있고
+                  (실측: 1,000개는 4×64 2up 이 싸다) 그러면 지금 그린 배치와 다른 판이 된다.
+                  수량은 왼쪽 칸 하나로만 바꾼다.
+                  (26-08-26 2차 — 그때 「금액이 「—」로 간다」던 부분은 이제 다르다:
+                   판만 바뀐 경우 화면이 말하고 새 판에 다시 앉힌다(reseat 효과). 그래도
+                   칩으로 만들지 않는다 — 표는 「이 배치로 수량만 바꾸면」을 답하는 자리다.)
+                ⚠ 색은 이미 쓰는 두 벌(acc/accBg · soft/line)뿐이다. 칸마다 다른 색을
+                  칠하지 않는다(이 파일 머리말의 규칙). */}
+            {qtyShown.length > 1 && (
+              <div data-qtyscale="1" style={{ flexBasis: "100%", display: "flex", flexWrap: "wrap",
+                    alignItems: "center", gap: "6px 8px", borderTop: `1px solid ${C.line}`,
+                    paddingTop: 11, marginTop: 3 }}>
+                <span style={{ fontSize: 11, color: C.faint, marginRight: 2 }}>{t.qtyScale}</span>
+                {qtyShown.map(r => {
+                  const on = r.qty === int(qty);
+                  return (
+                    <div key={r.qty} data-qty={r.qty} data-qty-shown={r.main}
+                      style={{ display: "flex", alignItems: "baseline", gap: 5,
+                               padding: "3px 10px", borderRadius: 7,
+                               background: on ? C.accBg : C.soft,
+                               border: `1px solid ${on ? C.acc : C.line}` }}>
+                      <span style={{ fontSize: 11, color: on ? C.acc : C.sub,
+                                     fontVariantNumeric: "tabular-nums" }}>
+                        {r.qty.toLocaleString()}{t.ea}
+                      </span>
+                      <span style={{ fontSize: 16, fontWeight: 700, color: on ? C.acc : C.ink,
+                                     fontVariantNumeric: "tabular-nums" }}>{r.main}</span>
+                      {r.unitKey && <span style={{ fontSize: 10.5, color: C.sub }}>{t[r.unitKey]}</span>}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           {/* 정밀도 한 줄 — 근사면 근사라고 적는다. 작게, 그러나 반드시.
@@ -1139,6 +1372,15 @@ const Row = ({ label, children }) => (
     <span style={{ fontSize: 11.5, color: C.faint, width: 54, flexShrink: 0 }}>{label}</span>
     <div style={{ flex: 1, minWidth: 0 }}>{children}</div>
   </div>
+);
+
+/** 켜고 끄는 알약 — 사양 칸 전용. 체크박스가 아니라 알약인 이유는 **부스에서 손가락으로
+ *  누르기 때문**이다(체크박스 히트영역은 13px). 색은 탭(tabStyle)과 같은 두 벌만 쓴다. */
+const Pill = ({ on, onClick, children, ...rest }) => (
+  <button type="button" onClick={onClick} data-on={on ? "1" : undefined} {...rest}
+    style={{ padding: "4px 8px", borderRadius: 999, cursor: "pointer", whiteSpace: "nowrap",
+             border: `1px solid ${on ? C.acc : C.line}`, background: on ? C.accBg : "#fff",
+             color: on ? C.acc : C.sub, font: `${on ? 700 : 500} 11.5px ${FONT}` }}>{children}</button>
 );
 
 const Select = ({ value, onChange, options }) => (

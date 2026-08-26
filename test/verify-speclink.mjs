@@ -19,6 +19,7 @@
 //  §I  청구 up ↔ 그린 up 게이트 — 갈리면 잡히는가 (견적서판 §12-3)
 //  §J  거래처·품명 — 링크에 안 싣고 **초기값으로 접지도 않는다**
 //  §M  ★ 관리자 수식 → 고객 표시가 — 파서 · 원가 유출 · 거부 거동 · 하위호환 (26-08-25)
+//  §N  ★ 고객과 같이 넣는 사양 칸 + 수량별 개당단가 — 왕복 불변식 · 원가 유출 (26-08-26)
 //
 //  ── 26-08-19: 이 스위트가 「장식」이던 자리 둘을 고쳤다 ─────────────
 //  58/58 초록인 채로 critical 1건 + major 1건이 살아 있었다. 이유가 둘 다 구조적이다:
@@ -41,11 +42,15 @@ import {
 import {
   quoteInputOf, specSummaryOf, capToQuoteUp, seedFromAuto, linkStateOf,
   frameOf, partOf, autoPlace, STD, T,
+  // §N — 쇼룸에서 고객과 같이 넣는 사양 칸 + 수량별 개당단가 (26-08-26)
+  SHOWROOM_SPEC_KEYS, specOf, baseOf, qtyStepsOf, qtyRowsOf, QTY_STEPS, QTY_PIN_MIN,
+  paperChoices, coatChoices, glueChoices, thomChoices,
+  upForPrice, resetKindOf,
 } from "../src/showroom/showroom-core.mjs";
 import { upGateOf } from "../src/ui/state.mjs";
 // §M — 관리자 수식 → 고객 표시가. 도메인이 아니라 **표시 레이어**다(그 파일 머리말).
 import {
-  applyFormula, roundFor, shownPriceOf, adminViewOf,
+  applyFormula, roundFor, shownPriceOf, shownRowsOf, adminViewOf,
   savePriceCfg, loadPriceCfg, EMPTY_PRICE_CFG, ADMIN_T,
 } from "../src/showroom/price-formula.mjs";
 import { readFileSync, readdirSync } from "node:fs";
@@ -130,7 +135,12 @@ const showroomScreen = (carried, over = {}) => {
     H: +(over.bH ?? carried?.bH ?? 0),
     netW: +(over.nW ?? carried?.nW ?? 0), netH: +(over.nH ?? carried?.nH ?? 0),
     sheetId: over.sheetId ?? carried?.sheetId ?? "auto",
-    qty: +(over.qty ?? carried?.qty ?? 0), carried,
+    qty: +(over.qty ?? carried?.qty ?? 0),
+    // ★ 26-08-26 — 화면의 사양 칸 한 벌(ShowroomPage 의 `over` state). 초기값이
+    //   `specOf(baseOf(carried))` 인 것까지 화면과 같다: 아무것도 안 만진 상태에서는
+    //   base 와 같은 값이라 덮어써도 무변화여야 한다(§B 204원·§E 223원이 그 증인이다).
+    over: over.spec ?? specOf(baseOf(carried)),
+    carried,
   };
   const nil = q => ({ up: 0, perEA: null, q, sheetId: null, gridUp: 0, freeUp: 0, freeItems: [] });
   const auto = buildQuote(quoteInputOf({ ...base, up: 0 }));
@@ -1098,6 +1108,14 @@ console.log("\n── §M  관리자 수식 → 고객 표시가 ─────
        /data-act="admin-toquote"/.test(p));
     ok("주소에 가림 비트를 싣는다 (syncHash 에 nc)",
        /specHash\("showroom", linkState\(sheetId\), \{ nc: hiding \}\)/.test(p));
+    // ★ 26-08-26 — 수량별 표도 **표시값만** 그린다. 이 표는 화면에서 가장 여러 번 읽히는
+    //   숫자라(부스 대화의 본체), 여기로 원가가 새면 큰 글씨 하나를 가린 것이 무의미해진다.
+    //   위 「원가를 만지는 줄 6줄」이 안 늘어난 것과 짝이다 — 표는 원가 배열을 받지 않고
+    //   price-formula.shownRowsOf 가 만든 표시행만 받는다.
+    ok("수량별 표가 shownRowsOf 결과만 그린다 (원가 배열을 직접 안 그린다)",
+       /shownRowsOf\(\{ rows: qtyRows/.test(p) &&
+       /data-qty-shown=\{r\.main\}/.test(p) &&
+       !/data-qty(-shown)?=\{[^}]*perEA/.test(p));
   }
 
   // ── ⑫ ★★ 0 게이트 — 고객 화면에 0 이 뜨는 경로 **전수** ──────────
@@ -1306,9 +1324,17 @@ console.log("\n── §M  관리자 수식 → 고객 표시가 ─────
     // (c) ★ 원가 **숫자**가 화면에 없는가. SSR 은 배치를 안 앉히므로 여기서만
     //     `items` 씨앗을 심는다 — **배치만** 손대고 금액 경로는 원본 그대로다.
     //     (심지 않으면 up 0 · 원가 없음이라 「원가가 없다」가 공허해진다.)
-    const seed = s => s.replace("const [items, setItems] = useState(null);",
-      'const [items, setItems] = useState([{ x: 0, y: 0, flipped: false, rotated: false }]);');
-    ok("(c) 준비: 배치 씨앗이 심어졌다", seed(readFileSync(jsxUrl, "utf8")) !== readFileSync(jsxUrl, "utf8"));
+    //  ⚠ 씨앗이 **두 개**다 (26-08-26 2차): 배치와 「그 배치가 놓인 판」. 짝이 안 맞으면
+    //    upForPrice 가 0 을 돌려주고 금액이 「—」가 된다(minor ⑥ 의 가드가 그것이다) —
+    //    즉 씨앗 하나만 심으면 아래 (c)·(c-2) 가 통째로 공허해진다. "4x62" 는 SOSCO.sheetId.
+    const seed = s => s
+      .replace("const [items, setItemsRaw] = useState(null);",
+        'const [items, setItemsRaw] = useState([{ x: 0, y: 0, flipped: false, rotated: false }]);')
+      .replace("const [itemsSheet, setItemsSheet] = useState(null);",
+        'const [itemsSheet, setItemsSheet] = useState("4x62");');
+    ok("(c) 준비: 배치 씨앗 2개(배치 + 그 판)가 심어졌다",
+       /useState\(\[\{ x: 0/.test(seed(readFileSync(jsxUrl, "utf8"))) &&
+       /useState\("4x62"\)/.test(seed(readFileSync(jsxUrl, "utf8"))));
     const live = await render({ mutate: seed, hash: "#/showroom?q=x",
                                 store: { cur: "JPY", KRW: "", JPY: "*1.7/10" } });
     const mShown = /data-shown="([^"]*)"/.exec(live);
@@ -1328,6 +1354,43 @@ console.log("\n── §M  관리자 수식 → 고객 표시가 ─────
       ok(`★ 고객 화면 렌더 어디에도 원가 «${digits}» 가 없다 (수식이 켜진 상태)`,
          !!digits && !live.includes(digits), digits);
     }
+    // (c-2) ★ 26-08-26 — 수량별 표가 붙으면서 **한 화면의 원가가 다섯 벌**이 됐다.
+    //   위 검사는 지금 수량 하나만 본다. 표의 나머지 칸으로 새면 그대로 통과한다.
+    {
+      const shownCells = [...live.matchAll(/data-qty-shown="([^"]*)"/g)].map(m => m[1]);
+      ok(`(c-2) 준비: 수량별 표가 실제로 그려졌다 (${shownCells.length}칸)`,
+         shownCells.length >= 4, shownCells.join(" "));
+      ok("★ 수량별 표의 **모든 칸**이 표시가다 (원화 원가가 한 칸도 없다)",
+         shownCells.length > 0 && shownCells.every(v => /^¥[\d,]+$/.test(v)),
+         shownCells.join(" "));
+      // 같은 인자로 원가 다섯 벌을 구해, 그 숫자가 표 칸에도 마크업에도 없는지 훑는다.
+      const steps = qtyStepsOf(+SOSCO.qty);
+      const rows = qtyRowsOf({ mode: "box", boxType: SOSCO.boxType, W: +SOSCO.bW, D: +SOSCO.bD,
+                               H: +SOSCO.bH, netW: 0, netH: 0, sheetId: SOSCO.sheetId,
+                               qty: +SOSCO.qty, up: 1, carried: SOSCO,
+                               over: specOf(baseOf(SOSCO)) }, steps);
+      const costs = rows.map(r => r.perEA);
+      ok(`(c-2) 준비: 수량 ${steps.length}칸의 원가가 구해졌다 (${costs.join(" / ")}원)`,
+         costs.length === shownCells.length && costs.every(c => c > 0), costs.join(" / "));
+      const same = shownCells.filter((v, i) => costs[i] != null &&
+        (v === String(costs[i]) || v === costs[i].toLocaleString()));
+      ok("★ 표 칸의 값이 그 수량의 원가와 **다르다** (표시가를 거쳤다)", same.length === 0, same.join(" "));
+      // ★ **사람·검사도구가 보는 표면**에서 다섯 벌을 전부 훑는다.
+      //   원본 마크업 그대로 훑으면 세 자리 원가(557 …)가 SVG 좌표·style 값과 우연히
+      //   같아 오탐이 난다. 그렇다고 「네 자리만」으로 접으면 1up 원가는 전부 세 자리라
+      //   **재는 것이 하나도 없는 죽은 단언**이 된다(실측: big 이 빈 배열이었다).
+      //   그래서 표면을 만든다 — 태그는 `data-*` 값만 남기고, 태그 밖 글자는 그대로 둔다.
+      //   그것이 화면 글자 + 검사도구에서 읽히는 값의 전부다.
+      const visible = live
+        .replace(/<[^>]*>/g, tag => ` ${(tag.match(/data-[a-z-]+="[^"]*"/g) || []).join(" ")} `);
+      const seen2 = costs.filter(c => c != null &&
+        new RegExp(`(?<![\\d,.])${c}(?![\\d,.])`).test(visible));
+      ok(`★ 화면 글자·data 속성 어디에도 수량별 원가 «${costs.join(" ")}» 가 없다`,
+         seen2.length === 0, `${seen2.join(" ")} · 표면 ${visible.replace(/\s+/g, " ").trim().slice(0, 150)}`);
+      // 이빨 — 위 표면 검사가 실제로 무언가를 볼 수 있는가(표시가는 거기서 잡혀야 한다)
+      ok("이빨: 그 표면 검사가 표시가는 실제로 잡는다 (공허하지 않다)",
+         shownCells.every(v => visible.includes(v)), shownCells.join(" "));
+    }
     // (d) ★ 가림 비트를 달고 온 주소 — 수식이 없어도 원가로 접히지 않는다(브라우저 경로).
     const asCust = await render({ hash: "#/showroom?q=x&nc=1", store: null });
     ok("★ nc=1 주소를 수식 없는 브라우저에서 렌더하면 금액이 «—» 다",
@@ -1337,6 +1400,457 @@ console.log("\n── §M  관리자 수식 → 고객 표시가 ─────
        !/data-act="back"/.test(asCust) && /data-act="back"/.test(html));
 
     rmSync(outDir, { recursive: true, force: true });
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  §N  ★ 고객과 같이 넣는 사양 칸 + 수량별 개당단가 (26-08-26)
+//
+//  사용자 요구 원문: 「고객이랑 같이 화면 보면서 이거 사양을 넣어야하는데?」
+//  종전 쇼룸에서 바꿀 수 있는 것은 구조·W/D/H·판형·수량뿐이었고, 도수·지종·코팅을
+//  바꾸려면 **원가 전체가 뜨는 견적 앱**으로 돌아가야 했다 — 고객 앞에서 열 수 없는 화면이다.
+//
+//  이 절이 재는 것은 셋이다. 셋 다 이 저장소가 이미 밟은 고장의 재발 경로다:
+//   ① 새 칸이 **금액을 실제로 움직이는가**(이빨) · 그리고 두 화면이 **같은 수**인가 → §B 의 204원
+//   ② 그 값이 **왕복 3회차까지** 사는가 → §H·§K 와 같은 불변식. 링크에 안 실리면
+//      「고객 앞에서 지종을 바꿔 보여줬는데 견적서는 옛 지종」이 된다(204 vs 223 의 형태).
+//   ③ 수량별 표로 **원가가 새지 않는가** → §16 이 큰 글씨 하나를 가려 놓았는데, 화면에서
+//      제일 여러 번 읽히는 숫자가 표라서 여기로 새면 그 전부가 무의미해진다.
+// ══════════════════════════════════════════════════════════════════
+console.log("\n── §N  고객과 같이 넣는 사양 + 수량별 개당단가 ───────────────");
+{
+  // ── ① 목록 계약 — SHOWROOM_SPEC_KEYS 는 SPEC_KEYS 의 부분집합이어야 한다 ──
+  //  링크가 나르는 것은 SPEC_KEYS 뿐이다. 여기 있는 키가 거기 없으면 **화면에서 만진
+  //  값이 왕복에서 사라진다** — 조용히, 그리고 방향은 「옛 사양으로 되돌아간다」다.
+  const inSpec = new Set(SPEC_KEYS);
+  const orphan = SHOWROOM_SPEC_KEYS.filter(k => !inSpec.has(k));
+  ok(`쇼룸 사양 칸 ${SHOWROOM_SPEC_KEYS.length}개가 전부 SPEC_KEYS 에 있다 (링크가 나른다)`,
+     orphan.length === 0, orphan.join(", "));
+  ok("쇼룸 사양 칸에 중복이 없다",
+     new Set(SHOWROOM_SPEC_KEYS).size === SHOWROOM_SPEC_KEYS.length);
+  ok("쇼룸 사양 칸이 전부 INITIAL_STATE 에 있다 (없는 칸은 도메인이 못 읽는다)",
+     SHOWROOM_SPEC_KEYS.every(k => k in INITIAL_STATE),
+     SHOWROOM_SPEC_KEYS.filter(k => !(k in INITIAL_STATE)).join(", "));
+  // ★ **부분집합이어야 한다** — 50칸을 그대로 옮기면 고객 앞 화면이 견적 앱이 된다.
+  //   특히 단가 직접입력·개발비는 원가 구조 그 자체라 입력칸으로도 두면 안 된다.
+  const BANNED = ["printU", "sobooU", "spotRprV", "mPrice", "mPriceV", "mR", "mRV",
+                  "lossSheets", "admin", "adminManual", "foilRpr", "embRpr",
+                  "newDie", "dieQ", "dieP", "filmC", "embDevP", "embFilmP",
+                  "foilDevP", "foilFilmP", "mUp", "mUpV"];
+  const leak = BANNED.filter(k => SHOWROOM_SPEC_KEYS.includes(k));
+  ok("★ 원가 구조(단가 직접입력·개발비)와 판걸이는 고객 화면 입력칸이 **아니다**",
+     leak.length === 0, leak.join(", "));
+  ok(`쇼룸 사양 칸이 SPEC_KEYS(${SPEC_KEYS.length})의 진부분집합이다 — 「항목을 최소로」`,
+     SHOWROOM_SPEC_KEYS.length < SPEC_KEYS.length,
+     `${SHOWROOM_SPEC_KEYS.length} / ${SPEC_KEYS.length}`);
+  // 드롭다운 선택지가 도메인 테이블에서 온다 — 비면 화면에 빈 목록이 뜬다
+  const koPaper = paperChoices("ko"), koCoat = coatChoices("ko");
+  const koGlue = glueChoices("ko"), koThom = thomChoices("ko");
+  ok(`드롭다운 선택지가 도메인에서 온다 (지종 ${koPaper.length} · 코팅 ${koCoat.length} ` +
+     `· 접착 ${koGlue.length} · 톰슨 ${koThom.length})`,
+     koPaper.length > 10 && koCoat.length > 3 && koGlue.length > 3 && koThom.length > 3);
+  ok("hidden 선택지(부분코팅)는 목록에 없다", !koCoat.some(([id]) => id === "part"));
+
+  // ── ①-2 ★ 일본어 선택지 — 「일본어가 1급이다」 (26-08-26 2차 · 적대검증 minor ⑦) ──
+  //  종전에는 칸 이름만 번역돼 있고 **선택지 52개가 전부 한국어**였다. 고객과 **같이 보는**
+  //  왼쪽 칸 전체다. 정본 경로는 도메인의 `labelJa` 이고 화면은 문자열을 다시 짓지 않는다.
+  //  ⚠ 이 게이트는 「전부 일본어」를 요구하지 **않는다** — 지종 28개는 제품명이라 일부러
+  //    비웠고(papers.mjs 주석), 근거 없는 제품명을 지어내는 것이 더 나쁘다는 판단이다.
+  //    그래서 재는 것은 셋이다: ① 공정명은 일본어다 ② 없으면 한국어로 **떨어진다**
+  //    ③ 한국어 화면은 **한 글자도 안 움직인다**(하위호환).
+  {
+    const jaCoat = coatChoices("ja"), jaGlue = glueChoices("ja"), jaThom = thomChoices("ja");
+    const lab = (list, id) => (list.find(([i]) => i === id) || [])[1];
+    const WANT = [
+      [jaCoat, "none", "無し"], [jaCoat, "matte", "マットPP"], [jaCoat, "gloss", "グロスPP"],
+      [jaCoat, "ir", "IRコート"], [jaCoat, "velvet", "ベルベット"],
+      [jaGlue, "dan", "片面貼り"], [jaGlue, "sam", "三面貼り"], [jaGlue, "sleeve", "スリーブ"],
+      [jaGlue, "pp", "PP貼り"], [jaGlue, "handle", "手提げ型"],
+      [jaThom, "s", "単純型"], [jaThom, "n", "標準型"], [jaThom, "c", "複雑型"],
+      [jaThom, "g_std", "G型 標準"],
+    ];
+    const wrong = WANT.filter(([l, id, want]) => lab(l, id) !== want).map(([, id]) => id);
+    ok(`★ 일본어 화면에서 공정명 ${WANT.length}개가 일본어다 (코팅·접착·톰슨)`,
+       wrong.length === 0, wrong.join(", "));
+    // 근거가 없어 비운 자리는 **한국어로 떨어진다** — 빈칸도 「??」도 아니다.
+    ok("labelJa 가 없는 항목은 한국어로 떨어진다 (글로스코팅·풀발이·측면 풀발이 12단)",
+       lab(jaCoat, "hg") === "글로스코팅" && lab(jaGlue, "pull") === "풀발이" &&
+       lab(jaThom, "sp") === "측면 풀발이 12단",
+       `${lab(jaCoat, "hg")} / ${lab(jaGlue, "pull")} / ${lab(jaThom, "sp")}`);
+    ok(`지종 ${paperChoices("ja").length}개는 일본어를 **일부러 안 지었다** (제품명이다)`,
+       JSON.stringify(paperChoices("ja")) === JSON.stringify(koPaper));
+    // 하위호환 — 한국어 화면은 한 글자도 안 움직인다
+    ok("한국어 화면의 선택지는 종전과 **바이트 동일**하다",
+       koCoat.every(([, l]) => /[가-힣A-Z]/.test(l)) &&
+       JSON.stringify(coatChoices()) === JSON.stringify(koCoat) &&
+       JSON.stringify(glueChoices("ko")) === JSON.stringify(koGlue));
+    // 이빨 — 일본어 목록이 한국어와 **실제로 다르다**(같으면 위 줄들이 공허하다)
+    ok("이빨: 일본어 코팅·접착·톰슨 목록이 한국어와 다르다",
+       JSON.stringify(jaCoat) !== JSON.stringify(koCoat) &&
+       JSON.stringify(jaGlue) !== JSON.stringify(koGlue) &&
+       JSON.stringify(jaThom) !== JSON.stringify(koThom));
+  }
+
+  // ── ② specOf 는 **모르는 키를 버린다** ─────────────────────────
+  //  상태 한 벌을 통째로 얹으면 쇼룸이 안 그리는 칸까지 화면이 소유하게 되고, 그때부터
+  //  실려 온 값과 조용히 갈린다(decodeSpec 이 낯선 키를 버리는 것과 같은 규율).
+  {
+    const picked = specOf({ paperId: "SC300", printU: "99999", 없는키: 1, dieP: "1" });
+    ok("specOf 가 목록에 없는 키를 버린다",
+       picked.paperId === "SC300" && !("printU" in picked) && !("없는키" in picked) &&
+       !("dieP" in picked), JSON.stringify(picked));
+    ok("specOf(null) 은 빈 객체다 (단독 진입에서 안 죽는다)",
+       Object.keys(specOf(null)).length === 0);
+  }
+
+  // ── ③ 하위호환 — **안 만지면 종전과 같은 값** ────────────────────
+  //  화면의 초기 over 는 specOf(baseOf(carried)) 다. base 와 같은 값을 덮어쓰는 것이므로
+  //  결과가 한 원도 달라지면 안 된다. 이 줄이 §B(204)·§E(223)의 보증을 새 경로로 옮긴다.
+  {
+    const noOver = quoteInputOf({ mode: "box", boxType: SOSCO.boxType, W: +SOSCO.bW,
+      D: +SOSCO.bD, H: +SOSCO.bH, sheetId: SOSCO.sheetId, qty: +SOSCO.qty, up: 0, carried: SOSCO });
+    const withOver = quoteInputOf({ mode: "box", boxType: SOSCO.boxType, W: +SOSCO.bW,
+      D: +SOSCO.bD, H: +SOSCO.bH, sheetId: SOSCO.sheetId, qty: +SOSCO.qty, up: 0, carried: SOSCO,
+      over: specOf(baseOf(SOSCO)) });
+    ok("★ over 를 안 만지면 QuoteInput 이 **바이트 동일**하다 (하위호환)",
+       JSON.stringify(noOver) === JSON.stringify(withOver));
+    const l0 = linkStateOf({ carried: SOSCO, mode: "box", boxType: SOSCO.boxType, bW: SOSCO.bW,
+      bD: SOSCO.bD, bH: SOSCO.bH, sheetId: SOSCO.sheetId, qty: SOSCO.qty, up: 4, gridUp: 4 });
+    const l1 = linkStateOf({ carried: SOSCO, over: specOf(baseOf(SOSCO)), mode: "box",
+      boxType: SOSCO.boxType, bW: SOSCO.bW, bD: SOSCO.bD, bH: SOSCO.bH,
+      sheetId: SOSCO.sheetId, qty: SOSCO.qty, up: 4, gridUp: 4 });
+    ok("★ over 를 안 만지면 링크 해시도 **바이트 동일**하다 (기존 링크가 안 움직인다)",
+       specHash("showroom", l0) === specHash("showroom", l1));
+  }
+
+  // ── ④ ★ 이빨 — 칸마다 금액이 **실제로** 움직이고 두 화면이 같은 수인가 ──
+  //  안 움직이는 칸은 화면에 있을 이유가 없다(= 죽은 위젯). 그리고 움직이는데 두 화면이
+  //  갈리면 그게 이 스위트가 존재하는 이유인 204 vs 223 이다.
+  const CASES = [
+    ["지종 AB350 → 스노우350",   { paperId: "SC350" }],
+    ["지종 AB350 → 두성 디프매트", { paperId: "DSDM308" }],
+    ["앞 원색4 → 별색2+먹",       { fpColor: false, fpSp: "2", fpBk: true }],
+    ["앞 원색4 끄기",             { fpColor: false, fpSp: "0", fpBk: true }],
+    ["뒤 원색4 켜기 (양면)",      { bpColor: true }],
+    ["뒤 별색1 + 먹",             { bpSp: "1", bpBk: true }],
+    ["앞 코팅 IR → 벨벳",         { fcId: "velvet" }],
+    ["뒤 코팅 없음 → 무광",       { bcId: "matte" }],
+    ["박 켜기",                   { foil: true }],
+    ["형압 켜기",                 { emb: true }],
+    ["부분UV 켜기",               { puv: true }],
+    ["접착 단면 → 삼면",          { glueId: "sam" }],
+    ["톰슨 일반 → 복잡",          { thomId: "c" }],
+  ];
+  // 기준선 — SOSCO 그대로 (§B 의 204원)
+  const base0 = quoteScreen(SOSCO).totals.perEA;
+  const moved = new Set();
+  for (const [name, ov] of CASES) {
+    // 견적서 화면 = 상태 한 벌에 그대로 얹는다 (App.jsx 가 하는 일)
+    const a = quoteScreen({ ...SOSCO, ...ov }).totals?.perEA ?? null;
+    // 쇼룸 화면 = 실려 온 사양 위에 **화면에서 만진 사양**을 얹는다
+    const b = showroomScreen(SOSCO, { spec: { ...specOf(baseOf(SOSCO)), ...ov } }).perEA;
+    ok(`${name} — 견적서 ${a}원 = 쇼룸 ${b}원`, a != null && a === b, `${a} / ${b}`);
+    if (a !== base0) moved.add(name);
+  }
+  ok(`★ ${CASES.length}칸이 전부 금액을 움직인다 (기준 ${base0}원) — 죽은 위젯이 없다`,
+     moved.size === CASES.length,
+     `안 움직인 칸: ${CASES.filter(([n]) => !moved.has(n)).map(([n]) => n).join(", ") || "없음"}`);
+
+  // ── ⑤ ★ 왕복 1·2·3회차 — 만진 사양이 살아남는가 ─────────────────
+  //  §K 와 같은 규율이다: 1회차만 맞추면 2회차에서 갈린다. 여기서는 **판걸이가 아니라
+  //  사양**이 되돌아가는지를 본다(고객 앞에서 지종을 바꿨는데 견적서는 옛 지종).
+  {
+    const touched = { ...specOf(baseOf(SOSCO)),
+                      paperId: "SC350", fpColor: false, fpSp: "2", fpBk: true,
+                      fcId: "matte", bcId: "matte", foil: true, emb: true, puv: true,
+                      glueId: "sam", thomId: "c" };
+    let cur = SOSCO, prev = null, same = 0;
+    for (let lap = 1; lap <= 3; lap++) {
+      const r = showroomScreen(cur, { spec: touched });
+      // 화면이 조립하는 복귀 링크 — **화면과 같은 함수**로 짓는다(§H 의 교훈)
+      const back = linkStateOf({
+        carried: cur, over: touched, mode: "box", boxType: cur.boxType,
+        bW: cur.bW, bD: cur.bD, bH: cur.bH, netW: 0, netH: 0,
+        sheetId: r.sheetId || cur.sheetId, qty: cur.qty, up: r.up, gridUp: r.gridUp });
+      const hashed = decodeSpec(payloadOfHash(specHash("", back)));
+      const q = quoteScreen(hashed);
+      const now = { sheet: r.sheetId, up: r.up, perEA: r.perEA,
+                    qSheet: q.sheet?.id, qUp: q.sheet?.up, qPerEA: q.totals?.perEA };
+      ok(`${lap}회차 — 쇼룸 ${now.sheet} ${now.up}up ${now.perEA}원 = 견적서 ` +
+         `${now.qSheet} ${now.qUp}up ${now.qPerEA}원`,
+         now.perEA != null && now.perEA === now.qPerEA && now.up === now.qUp,
+         JSON.stringify(now));
+      // 만진 사양이 해시를 지나 그대로 돌아왔는가 — 한 칸이라도 되돌아가면 여기서 죽는다
+      const lost = SHOWROOM_SPEC_KEYS.filter(k => {
+        const want = typeof INITIAL_STATE[k] === "boolean" ? !!touched[k] : String(touched[k]);
+        const got = typeof INITIAL_STATE[k] === "boolean" ? !!hashed[k] : String(hashed[k]);
+        return want !== got;
+      });
+      ok(`${lap}회차 — 만진 사양 ${SHOWROOM_SPEC_KEYS.length}칸이 해시 왕복에서 전부 산다`,
+         lost.length === 0, lost.join(", "));
+      if (prev && prev.perEA === now.perEA && prev.sheet === now.sheet && prev.up === now.up) same++;
+      prev = now;
+      cur = hashed;
+    }
+    ok("★ 2·3회차가 1회차와 같다 (사양이 회차마다 흔들리지 않는다)", same === 2, `같은 회차 ${same}/2`);
+    // 이빨 — 만진 사양이 **원래와 다른 금액**이어야 이 절이 무엇인가를 잰 것이다
+    ok(`이빨: 만진 사양의 금액이 기준(${base0}원)과 다르다 (${prev.perEA}원)`,
+       prev.perEA !== base0, `${base0} → ${prev.perEA}`);
+  }
+
+  // ── ⑥ 수량별 개당단가 — 「1,000개면 얼마, 5,000개면 얼마」 ──────────
+  {
+    const steps = qtyStepsOf(4000);
+    ok(`수량 눈금에 지금 수량이 끼워진다 (${steps.join(" / ")})`,
+       steps.includes(4000) && QTY_STEPS.every(q => steps.includes(q)) &&
+       steps.every((v, i) => i === 0 || v > steps[i - 1]), steps.join(","));
+    ok("같은 수량은 두 번 안 들어간다", qtyStepsOf(5000).filter(q => q === 5000).length === 1);
+    // ★ 끼워넣기 문턱 — **입력 중인 중간 상태**를 고객 화면 칩으로 만들지 않는다
+    //   (적대검증 minor ④: 「5個 ¥15,034」가 실제로 페인트됐다. rAF 샘플러 실측).
+    //   ⚠ 큰 글씨는 종전대로 즉시 따라간다 — 이건 표에만 안 끼우는 규칙이다.
+    ok(`타이핑 중간 상태(문턱 ${QTY_PIN_MIN} 미만)는 표에 안 끼운다 — 5 · 50 · 99`,
+       [5, 50, 99].every(n => !qtyStepsOf(n).includes(n)) &&
+       [5, 50, 99].every(n => qtyStepsOf(n).length === QTY_STEPS.length),
+       qtyStepsOf(5).join(","));
+    ok(`문턱 이상은 종전대로 끼운다 — ${QTY_PIN_MIN} · 500 · 4,000`,
+       [QTY_PIN_MIN, 500, 4000].every(n => qtyStepsOf(n).includes(n)));
+    ok("무효 수량(빈칸·0·음수·문자)은 눈금만 남는다",
+       ["", "0", "-100", "abc", null, undefined].every(v =>
+         JSON.stringify(qtyStepsOf(v)) === JSON.stringify(QTY_STEPS)));
+
+    const args = { mode: "box", boxType: SOSCO.boxType, W: +SOSCO.bW, D: +SOSCO.bD, H: +SOSCO.bH,
+                   netW: 0, netH: 0, sheetId: "4x62", qty: 4000, up: 4, carried: SOSCO,
+                   over: specOf(baseOf(SOSCO)) };
+    const rows = qtyRowsOf(args, steps);
+    ok(`수량 ${steps.length}칸이 전부 값을 낸다 (${rows.map(r => `${r.qty}→${r.perEA}`).join(" ")})`,
+       rows.length === steps.length && rows.every(r => r.perEA > 0));
+    // ★ 부스에서 눈으로 확인해야 하는 그것 — 수량이 오르면 개당가가 내린다(고정비 분산)
+    ok("★ 수량이 오르면 개당단가가 **내려간다** (1,000 → 10,000)",
+       rows.every((r, i) => i === 0 || r.perEA < rows[i - 1].perEA),
+       rows.map(r => `${r.qty}:${r.perEA}`).join(" "));
+    // ★ 지금 수량 칸은 큰 글씨와 **원리적으로 같은 수**다 (같은 인자·같은 함수)
+    const big = buildQuote(quoteInputOf(args))?.totals?.perEA;
+    ok(`★ 지금 수량 칸(${rows.find(r => r.qty === 4000)?.perEA}원)이 큰 글씨(${big}원)와 같다`,
+       rows.find(r => r.qty === 4000)?.perEA === big);
+    // ── ⑥-2 ★★ 판·판걸이 고정의 대가 — **전 칸을 재고, 부등호를 계약에서 내린다** ──
+    //  26-08-26 2차 (적대검증 major ③). 종전 이 자리에는 `rows[0].perEA >= autoLow` 한
+    //  줄뿐이었고, 그건 **1,000개 한 칸**(531 ≥ 469)만 보는 것이었다. 나머지 네 칸을 재면
+    //  부등호가 깨진다 — 3,000개에서 표 237 vs 재견적 239 로 **고객 앞 화면이 청구보다 싸다**.
+    //  ARCHITECTURE 머리의 안전 방향 규약이 금지한 방향이고, §17 은 「§N ⑥ 이 그 부등호를
+    //  매번 관측한다」고 적어 그 거짓을 **정상으로 못박고 있었다.**
+    //  원인: findBestSheet 의 랭킹이 최종 perEA 최소화가 아니다(EST_PRICE_PENALTY ·
+    //  SHEET_PRIORITY · TIE_PCT). 「자동이 늘 더 싸다」가 성립하지 않는다.
+    //  ⟹ 부등호를 **계약에서 내리고**, 전 칸을 재서 「몇 칸이 반대이고 최악이 몇 %인가」를
+    //     기록값과 대조한다(예산 게이트). 나빠지면 여기가 빨개진다.
+    {
+      const cmp = rows.map(r => {
+        const re = buildQuote(quoteInputOf({ ...args, sheetId: "auto", qty: r.qty, up: 0 }));
+        const rp = re?.totals?.perEA ?? null;
+        return { qty: r.qty, tab: r.perEA, re: rp, sheet: re?.sheet?.id,
+                 pct: rp ? (r.perEA / rp - 1) * 100 : 0 };
+      });
+      const line = cmp.map(c => `${c.qty}:${c.tab}vs${c.re}(${c.pct.toFixed(1)}%)`).join(" ");
+      ok(`★ 기준 사양 ${cmp.length}칸을 **전부** 잰다 — ${line}`, cmp.length === steps.length);
+      // 기록값 (26-08-26 실측): 1,000 +13.2% · 3,000 **−0.8%** · 나머지 셋 0.0%
+      const worst1 = Math.min(...cmp.map(c => c.pct));
+      ok(`★ 기준 사양의 최악 방향이 −1.0% 이내다 (지금 ${worst1.toFixed(1)}% · 3,000개)`,
+         worst1 >= -1.0, line);
+    }
+    // 배치가 없으면(up 0) 표도 없다 — 「—」인 큰 글씨 옆에 값이 있으면 안 된다
+    ok("배치가 없으면 표 값도 없다", qtyRowsOf({ ...args, up: 0 }, steps).every(r => r.up === 0));
+
+    // ── ⑦ ★★ 원가 유출 — 표에도 원가가 없어야 한다 (§16 과 같은 계약) ──
+    const cfg = { cur: "JPY", KRW: "", JPY: "*1.7/10" };
+    const shownRows = shownRowsOf({ rows, cfg, lang: "ja" });
+    const asText = JSON.stringify(shownRows);
+    const leaked = rows.map(r => String(r.perEA)).filter(d => asText.includes(d));
+    ok("★ shownRowsOf 반환에 원가가 **한 칸도** 없다 (모델 검사)",
+       leaked.length === 0 && !/perEA|cost|why|warn|src/.test(asText),
+       `${leaked.join(" ")} · ${asText.slice(0, 120)}`);
+    ok(`★ 표의 모든 칸이 표시가다 (${shownRows.map(r => r.main).join(" ")})`,
+       shownRows.every(r => r.mode === "value" && /^¥[\d,]+$/.test(r.main)));
+    ok("표도 수량이 오르면 표시가가 내려간다 (반올림 뒤에도 순서가 산다)",
+       shownRows.every((r, i) => i === 0 ||
+         Number(r.main.replace(/[^\d]/g, "")) < Number(shownRows[i - 1].main.replace(/[^\d]/g, ""))),
+       shownRows.map(r => r.main).join(" "));
+    // 수식이 거부되면 **그 칸도** 「—」다 — 한 칸이라도 원가로 되돌아가면 안 된다
+    const bad = shownRowsOf({ rows, cfg: { cur: "JPY", KRW: "", JPY: "*0" }, lang: "ja" });
+    ok("★ 수식이 거부되면 표의 모든 칸이 «—» 다 (원가로 안 돌아간다)",
+       bad.every(r => r.main === "—" && r.mode === "blocked"), bad.map(r => r.main).join(" "));
+    // 가림 비트를 달고 온 링크 — 수식이 없어도 표가 원가로 접히면 안 된다
+    const hid = shownRowsOf({ rows, cfg: EMPTY_PRICE_CFG, lang: "ja", hideCost: true });
+    ok("★ nc=1 링크에서는 표도 «—» 다", hid.every(r => r.main === "—" && r.mode === "hidden"));
+    // ── ★★ 수식 미설정(mode "cost") — **표를 안 그린다** (26-08-26 2차 · major ②) ──
+    //  종전 이 자리의 이빨은 「수식 미설정이면 표는 종전대로 원가 원화다」였고, 그것이
+    //  **고객 화면의 원가를 1개 → 5개로 늘린 것을 정상으로 못박고 있었다.**
+    //  브라우저 실측(localStorage 비움): 「4 up · 개당 204 원」 + 「1,000개 531 / 3,000개 237 /
+    //  4,000개 204 / 5,000개 196 / 10,000개 167」. 1,000개 531원은 4,000개 204원의 2.6배 —
+    //  단가 하나가 아니라 **고정비/변동비 구조(원가 곡선)**를 고객에게 그려 보인다.
+    //  「미설정이면 종전대로」의 종전에는 **표가 없었다.** 그래서 표를 접는다.
+    const off = shownRowsOf({ rows, cfg: EMPTY_PRICE_CFG, lang: "ko" });
+    ok("★ 수식 미설정이면 수량표를 **아예 안 그린다** (종전 노출면 = 큰 글씨 하나)",
+       off.length === 0, JSON.stringify(off).slice(0, 120));
+    // 이빨 — 「0칸」이 공허하지 않다: 큰 글씨는 여전히 종전대로 원가 원화다(하위호환).
+    ok(`이빨: 큰 글씨는 종전대로 원가 원화다 (${rows[0].perEA}원)`,
+       shownPriceOf({ perEA: rows[0].perEA, up: 4, cfg: EMPTY_PRICE_CFG, lang: "ko" })
+         .main === rows[0].perEA.toLocaleString());
+    // 이빨 — 수식을 켜면 표가 **다시 5칸** 뜬다(접는 규칙이 표를 죽인 것이 아니다)
+    ok(`이빨: 수식을 켜면 표가 ${rows.length}칸 그대로 뜬다`, shownRows.length === rows.length);
+    // 한 칸이라도 cost 면 통째로 접는다 — 섞인 표(4칸 표시가 + 1칸 원가)를 만들지 않는다
+    ok("cost 가 한 칸이라도 있으면 표 전체를 접는다",
+       shownRowsOf({ rows: [rows[0]], cfg: EMPTY_PRICE_CFG, lang: "ko" }).length === 0);
+  }
+
+  // ── ⑧ 사양 줄이 새 사양을 **말하는가** (§C 와 같은 규율) ────────────
+  //  화면 왼쪽 아래 사양 줄은 실제 견적 라인에서 뽑는다. 지종을 바꿨는데 줄이 옛 지종을
+  //  적으면 화면이 거짓말을 한다 — 그것이 이 스위트의 출발점이었다.
+  {
+    const r = showroomScreen(SOSCO, { spec: { ...specOf(baseOf(SOSCO)),
+                                              paperId: "SC350", fcId: "matte", glueId: "sam" } });
+    const line = specSummaryOf(r.q?.lines);
+    ok(`사양 줄이 바꾼 사양을 말한다 — «${line}»`,
+       line.includes("SC 350") && line.includes("무광") && line.includes("삼면") &&
+       !line.includes("AB라이트 295"), line);
+  }
+
+  // ── ⑨ ★★ 판형 「자동」에서 사양을 바꾸면 판이 뒤집힌다 — 그때를 재는가 ──
+  //  26-08-26 2차 (적대검증 major ①). **이것이 부스 표준 경로다**: 단독 진입은 늘
+  //  `carried?.sheetId || "auto"` 이고 견적 앱 기본값(INITIAL_STATE.sheetId)도 "auto" 다.
+  //  그런데 종전 §N 은 SOSCO.sheetId="4x62" 고정이라 이 경로를 **한 번도 안 밟았다.**
+  //  종전 화면의 증상: 지종 하나 바꾸면 자동판형이 4×62 → 4×64 로 뒤집히고 resetKey 가
+  //  바뀌어 배치가 통째로 지워진다 → ¥35 가 「—」로 · 판은 빈 사각형 · 수량표 5칸 소멸 ·
+  //  msg 도 "" 로 지워져 **화면이 이유를 말하지 않는다.**
+  //  ⚠ 재는 것을 정직하게 적는다 — 이 스위트는 React 상태 전이를 못 돈다. 그래서
+  //    ⓐ **복구 목적지가 성립하는가**(새 판에서 두 화면이 같은 금액을 내는가)를 실계산으로,
+  //    ⓑ **화면이 그 복구를 하기로 되어 있는가**를 판단 함수(모델)와 소스 계약으로 잰다.
+  {
+    const AUTO = { ...SOSCO, sheetId: "auto" };
+    const base0auto = showroomScreen(AUTO);
+    let flipped = 0; const broken = [];
+    for (const [name, ov] of CASES) {
+      const r = showroomScreen(AUTO, { spec: { ...specOf(baseOf(AUTO)), ...ov } });
+      if (r.sheetId !== base0auto.sheetId) flipped++;
+      const a = quoteScreen({ ...AUTO, ...ov }).totals?.perEA ?? null;
+      if (!(r.perEA > 0) || r.perEA !== a)
+        broken.push(`${name}: 쇼룸 ${r.sheetId} ${r.up}up ${r.perEA} vs 견적서 ${a}`);
+    }
+    ok(`★ 사양 ${CASES.length}칸을 판형 「자동」에서 바꿔도 전부 금액이 살아 있고 두 화면이 같다`,
+       broken.length === 0, broken.join(" · "));
+    ok(`이빨: 그중 판형이 실제로 뒤집히는 칸이 있다 (${flipped}칸) — 0 이면 위 줄이 공허하다`,
+       flipped > 0, `${flipped} / ${CASES.length}`);
+    // ⓑ-1 모델 — 「판만 바뀐 것」과 「도형이 바뀐 것」은 다른 사건이다
+    ok("resetKindOf: 도형 그대로 + 앉힌 것 있음 → «sheet» (다시 앉힌다)",
+       resetKindOf("a", "a", true) === "sheet");
+    ok("resetKindOf: 도형이 바뀌면 «shape» (다시 앉히지 않는다 — 좌표가 뜻을 잃었다)",
+       resetKindOf("a", "b", true) === "shape");
+    ok("resetKindOf: 지울 배치가 없었으면 «none» (첫 화면에서 자동 배치가 안 돈다)",
+       resetKindOf("a", "a", false) === "none" && resetKindOf("a", "b", false) === "shape");
+    // ⓑ-2 소스 계약 — 화면이 ① 말하고 ② 다시 앉히는가 (§M ⑪ 과 같은 방식)
+    const page = readFileSync(new URL("../src/showroom/ShowroomPage.jsx", import.meta.url), "utf8");
+    ok("★ 화면이 판 변경을 **말한다** (침묵이 이 고장의 본체였다)",
+       /setMsg\(kind === "sheet" \? t\.sheetChanged : ""\)/.test(page));
+    ok("★ 화면이 판만 바뀌면 **다시 앉힌다** (예약 + runAuto)",
+       /if \(kind === "sheet"\) setReseat\(n => n \+ 1\);/.test(page) &&
+       /runAuto\(n => t\.sheetReseated\(n\)\)/.test(page));
+    ok("다시 앉히기는 **묶어서 한 번만** 돈다 (수량 키스트로크마다 200만 회 탐색 금지)",
+       /clearTimeout\(id\)/.test(page) && /RESEAT_MS/.test(page));
+    ok("판 변경 문구가 KO·JA 두 벌 다 있다",
+       !!T("ko").sheetChanged && !!T("ja").sheetChanged &&
+       typeof T("ko").sheetReseated === "function" && typeof T("ja").sheetReseated === "function" &&
+       T("ko").sheetChanged !== T("ja").sheetChanged);
+  }
+
+  // ── ⑩ ★★ 과도기 프레임 — 배치가 **다른 판의 것**이면 그 up 을 안 쓴다 ──
+  //  적대검증 minor ⑥. 지종 변경으로 판이 뒤집히는 순간 sheetBase 는 이미 새 판인데
+  //  items 는 아직 옛 판의 것이라, 한 렌더에서 「4×64 판에 up 4」라는 물리적으로 불가능한
+  //  배치의 금액이 DOM 에 커밋된다. rAF 로는 안 잡히지만(9.5ms 안에 덮인다) 그 무해함이
+  //  useEffect 의 실행 시점에 걸려 있다 — 원리적으로 「—」가 되게 만든다.
+  {
+    const four = [{}, {}, {}, {}];
+    ok("upForPrice: 같은 판이면 그린 수 그대로", upForPrice(four, "4x62", "4x62") === 4);
+    ok("★ upForPrice: 판이 다르면 0 (불가능한 배치의 금액이 원리적으로 안 나온다)",
+       upForPrice(four, "4x62", "4x64") === 0);
+    ok("upForPrice: 모르면 0 (판 미정 · 배치 없음 · 빈 배열)",
+       upForPrice(four, null, "4x64") === 0 && upForPrice(null, "4x62", "4x62") === 0 &&
+       upForPrice([], "4x62", "4x62") === 0);
+    // 이빨 — 막지 않으면 얼마나 틀리는가. 4×64 에 SOSCO 도형은 2up 이 진실이다.
+    const a64 = { mode: "box", boxType: SOSCO.boxType, W: +SOSCO.bW, D: +SOSCO.bD, H: +SOSCO.bH,
+                  netW: 0, netH: 0, sheetId: "4x64", qty: +SOSCO.qty, carried: SOSCO,
+                  over: specOf(baseOf(SOSCO)) };
+    const trueUp = buildQuote(quoteInputOf({ ...a64, up: 0 }))?.sheet?.up ?? 0;
+    const fake = buildQuote(quoteInputOf({ ...a64, up: 4 }))?.totals?.perEA ?? 0;
+    const real = buildQuote(quoteInputOf({ ...a64, up: trueUp }))?.totals?.perEA ?? 0;
+    ok(`이빨: 안 막으면 4×64 에 up 4 로 ${fake}원이 나간다 — 그 판의 진실은 ${trueUp}up ` +
+       `${real}원 (${Math.round((fake / real - 1) * 100)}%)`,
+       trueUp > 0 && trueUp < 4 && fake > 0 && fake < real * 0.9, `${fake} vs ${real}`);
+  }
+
+  // ── ⑪ ★★ 105칸 스윕 — 「고정의 대가는 늘 안전 방향」이 **거짓**임을 계량한다 ──
+  //  적대검증 major ③. 부등호를 계약에서 내리는 대신 **몇 칸이 반대이고 최악이 몇 %인지**를
+  //  기록값과 대조한다. 나빠지면 여기가 빨개진다 — 그것이 이 절이 계약을 대신하는 방식이다.
+  //  ⚠ 여기서는 autoPlace 를 부르지 않고 격자해(`layout.up`)를 쓴다. 21개 표본에서
+  //    autoPlace 결과가 격자해와 **전부 같음을 확인했고**(26-08-26), autoPlace 는 탐색
+  //    예산이 있어 시간에 따라 흔들릴 수 있어 스윕에는 부적합하다. 화면 실경로는
+  //    위 ④⑤⑨ 가 showroomScreen 으로 밟는다.
+  {
+    const BOXES = [
+      ["삼면 140×43×130", { boxType: "glue_3side", bW: "140", bD: "43", bH: "130" }],
+      ["삼면 90×70×130",  { boxType: "glue_3side", bW: "90",  bD: "70",  bH: "130" }],
+      ["맞뚜껑 100×60×150", { boxType: "tuck_both", bW: "100", bD: "60", bH: "150" }],
+      ["맞뚜껑 60×40×90",   { boxType: "tuck_both", bW: "60",  bD: "40", bH: "90" }],
+      ["십자 120×80×40",   { boxType: "cross", bW: "120", bD: "80", bH: "40" }],
+      ["G형 120×80×40",    { boxType: "gtype", bW: "120", bD: "80", bH: "40" }],
+      ["G트레이 150×100×50", { boxType: "gtype_tray", bW: "150", bD: "100", bH: "50" }],
+    ];
+    let cells = 0, worst = 0; const viol = [];
+    for (const [bn, box] of BOXES) for (const pid of ["AB295L", "SC350", "ACPK350"]) {
+      const carried = { ...SOSCO, ...box, paperId: pid, sheetId: "auto" };
+      const b = { mode: "box", boxType: carried.boxType, W: +carried.bW, D: +carried.bD,
+                  H: +carried.bH, netW: 0, netH: 0, sheetId: "auto", qty: +carried.qty,
+                  carried, over: specOf(baseOf(carried)) };
+      const auto = buildQuote(quoteInputOf({ ...b, up: 0 }));
+      const up = auto?.layout?.up ?? 0;
+      if (!auto?.sheet || !up) continue;
+      const steps = qtyStepsOf(+carried.qty);
+      for (const r of qtyRowsOf({ ...b, sheetId: auto.sheet.id, up }, steps)) {
+        if (r.perEA == null) continue;
+        const re = buildQuote(quoteInputOf({ ...b, sheetId: "auto", qty: r.qty, up: 0 }));
+        const rp = re?.totals?.perEA ?? null;
+        if (rp == null) continue;
+        cells++;
+        if (r.perEA < rp) {
+          const pct = (r.perEA / rp - 1) * 100;
+          if (pct < worst) worst = pct;
+          viol.push(`${bn}·${pid}·${r.qty}: 표 ${r.perEA} vs 재견적 ${rp}(${re.sheet.id} ${re.sheet.up}up) ${pct.toFixed(1)}%`);
+        }
+      }
+    }
+    // 기록값 (26-08-26 실측): 105칸 · 위반 8칸 · 최악 −3.7%
+    ok(`★ 스윕 ${cells}칸 — 안전 방향 ${cells - viol.length}칸 · **예외 ${viol.length}칸** ` +
+       `(최악 ${worst.toFixed(1)}%)`,
+       cells >= 100 && viol.length <= 8 && worst >= -3.8, viol.join("\n     "));
+    // 이빨 — 예외가 0 이면 위 줄이 「없는 것을 재고 있다」이고, 그러면 부등호를 되살려야 한다
+    ok("이빨: 예외가 실제로 존재한다 (0 이면 계약을 부등호로 되돌려라)", viol.length > 0);
+  }
+
+  // ── ⑫ ★ 인쇄를 0 도로 만들면 사양 줄이 «인쇄 없음» 이라고 적는가 ──
+  //  적대검증 minor ⑧. 종전에는 도수를 쇼룸에서 못 만졌으니 이 상태를 화면에서 만들 수
+  //  없었는데, 이제 「원색4」 알약 **1탭**이면 만들어진다. 견적 라인에서 뽑는 방식은
+  //  「안 한 공정은 줄이 없다」라서 조용하다 — 고객은 그 단가가 무인쇄 값인지 못 읽는다.
+  {
+    const r = showroomScreen(SOSCO, { spec: { ...specOf(baseOf(SOSCO)),
+                                              fpColor: false, fpSp: "0", fpBk: false } });
+    const ko = specSummaryOf(r.q?.lines, T("ko")), ja = specSummaryOf(r.q?.lines, T("ja"));
+    ok(`★ 무인쇄면 «인쇄 없음» 을 명시한다 — «${ko}»`, ko.includes("인쇄 없음"), ko);
+    ok(`★ 일본어 화면은 «印刷なし» 다 — «${ja}»`, ja.includes("印刷なし"), ja);
+    ok("자리가 지종 **바로 뒤**다 (맨 끝에 붙이면 덧붙인 말처럼 읽힌다)",
+       /^[^·]+ · 인쇄 없음 · /.test(ko), ko);
+    ok("이빨: 인쇄가 있으면 그 말이 없다",
+       !specSummaryOf(showroomScreen(SOSCO).q?.lines, T("ko")).includes("인쇄 없음"));
+    ok("라인이 0건이면 아무 말도 안 한다 (설명할 단가 자체가 없는 화면)",
+       specSummaryOf([], T("ko")) === "" && specSummaryOf(null) === "");
+    ok("사전을 안 넘겨도 안 죽는다 (한국어로 떨어진다)",
+       specSummaryOf(r.q?.lines).includes("인쇄 없음"));
   }
 }
 

@@ -27,6 +27,11 @@
 // ══════════════════════════════════════════════════════════════════
 import { BASE_SHEETS } from "../domain/data/sheets.mjs";
 import { printableArea } from "../domain/imposition.mjs";
+// ★ 수량별 단가는 **견적 앱이 이미 쓰는 함수**를 그대로 부른다 (ui/viz/QtyCompareTable
+//   과 같은 buildQuoteRange). 쇼룸에서 수량 루프를 다시 적으면 두 화면이 갈린다.
+import { buildQuoteRange } from "../domain/quote.mjs";
+import { PAPERS } from "../domain/data/papers.mjs";
+import { COAT_OPTS, GLUE_OPTS, THOMSON_OPTS } from "../domain/data/process-prices.mjs";
 import { INITIAL_STATE, toQuoteInput } from "../ui/state.mjs";
 import { solveFree, fillGaps } from "../nest-free.mjs";
 import {
@@ -343,6 +348,42 @@ export function fillMore(P, frame, items) {
 const now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
 
 // ══════════════════════════════════════════════════════════════════
+//  ★ 배치가 **어느 판의 것인가** — 판이 바뀐 순간의 두 판단 (26-08-26)
+// ══════════════════════════════════════════════════════════════════
+/**
+ * 금액에 쓸 판걸이 수. **배치가 지금 그리는 판의 것일 때만** 그 개수를 쓴다.
+ *
+ * 왜 필요한가 (적대검증 minor ⑥) — 지종을 바꾸면 판형 추천이 뒤집힌다(4×62 → 4×64).
+ * 그 순간 `sheetBase` 는 **이미 새 판**인데 `items` 는 아직 **옛 판의 4장**이라,
+ * 같은 렌더에서 「4×64 판에 up=4」라는 **물리적으로 불가능한 배치의 금액**이 나온다.
+ * MutationObserver 실측: 290원(¥49) · 표 [¥115 ¥56 ¥49 ¥47 ¥41]. 그 판의 진실은
+ * 2up 474원(¥81)이므로 **−39% 저가**다 = 이 저장소가 금지한 방향(안전 방향 규약).
+ * ⚠ 지금은 그 프레임이 페인트되기 전에 리셋 효과가 덮는다(rAF 샘플러로는 9.5ms).
+ *   그러나 그 무해함이 **useEffect 가 페인트 전에 도는지**에 걸려 있다 — 느린 기기 ·
+ *   동시성 렌더 · useEffect→useLayoutEffect 변경 중 하나면 그대로 고객 앞에 뜬다.
+ *   원리적으로 「—」가 되게 만든다: 판이 다르면 up 은 0 이고, up 0 이면 금액이 없다.
+ */
+export const upForPrice = (items, itemsSheetId, sheetId) =>
+  (items?.length && itemsSheetId && sheetId && itemsSheetId === sheetId) ? items.length : 0;
+
+/**
+ * 앉힌 배치를 지워야 하는 리셋이 **왜** 일어났나 — 셋 중 하나다.
+ *   "shape" 도형이 바뀌었다(치수·구조·PDF 후보) → 좌표가 뜻을 잃는다. 지우고 **끝**이다.
+ *   "sheet"  도형은 그대로인데 **판만** 바뀌었다 → 같은 도형을 새 판에 다시 앉히면 된다.
+ *   "none"   지울 배치가 애초에 없었다(첫 화면·이미 빈 판).
+ *
+ * 왜 갈라야 하는가 (적대검증 major ①) — 부스 표준 경로가 "sheet" 다. 지종 드롭다운을
+ * 한 번 만지면 자동판형이 뒤집히고(AB라이트295 → 두성 디프매트308 에서 4×62 4up →
+ * 4×64), 종전에는 그 한 번에 **앉힌 배치가 통째로 지워져 금액이 「—」로 갔다.**
+ * 판은 빈 사각형이 되고 온보딩 문구가 돌아오고 수량표 5칸이 사라지는데, 화면은
+ * 그 이유를 **말하지 않았다**(msg 도 같이 "" 로 지웠다). 고객이 보는 앞에서 일어난다.
+ * ⟹ "sheet" 면 ① 왜 비었는지 말하고 ② 같은 도형을 새 판에 다시 앉힌다.
+ *    "shape" 는 종전 그대로다 — 도형이 달라졌으면 다시 앉히는 것이 정당하지 않다.
+ */
+export const resetKindOf = (prevShapeKey, shapeKey, hadPlacement) =>
+  prevShapeKey !== shapeKey ? "shape" : hadPlacement ? "sheet" : "none";
+
+// ══════════════════════════════════════════════════════════════════
 //  단가 — 도메인 수정 0줄
 // ══════════════════════════════════════════════════════════════════
 
@@ -371,6 +412,78 @@ export const STD = {
  *  「없으면 표준사양」이 쇼룸 단독 진입(#showroom)이 종전 그대로 도는 이유다. */
 export const baseOf = carried => carried || { ...INITIAL_STATE, ...STD };
 
+// ══════════════════════════════════════════════════════════════════
+//  ★ 고객과 **같이 넣는** 사양 칸 (26-08-26)
+// ══════════════════════════════════════════════════════════════════
+/**
+ * 사용자 요구 원문: 「고객이랑 같이 화면 보면서 이거 사양을 넣어야하는데?」
+ * 종전에는 쇼룸에서 바꿀 수 있는 것이 구조·W/D/H·판형·수량뿐이었고, 도수·지종·코팅을
+ * 바꾸려면 **원가 전체가 뜨는 견적 앱**으로 돌아가야 했다. 그 화면은 고객 앞에서 열 수 없다.
+ *
+ * ★ `SPEC_KEYS`(59칸)의 **부분집합**이다. 50칸을 그대로 옮기면 고객 앞 화면이 견적 앱이
+ *   된다 — 이 화면의 규칙은 「항목을 최소로」다(SHEET_CHOICES 주석과 같은 판단).
+ *   여기 **없는 칸은 실려 온 값·기본값이 그대로 산다**(baseOf) — 빠진 것이 아니라 안 만지는 것이다.
+ *
+ * 고른 기준 = **부스에서 실제로 오가는 말**이고, 뺀 것과 그 근거는 아래에 적는다:
+ *  · 별색 계산방식(spotMode·beda·spotRprV) — 「별색 1도를 3회로 환산할까」는 우리 청구
+ *    방식이지 고객과 하는 대화가 아니다.
+ *  · 단가 직접입력(printU·sobooU·mPrice·mPriceV·mR·mRV·lossSheets·admin·adminManual·
+ *    foilRpr·embRpr) — **원가 구조 그 자체**다. 고객 화면에 입력칸으로 두면 §16 이
+ *    큰 글씨 하나를 가린 것이 무의미해진다.
+ *  · 개발비 8칸(newDie·dieQ·dieP·filmC·emb/foil Dev·Film) — 개당단가에 안 들어간다.
+ *    화면이 이미 「개당단가는 개발비 제외」라고 적고 있다(T.exDev).
+ *  · 박 종류·면수(foilType·foilS)·부분UV 면수(puvS) — 켜고 끄는 것이 1순위 대화이고
+ *    면수는 도면이 확정된 뒤의 이야기다. 켜기만 하면 1면이 기본으로 계산된다.
+ *  · UV 인쇄(fpUv·bpUv) — 브리핑의 도수 목록에 없어서 뺐다. ⚠ **뺀 것 중 이동폭이 가장
+ *    크다**(실측: 소스코 140×43×130 · 4,000 에서 앞면 UV 켜면 223 → 271원 = +21%).
+ *    필요해지면 아래 배열에 두 줄, 화면 인쇄 줄에 알약 하나다.
+ *  · 행거탭(hang·hangV)·목형 노브(dieDeep·dieTabW) — **전개도를 바꾼다.** 도면 쪽 관심사이고
+ *    목형 노브는 목형이 확정된 재주문에서만 뜻이 있다(§15). 부스 신규 상담에는 없다.
+ *  · 주문생산 판형(cusW·cusH·cusCut) — 이미 판형 목록에서 뺀 것과 같은 이유(SHEET_CHOICES).
+ *  · 판걸이(mUp·mUpV) — **화면의 배치가 곧 그 값**이다. 기존 통로로만 흘린다.
+ *  · 규격·구조(sizeMode·boxType·bW·bD·bH·nW·nH)·판형(sheetId)·수량(qty) — 이미 있다.
+ *
+ * ⚠ 이 배열이 **유일한 출처**다. quoteInputOf(계산)와 linkStateOf(링크)가 같은 것을 읽는다.
+ *   나눠 적으면 「계산에는 반영되는데 링크에는 안 실리는 칸」이 생기고, 그게 204 vs 223
+ *   고장의 형태다(§13). 게이트는 verify-speclink §N.
+ */
+export const SHOWROOM_SPEC_KEYS = [
+  "paperId",                                              // 지종
+  "fpColor", "fpSp", "fpBk", "bpColor", "bpSp", "bpBk",   // 인쇄 도수 앞/뒤
+  "fcId", "bcId",                                         // 코팅 앞/뒤
+  "foil", "emb", "puv",                                   // 후가공 박·형압·부분UV
+  "glueId", "thomId",                                     // 접착 · 톰슨
+];
+
+/** 위 목록만 골라낸다. ⚠ 통째로 spread 하면 안 된다 — 모르는 키 하나가 base 를 조용히
+ *  덮으면 화면이 말하지 않은 사양으로 금액이 나간다(decodeSpec 이 낯선 키를 버리는 것과 같은 이유). */
+export const specOf = o => {
+  const out = {};
+  if (!o) return out;
+  for (const k of SHOWROOM_SPEC_KEYS) if (o[k] !== undefined) out[k] = o[k];
+  return out;
+};
+
+// ── 드롭다운 선택지 — **도메인 테이블이 정본**이다 ────────────────────
+//  화면(ShowroomPage)이 아니라 여기서 만든다: 「무엇을 보여줄지 정하는 판단」은 이 파일이
+//  소유하고(머리말), `hidden` 을 거르는 규칙도 한 곳에 있어야 한다. 목록을 화면에 적으면
+//  지종이 하나 늘 때 견적 앱에는 뜨고 쇼룸에는 안 뜬다.
+//
+//  ★ 26-08-26 — `lang` 을 받는다. 종전에는 한국어 label 한 벌뿐이어서 **일본어 화면에
+//    한국어 선택지 52개**가 떴다(지종 28 · 코팅 6×2 · 접착 7 · 톰슨 5). 칸 이름은
+//    사전(KO/JA)에 있었지만 고객과 **같이 보는** 왼쪽 칸 전체가 한국어였다.
+//    §17 이 지정한 정본 경로를 그대로 판다: 도메인 항목의 `labelJa` 를 읽고, **없으면
+//    한국어로 떨어진다.** 화면에서 문자열을 다시 짓지 않는다(견적 앱과 갈린다).
+//  ⚠ 지금 번역된 것은 **공정명 15개**(코팅 5 · 접착 6 · 톰슨 4)뿐이다. 지종 28개와
+//    글로스코팅·풀발이·측면 풀발이 12단은 근거가 없어 비웠고 한국어로 뜬다 —
+//    그 판단과 근거는 papers.mjs · process-prices.mjs 의 주석이 소유한다.
+const pairs = (list, lang) => list.filter(o => !o.hidden)
+  .map(o => [o.id, (lang === "ja" && o.labelJa) ? o.labelJa : o.label]);
+export const paperChoices = lang => pairs(PAPERS, lang);
+export const coatChoices  = lang => pairs(COAT_OPTS, lang);
+export const glueChoices  = lang => pairs(GLUE_OPTS, lang);
+export const thomChoices  = lang => pairs(THOMSON_OPTS, lang);
+
 /**
  * 쇼룸 상태 → QuoteInput.
  *
@@ -380,9 +493,13 @@ export const baseOf = carried => carried || { ...INITIAL_STATE, ...STD };
  *   그 분기가 R = calcR(up, …) 을 다시 재므로 지대R·금액이 자동으로 따라온다.
  *
  * ★ `carried` 가 이번 연동의 전부다. 견적서에서 실려 온 상태를 base 로 깔고,
- *   쇼룸이 **화면에서 실제로 만질 수 있는 것만** 그 위에 덮어쓴다(구조·치수·판형·
- *   수량·판걸이). 도수·지종·코팅·후가공·톰슨·접착·개발비는 덮어쓰지 않으므로
- *   base 값이 그대로 산다 — 이게 「몇 도 인쇄가 연동 안 된다」의 수리다.
+ *   쇼룸이 **화면에서 실제로 만질 수 있는 것만** 그 위에 덮어쓴다.
+ *   ★ 26-08-26 — 만질 수 있는 것이 늘었다: 구조·치수·판형·수량·판걸이 **+ `over`**
+ *   (지종·도수·코팅·후가공·접착·톰슨 = SHOWROOM_SPEC_KEYS). 그 목록에 **없는** 칸은
+ *   여전히 안 덮어쓰므로 base 값이 그대로 산다 — 「몇 도 인쇄가 연동 안 된다」의 수리는
+ *   그대로이고, 이제 그 도수를 **이 화면에서** 바꿀 수 있다.
+ *   ⚠ over 는 specOf 로 **걸러서** 얹는다. 상태 한 벌을 통째로 얹으면 쇼룸이 안 그리는
+ *     칸(개발비·단가 직접입력)까지 화면 상태가 소유하게 되어, 실려 온 값과 조용히 갈린다.
  *
  * ⚠ up 을 넘기려면 판형이 **구체적인 id** 여야 한다. decideSheet ① 은 "auto" 를
  *   받으면 BASE_SHEETS[3](4×64)로 떨어뜨린다 — 화면에 그린 판과 다른 판으로 값이
@@ -391,9 +508,11 @@ export const baseOf = carried => carried || { ...INITIAL_STATE, ...STD };
  *   켜둔 채 넘어왔을 때 그 값이 남아 있으면, 판을 고르는 호출(up:0)이 그 옛 up 으로
  *   판형을 정해 **화면에 그린 판과 다른 판**의 금액이 나간다.
  */
-export function quoteInputOf({ mode, boxType, W, D, H, netW, netH, sheetId, qty, up, carried }) {
+export function quoteInputOf({ mode, boxType, W, D, H, netW, netH, sheetId, qty, up,
+                               carried, over }) {
   return toQuoteInput({
     ...baseOf(carried),
+    ...specOf(over),
     sizeMode: mode === "box" ? "box" : "net",   // "pdf"·"net" 은 둘 다 전개도 직접입력이다
     boxType,
     bW: String(W ?? ""), bD: String(D ?? ""), bH: String(H ?? ""),
@@ -433,7 +552,7 @@ export function quoteInputOf({ mode, boxType, W, D, H, netW, netH, sheetId, qty,
  *      내주기를 바라는 것이 아니라 **항등식**이 된다.
  */
 export function linkStateOf({ carried, mode, boxType, bW, bD, bH, netW, netH,
-                              sheetId, qty, up, gridUp }) {
+                              sheetId, qty, up, gridUp, over }) {
   // ⚠ 판걸이(up)는 **격자해와 다를 때만** 직접입력으로 넘긴다. 같으면 앱이 스스로
   //   같은 값을 내므로 override 를 켤 이유가 없다 — 켜두면 나중에 앱에서 치수를
   //   바꿨을 때 낡은 up 이 남아 조용히 틀린 금액이 된다.
@@ -453,11 +572,88 @@ export function linkStateOf({ carried, mode, boxType, bW, bD, bH, netW, netH,
   const dims = mode === "box"
     ? { sizeMode: "box", bW: String(bW ?? ""), bD: String(bD ?? ""), bH: String(bH ?? "") }
     : { sizeMode: "net", nW: String(netW || ""), nH: String(netH || "") };
+  // ★ over 는 dims 와 **같은 등급**이다 — 화면에서 만진 사양이므로 돌아가는 링크에도
+  //   실려야 한다. 안 실으면 「고객 앞에서 지종을 바꿔 보여줬는데 견적서는 옛 지종」이 되고,
+  //   그게 이 절이 고친 204 vs 223 의 재발이다(방향까지 같다 — 실려 온 값이 이긴다).
   return {
-    ...baseOf(carried), ...dims, boxType, sheetId, qty: String(qty ?? ""),
+    ...baseOf(carried), ...specOf(over), ...dims,
+    boxType, sheetId, qty: String(qty ?? ""),
     mUp: useUp, mUpV: useUp ? String(up) : "",
   };
 }
+
+// ══════════════════════════════════════════════════════════════════
+//  ★ 수량별 개당단가 — 부스 대화의 본체 (26-08-26)
+// ══════════════════════════════════════════════════════════════════
+/**
+ * 「1,000개면 얼마, 5,000개면 얼마」. 눈금은 부스에서 실제로 오가는 수량이다.
+ * ⚠ 지금 수량은 항상 끼워 넣는다(qtyStepsOf) — 안 끼우면 큰 글씨의 값이 표 어디에도
+ *   없어서 고객이 「저 숫자는 뭐지」가 된다.
+ */
+export const QTY_STEPS = [1000, 3000, 5000, 10000];
+
+/** 지금 수량을 표에 끼워 넣는 **문턱**. 눈금 최소(1,000)의 1/10.
+ *
+ *  왜 문턱이 필요한가 (26-08-26 적대검증 minor ④) — 수량 칸을 다시 칠 때 **입력 중인
+ *  중간 상태**가 고객 화면에 칩으로 뜬다. rAF 샘플러 실측(실제 페인트 확인): 4000 →
+ *  전체선택 → 「5」에서 칩 「5個 ¥15,034」 → 「50」 ¥1,515 → 「500」 ¥164 → 「5000」 ¥33.
+ *  종전에는 큰 글씨 하나만 요동했는데, 지금 수량을 늘 끼우면서 요동하는 자리가 둘이 됐다.
+ *  「5個 ¥15,034」는 부스에서 고객이 실제로 읽는 글자다.
+ *  ⚠ 큰 글씨는 **종전대로 즉시** 따라간다 — 가리는 것이 아니라 표에만 안 끼운다.
+ *    그리고 문턱 아래일 때는 결과 상자의 「수량」 줄이 그 수량을 말한다(ShowroomPage).
+ *  ⚠ 「100개 미만은 안 받는다」는 뜻이 **아니다.** 우리 최소수량은 이 저장소 어디에도
+ *    적혀 있지 않다. 이건 「타이핑 중간 상태로 본다」는 표시 규칙뿐이다.
+ */
+export const QTY_PIN_MIN = 100;
+
+export function qtyStepsOf(cur) {
+  const n = Math.round(Number(cur) || 0);
+  const set = new Set(QTY_STEPS);
+  if (n >= QTY_PIN_MIN) set.add(n);
+  return [...set].sort((a, b) => a - b);
+}
+
+/**
+ * 수량 눈금마다 개당단가. **계산은 도메인이 한다** — buildQuoteRange 는 견적 앱의
+ * 수량별 비교표(ui/viz/QtyCompareTable)가 쓰는 바로 그 함수다. 여기서 나누기를 하지 않는다.
+ *
+ * ★ **판형과 판걸이를 화면 그대로 고정한 채** 수량만 바꾼다. 왜 그런가:
+ *   화면에는 판 한 장과 배치 한 벌이 그려져 있고, 표는 「이 배치로 수량만 바꾸면」을
+ *   답해야 한다. 판형을 수량마다 다시 고르게 두면 표의 한 칸이 **화면에 없는 판**의
+ *   금액이 되고, 그 순간 한 화면이 스스로와 갈린다.
+ *   ⚠ 그래서 지금 수량 칸은 큰 글씨와 **원리적으로 같은 수**다(같은 인자, 같은 함수).
+ *
+ *   ⚠⚠ **「고정의 대가는 늘 안전 방향」은 거짓이다** (26-08-26 2차 · 적대검증 major ③).
+ *     종전 주석은 1,000개 한 칸만 보고 「우리 표가 더 비싸다 = 안전 방향」이라고 적었고
+ *     게이트(§N ⑥)도 첫 줄만 쟀다. 전 칸을 재면 뒤집히는 칸이 있다 —
+ *     실측(기준 사양 삼면 140×43×130 · AB라이트295 · 4×62 4up):
+ *       1,000개 표 531 vs 재견적 469 (+13.2%)  ← 안전
+ *       3,000개 표 **237** vs 재견적 **239** (−0.8%) ← **표가 더 싸다**
+ *       4,000·5,000·10,000 은 같은 판이라 0.0%
+ *     7구조×3지종×5수량 **105칸** 스윕: 위반 **8칸** · 최악 **−3.7%**
+ *     (맞뚜껑 100×60×150 · AB라이트295 · 3,000개: 표 263 vs 재견적 273 = 4×63 2up).
+ *     원인은 findBestSheet 의 랭킹이 **최종 perEA 최소화가 아니라는 것**이다
+ *     (EST_PRICE_PENALTY · SHEET_PRIORITY · TIE_PCT) — 「자동이 늘 더 싸다」가 성립하지 않는다.
+ *   ⟹ 그래도 **고정을 유지한다.** 푸는 쪽의 대가가 더 크다: 표 한 칸이 화면에 없는 판의
+ *     금액이 되어 한 화면이 스스로와 갈린다(§17). 그리고 실제 청구 경로에서는 갈리지
+ *     않는다 — 부스에서 돌아가는 링크가 **그린 판의 id 를 싣기** 때문에(linkStateOf ①)
+ *     견적서도 같은 판으로 계산한다. 위 「재견적」은 **사양을 처음부터 다시 넣었을 때**의
+ *     값이다. 그 경우에만 최대 3.7% 비싸진다.
+ *   ⚠ 계약을 부등호로 적지 마라 — 거짓이다. `§N ⑥` 은 이제 **전 칸을 재고 위반 칸 수와
+ *     최악 폭을 기록값과 대조한다**(예산 게이트). 나빠지면 그 스위트가 실패한다.
+ *
+ * @returns {{qty:number, up:number, perEA:?number}[]}
+ *   ⚠ perEA 는 **원가다.** 화면에 그대로 그리지 마라 — price-formula.shownRowsOf 를 지나야 한다.
+ */
+export const qtyRowsOf = (args, steps) => {
+  const list = steps || [];
+  let out = [];
+  try { out = buildQuoteRange(quoteInputOf(args), list); } catch { out = []; }
+  return list.map((qty, i) => ({
+    qty, up: args?.up || 0,
+    perEA: out[i]?.lines ? (out[i].totals?.perEA ?? null) : null,
+  }));
+};
 
 /**
  * 이 단가가 **어느 사양의** 값인지 한 줄로.
@@ -469,18 +665,33 @@ export function linkStateOf({ carried, mode, boxType, bW, bD, bH, netW, netH,
  *
  * 빼는 것 셋: 소부(내부 공정이라 사양이 아니다) · 일반관리비(사양이 아니다) ·
  * 지대의 판형 부분(결과 상자가 이미 크게 적고 있다 — 같은 값을 두 번 말하지 않는다).
+ *
+ * ★ 26-08-26 — **인쇄 라인이 0건이면 「인쇄 없음」을 명시로 적는다** (적대검증 minor ⑧).
+ *   견적 라인에서 뽑는 방식은 「안 한 공정은 줄이 없다」라서 조용하다. 종전에는 도수를
+ *   쇼룸에서 못 만졌으니 무인쇄 상태를 이 화면에서 만들 수 없었는데, 이제 「원색4」 알약
+ *   **1탭**이면 만들어진다. 실측: 「견적서 사양 · AB라이트 295g · IR코팅 · 톰슨 일반형 ·
+ *   접착 단면」 · 개당 ¥29(170원) — 고객은 그 단가가 **무인쇄** 값이라는 것을 화면
+ *   어디서도 못 읽는다. 이 화면의 규칙(안 그린 것은 안 그렸다고 적는다 · T.srcPdf 와
+ *   같은 규율)에 맞춰 적는다. 자리는 지종 **바로 뒤** — 견적서 줄 순서가 그렇고,
+ *   맨 끝에 붙이면 「… 접착 단면 · 인쇄 없음」이 되어 덧붙인 말처럼 읽힌다.
+ * @param {object} [t] 한·일 사전(T(lang)). 없으면 한국어로 떨어진다.
  */
-export function specSummaryOf(lines) {
+export function specSummaryOf(lines, t) {
   const out = [];
+  let hasPrint = false, afterPaper = 0;
   for (const l of lines || []) {
     const id = String(l.id || "");
-    if (id === "paper") out.push(String(l.spec || "").split("·")[0].trim());
-    else if (id.startsWith("print") || id.startsWith("coat"))
+    if (id === "paper") { out.push(String(l.spec || "").split("·")[0].trim()); afterPaper = out.length; }
+    else if (id.startsWith("print") || id.startsWith("coat")) {
+      if (id.startsWith("print")) hasPrint = true;
       out.push(id.endsWith("_back") ? `${l.name} ${l.spec}` : l.spec);
+    }
     else if (id === "foil" || id === "emb" || id === "partial_uv")
       out.push(`${l.name} ${l.spec || ""}`.trim());
     else if (id === "thomson" || id === "glue") out.push(`${l.name} ${l.spec}`);
   }
+  // ⚠ 빈 견적(라인 0건)에는 안 적는다 — 설명할 단가 자체가 없는 화면이다(ShowroomPage 주석).
+  if (out.length && !hasPrint) out.splice(afterPaper, 0, (t && t.noPrint) || KO.noPrint);
   return out.filter(Boolean).join(" · ");
 }
 
@@ -500,6 +711,25 @@ const KO = {
   // (슬리브·손잡이형). 그 사양에 W·H·D 칸을 내면 **다른 박스**의 값을 묻게 된다.
   nw: "전개도 가로", nh: "전개도 세로",
   sheet: "판형", auto: "자동", qty: "수량", ea: "개",
+  // ── 고객과 같이 넣는 사양 (26-08-26) ─────────────────────────────
+  //  ⚠ 여기 있는 것은 「칸 이름」이고, **선택지 이름은 도메인 테이블이 소유한다**
+  //    (papers.mjs · process-prices.mjs 의 `label` / `labelJa`). 화면에서 문자열을
+  //    다시 짓지 마라 — 견적 앱과 갈린다.
+  //  ★ 26-08-26 2차 — 그 정본 경로를 **실제로 팠다**: 항목에 `labelJa` 를 붙이고
+  //    위 `pairs(list, lang)` 가 고른다. 지금 번역된 것은 **공정명 15개**(코팅 5 ·
+  //    접착 6 · 톰슨 4)뿐이다. **지종 28개는 일부러 비어 있다** — 제품명·등급명이라
+  //    「AB 350g」을 「アートボール350g」라고 지어내면 우리가 만든 제품명 주장이 되고,
+  //    이 화면의 규칙에서 근거 없는 확언이 가장 나쁘다. 근거가 생기면 데이터에 한 칸씩
+  //    더하면 화면은 자동으로 따라온다(코드 수정 0줄).
+  //  ⚠ 사양 줄(specSummaryOf)은 여전히 **견적 라인의 한국어 spec 문자열**을 잇는다 —
+  //    그건 라벨 목록이 아니라 도메인이 만든 문장이라 같은 통로로 못 고친다(§13).
+  secSpec: "사양", fPaper: "지종", fPrint: "인쇄", fCoat: "코팅",
+  fFinish: "후가공", fGlue: "접착", fThom: "톰슨",
+  sideF: "앞", sideB: "뒤",
+  oCmyk: "원색4", oSpot: "별색", oBlack: "먹",
+  oFoil: "박", oEmb: "형압", oPuv: "부분UV",
+  // 수량별 개당단가 — 「1,000개면 얼마, 5,000개면 얼마」가 부스 대화의 본체다.
+  qtyScale: "수량별 개당",
   btnAuto: "자동 배치", btnHand: "직접 앉히기", btnHandOff: "배치 끝내기", btnReset: "초기화",
   add: "+ 한 장", rot: "90°", flip: "180°", del: "삭제", fill: "빈 곳 채우기", undo: "되돌리기",
   up: "up", perEA: "개당", won: "원",
@@ -522,6 +752,11 @@ const KO = {
   pinRestored: n => `견적서에서 확정한 ${n}up 을 그대로 되살렸습니다`,
   pinLost: (n, d) => `견적서의 판걸이 ${n}up 을 이 판에서 다시 그리지 못했습니다 — ` +
     `${d}up 으로 보여드립니다(그린 수로 청구합니다)`,
+  // ★ 판이 바뀌어 배치를 다시 앉히는 중/앉혔다 (resetKindOf "sheet" — 적대검증 major ①).
+  //   침묵이 고장의 본체였다: 금액이 「—」로 가고 판이 빈 사각형이 되는데 화면이 이유를
+  //   말하지 않았다. 두 문장인 이유는 「앉히는 중」과 「앉혔다」가 다른 사실이라서다.
+  sheetChanged: "판형이 바뀌었습니다 — 같은 도면을 새 판에 다시 앉힙니다",
+  sheetReseated: n => `판형이 바뀌어 새 판에 ${n}장으로 다시 앉혔습니다`,
   cappedNote: (a, b, c, d) => `원지 ${a}×${b} 를 인쇄기 최대 ${c}×${d} 로 재단해서 겁니다`,
   overlapRefused: "겹치는 배치가 나와 버렸습니다 (그리지 않습니다)",
   budget: "탐색 예산에 도달했습니다 — 더 나은 배치가 있을 수 있습니다",
@@ -534,6 +769,9 @@ const KO = {
   //     도메인 라벨에 ja 를 붙여라(화면에서 문자열을 다시 짓지 마라).
   specLine: "표준 사양 · AB 350g · 원색 4도 · IR 코팅 · 단면접착 (개당단가는 개발비 제외)",
   specFrom: "견적서 사양", exDev: "(개당단가는 개발비 제외)",
+  // ★ 도수를 0 으로 만들면 견적에 인쇄 라인이 아예 없어 사양 줄이 조용해진다 —
+  //   그 침묵을 깬다(specSummaryOf 주석). 「안 그린 것은 안 그렸다고 적는다」.
+  noPrint: "인쇄 없음",
   // ── 도면 범례 ──────────────────────────────────────────────────
   //  이 세 줄이 없으면 고객에게는 그냥 선 뭉치다. 「어디가 잘리고 어디가 접히고
   //  어디에 풀이 발리는지」가 실무 도면을 읽는 세 가지 질문이고, 화면이 그걸 답한다.
@@ -572,6 +810,16 @@ const JA = {
   w: "幅 W", d: "奥行 D", h: "高さ H", mm: "mm",
   nw: "展開図 幅", nh: "展開図 高さ",
   sheet: "シート", auto: "自動", qty: "数量", ea: "個",
+  // 용어는 일본 인쇄·제함 실무의 관용을 따른다 —
+  //   後加工(후가공) · 箔押し(박) · エンボス(형압) · 打ち抜き(톰슨) · 特色(별색) · スミ(먹).
+  // ⚠ 선택지 이름은 도메인의 labelJa 가 있으면 그것, 없으면 한국어 — 위 KO 쪽 주석 참조.
+  //   지금 한국어로 뜨는 것: 지종 28 · 글로스코팅 · 풀발이 · 측면 풀발이 12단.
+  secSpec: "仕様", fPaper: "用紙", fPrint: "印刷", fCoat: "コーティング",
+  fFinish: "後加工", fGlue: "貼り", fThom: "打ち抜き",
+  sideF: "表", sideB: "裏",
+  oCmyk: "プロセス4色", oSpot: "特色", oBlack: "スミ",
+  oFoil: "箔押し", oEmb: "エンボス", oPuv: "部分UV",
+  qtyScale: "数量別の単価",
   btnAuto: "自動面付け", btnHand: "手動で配置", btnHandOff: "配置を終える", btnReset: "リセット",
   add: "+ 1枚", rot: "90°", flip: "180°", del: "削除", fill: "空きに追加", undo: "元に戻す",
   up: "面付", perEA: "1個あたり", won: "ウォン",
@@ -590,11 +838,14 @@ const JA = {
   pinRestored: n => `見積で確定した ${n}面付をそのまま復元しました`,
   pinLost: (n, d) => `見積の面付 ${n} をこのシートで再現できませんでした — ` +
     `${d}面付で表示します（描いた数で請求します）`,
+  sheetChanged: "シートが変わりました — 同じ図面を新しいシートに配置し直します",
+  sheetReseated: n => `シートが変わったため、新しいシートに ${n} 枚で配置し直しました`,
   cappedNote: (a, b, c, d) => `原紙 ${a}×${b} を印刷機の最大 ${c}×${d} に断裁して掛けます`,
   overlapRefused: "重なった配置が出たため描画しません",
   budget: "探索の上限に達しました — さらに良い配置がある可能性があります",
   specLine: "標準仕様・AB 350g・プロセス4色・IRコート・片面貼り（単価に開発費は含みません）",
   specFrom: "見積仕様", exDev: "（単価に開発費は含みません）",
+  noPrint: "印刷なし",
   // 용어는 일본 인쇄·제함 실무의 관용을 따른다: 切り罫(칼선) / 折り罫·罫線(오시선) / のりしろ(접착면)
   lgCut: "カットライン", lgCutSub: "切り取る線",
   lgCrease: "折り罫（罫線）", lgCreaseSub: "折り曲げる線・押し罫",
