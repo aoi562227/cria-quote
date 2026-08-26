@@ -823,7 +823,16 @@ function modelTruth(dp) {
 
 { // 계측기 자기검사 — 이빨이 없으면 아래 0.00 은 아무 뜻이 없다
   const o = ORACLE.find(k => TRUTH.has(k.n));
-  if (!o) { check("겹침 계측기 자기검사", 1, 0, 0.5, null); console.log("  ✗ 자기검사 불가 — 진실이 한 벌도 없다"); }
+  // ★ 26-08-26 — 진실이 0 벌인 것은 **검사 실패가 아니라 미실행**이다.
+  //   종전에는 여기서 무조건 FAIL 을 넣었고 그 FAIL 이 ALLOW_SKIP 면제를 안 받아
+  //   **CI 가 통째로 빨개졌다**(오라클 8건은 고객사 도면이라 git 에 없다).
+  //   ARCHITECTURE 가 「CI 경로는 안 돌렸다」로 남겨 둔 미해결이 실제로 터진 자리다.
+  //   면제는 ALLOW_SKIP 일 때만 — 개발 PC 에서 오라클이 사라지면 여전히 빨개져야 한다
+  //   (그때는 「도면을 못 찾는다」가 진짜 문제다).
+  if (!o) {
+    if (ALLOW_SKIP) console.log("  ⚠ 겹침 계측기 자기검사 **미실행 — 점수 아님** (진실 0벌 · PDF_ALLOW_SKIP=1)");
+    else { check("겹침 계측기 자기검사", 1, 0, 0.5, null); console.log("  ✗ 자기검사 불가 — 진실이 한 벌도 없다"); }
+  }
   else {
     const R = TRUTH.get(o.n), dp = dpOf(o, optOfDie(o));
     const L = solveImposition({ dieline: { key: `ovlSelf|${o.id}|${optStr(optOfDie(o))}`, net: dp.net, pieces: dp.pieces, polygon: true, noRotate: false }, sheet: { w: 788, h: 545 } });
@@ -1053,6 +1062,15 @@ console.log("\n  ── 추정 되먹임 금지 — 규칙을 실측 목형에 �
     //     ⚠ 겹침이 0 이 돼도 그 자체로 채택 근거는 아니다 — 이 규칙들이 철회된 1차 사유는
     //       「원본 도면이 없다」이고, 겹침은 그 위에 얹힌 2차 반증일 뿐이다. 채택 조건은
     //       여전히 **원본 칼선 PDF 를 ORACLE 에 넣고 그 값으로 재는 것** 하나다.
+    // ★ 26-08-26 — 진실이 0 벌이면 「겹침 0」은 **반증이 사라진 것이 아니라 안 잰 것**이다.
+    //   종전에는 그걸 구분 못 해 CI(오라클 없음)에서 이 절이 통째로 빨개졌다.
+    //   rows 가 비었는지로 가른다 — 잰 목형이 하나도 없으면 판정을 미룬다.
+    if (!rows.length) {
+      if (ALLOW_SKIP) { console.log(`  ⚠ ${c.n}   ← **미실행 — 점수 아님** (진실 0벌)`); continue; }
+      check(`철회 후보 「${c.n}」 을 잴 진실이 있다`, 1, 0, 0.5, null);
+      console.log(`  ✗ ${c.n}   ← 진실 0벌 — 되먹임을 못 쟀다`);
+      continue;
+    }
     const red = bad.length > 0;
     check(`철회 후보 「${c.n}」 은 아직 RED 다`, 1, red ? 1 : 0, 0.5, null);
     if (red) redAll++;
