@@ -133,6 +133,17 @@ const GLUE_TONE = 0.2;
  *  없다」가 되살아난다. 한쪽만 고치지 마라. */
 const GLUE_FILL_CSS = `rgba(27, 33, 41, ${GLUE_TONE})`;
 /** 클릭과 드래그를 가르는 거리(mm 환산 전 화면 px) */
+// ── 관리자 진입: 제목 연타 (26-08-26) ──────────────────────────────
+//  **모듈 스코프**에 둔다. 컴포넌트 안 useRef 로 두었더니 클릭 사이에 초기화돼
+//  사람 손 속도(간격 60ms 이상)에서 한 번도 안 열렸다 — ShowroomPage 의
+//  bumpTitleTap 주석 참조. 여기 두면 무슨 일이 있어도 카운터가 산다.
+//  간격 1200ms — 800 은 사람이 「또박또박 세 번」 누르는 속도에 빡빡하다.
+//  부스에서 급할 때 눌러야 하는 것이라 넉넉한 쪽이 맞다. 우연히 세 번
+//  연속 누를 일은 여전히 없다(라벨·배지·커서 변화가 없는 글자다).
+const TAP_GAP_MS = 1200;
+const TAP_NEED = 3;
+const tapState = { n: 0, t: 0 };
+
 const DRAG_MIN_PX = 2;
 const UNDO_MAX = 30;
 /** 판만 바뀌었을 때 「다시 앉히기」를 묶는 시간(ms).
@@ -222,16 +233,22 @@ export default function ShowroomPage({ carried = null }) {
   //  ⚠ 손배치 단축키(onKey: r · Delete · Ctrl+Z)와 겹치지 않는다 — 그쪽은 판 위에
   //    포커스가 있을 때만 돌고 수식자 조합도 다르다.
   const [adminOpen, setAdminOpen] = useState(false);
-  //  제목 3연타 → 관리자. 마지막 클릭에서 800ms 안에 세 번이어야 한다.
-  //  ref 로 세는 이유: 카운터를 state 로 두면 클릭마다 화면 전체가 다시 그려진다
-  //  (부스에서 도면·판이 깜빡인다). 화면에 나타날 값이 아니므로 ref 가 맞다.
-  const tapRef = useRef({ n: 0, t: 0 });
+  //  제목 3연타 → 관리자.
+  //  ★ 26-08-26 재작성 — 종전 useRef 판은 **사람 손 속도에서 한 번도 안 열렸다.**
+  //    실측: 간격 0ms 로 세 번이면 열리는데 60ms 를 두면 다섯 번을 눌러도 안 열린다
+  //    (직접 핸들러 호출로도 재현 — 이벤트 경로 문제가 아니다). 즉 클릭 사이에
+  //    카운터가 초기화됐다. 컴포넌트 상태(adminOpen)는 살아남는데 카운터만 죽는
+  //    조합이라 원인을 특정하지 못했고, **원인을 더 파는 대신 카운터를 컴포넌트
+  //    밖으로 뺐다** — 모듈 스코프면 React 가 인스턴스·ref 를 어떻게 다루든 산다.
+  //    사용자가 「관리자페이지는 어딨지?」라고 두 번 물은 것이 이 고장이다.
+  //  ⚠ 되돌려 useRef 로 옮기지 마라. 그러면 조용히 다시 안 열린다 —
+  //    화면에 아무 표시가 없어서 **고장인지 사용법을 모르는 건지 구분이 안 된다.**
+  //    verify-speclink 가 TAP_GAP_MS 와 TAP_NEED 를 계약으로 잡고 있다.
   const bumpTitleTap = () => {
-    const now = performance.now();
-    const r = tapRef.current;
-    r.n = now - r.t > 800 ? 1 : r.n + 1;
-    r.t = now;
-    if (r.n >= 3) { r.n = 0; setAdminOpen(v => !v); }
+    const now = Date.now();                       // performance.now 대신 — 탭 간 비교만 한다
+    tapState.n = now - tapState.t > TAP_GAP_MS ? 1 : tapState.n + 1;
+    tapState.t = now;
+    if (tapState.n >= TAP_NEED) { tapState.n = 0; setAdminOpen(v => !v); }
   };
   const [priceCfg, setPriceCfg] = useState(loadPriceCfg);
   // ★ 이 주소가 「가격을 가림」 표시를 달고 왔는가 (state.noCostOfHash · §16).
