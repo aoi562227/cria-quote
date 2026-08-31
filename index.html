@@ -1,5 +1,17 @@
 <!DOCTYPE html>
-<html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8">
+    <!-- ★ 26-08-27 — 종전에는 <head> 가 통째로 없었다.
+         뷰포트 메타가 없으면 모바일 브라우저가 **980px 데스크톱 뷰포트**로 그린 뒤
+         기기 폭(375px)에 맞춰 축소한다 = 0.38배. 실측: 관리자 패널이 366 CSS px →
+         약 140 device px, 글자 11.5px → 4.4px 로 **읽지도 누르지도 못했다.**
+         사용자 신고 「모바일에서는 수정이 안된다 관리자화면」이 이것이다.
+         ⚠ 이 한 줄만으로는 안 끝난다 — 좌패널이 292px 고정이라 가로 스크롤이 생긴다.
+           ShowroomPage 의 좁은 화면 규칙(<style> 조각)이 그걸 같이 푼다. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>크리아 · 단상자 자동 견적</title>
+  </head>
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>

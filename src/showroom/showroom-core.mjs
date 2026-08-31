@@ -679,17 +679,30 @@ export const qtyRowsOf = (args, steps) => {
  *   어디서도 못 읽는다. 이 화면의 규칙(안 그린 것은 안 그렸다고 적는다 · T.srcPdf 와
  *   같은 규율)에 맞춰 적는다. 자리는 지종 **바로 뒤** — 견적서 줄 순서가 그렇고,
  *   맨 끝에 붙이면 「… 접착 단면 · 인쇄 없음」이 되어 덧붙인 말처럼 읽힌다.
+ * ★ 26-08-27 — **별색 팬톤 번호**를 인쇄 줄에 괄호로 붙인다(사용자 요구: 팬톤 검색).
+ *   왜 여기인가 — 부스에서 「별색 2도」만 적혀 있으면 **무슨 색인지가 사양 줄에서
+ *   빠진다.** 고객이 방금 「185」라고 불렀는데 화면이 그 말을 안 적으면, 그 대화는
+ *   화면 밖에만 남는다. 자리는 **그 면의 인쇄 줄 안**이다 — 맨 끝에 붙이면 「… 접착
+ *   단면 · Pantone 185 C」가 되어 어느 면 이야기인지 사라진다(위 「인쇄 없음」과 같은 판단).
+ *   ⚠ 이 한 조각만은 **견적 라인이 안 들고 있는 말**이다. 도메인은 팬톤을 모르고
+ *     (금액을 안 움직이므로 알 필요도 없다), 그래서 화면이 갖고 있는 값을 넘겨받는다.
+ *     그 예외를 여기 적어 둔다 — 위 「문구를 새로 짓지 않는다」의 유일한 구멍이다.
+ *   ⚠ 도수와 색은 **다른 것**이다. 「별색 2도 (Pantone 185 C)」는 2도 중 하나가 185 라는
+ *     뜻이고, 색을 하나 더 고른다고 도수가 늘지 않는다. 금액은 도수만 본다.
  * @param {object} [t] 한·일 사전(T(lang)). 없으면 한국어로 떨어진다.
+ * @param {{f?:string, b?:string}} [pms] 앞/뒤 별색의 팬톤 이름. 빈 값이면 안 적는다.
  */
-export function specSummaryOf(lines, t) {
+export function specSummaryOf(lines, t, pms) {
   const out = [];
+  const tag = s => (s ? ` (${s})` : "");
   let hasPrint = false, afterPaper = 0;
   for (const l of lines || []) {
     const id = String(l.id || "");
     if (id === "paper") { out.push(String(l.spec || "").split("·")[0].trim()); afterPaper = out.length; }
     else if (id.startsWith("print") || id.startsWith("coat")) {
       if (id.startsWith("print")) hasPrint = true;
-      out.push(id.endsWith("_back") ? `${l.name} ${l.spec}` : l.spec);
+      const p = id === "print_front" ? tag(pms?.f) : id === "print_back" ? tag(pms?.b) : "";
+      out.push(id.endsWith("_back") ? `${l.name} ${l.spec}${p}` : `${l.spec}${p}`);
     }
     else if (id === "foil" || id === "emb" || id === "partial_uv")
       out.push(`${l.name} ${l.spec || ""}`.trim());

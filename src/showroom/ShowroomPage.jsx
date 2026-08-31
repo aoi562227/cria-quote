@@ -39,7 +39,7 @@ import { readDielineFile } from "../domain/pdf-dieline.mjs";
 // nextThomId — 구조가 톰슨 기본값을 선언했으면 그걸로 바꾼다. 견적 앱(App.jsx 의
 // handleBoxType)과 **같은 함수**를 부른다: 여기서 따로 적으면 같은 구조를 골라도 두 화면의
 // 톰슨이 갈린다. (⚠ BoxSpec.jsx 에는 이 호출이 없다 — 대조하려면 App.jsx 를 열어라.)
-import { pdfPickOf, specHash, customSheetOf, noCostOfHash, nextThomId } from "../ui/state.mjs";
+import { pdfPickOf, specHash, customSheetOf, noCostOfHash, nextThomId, pmsOfHash } from "../ui/state.mjs";
 import { BOX_TYPES } from "../ui/box-types.mjs";
 import { resolveDrop, findSpot, itemW, itemH, SNAP_PX } from "../ui/viz/nest-drag.mjs";
 import {
@@ -54,6 +54,12 @@ import {
   shownPriceOf, shownRowsOf, adminViewOf, loadPriceCfg, savePriceCfg, isPriceOn,
   CUR_CHOICES, ADMIN_T,
 } from "./price-formula.mjs";
+// 팬톤 색표는 **178KB 라 번들에 안 넣는다** — public/ 에 두고 별색을 쓸 때 처음 한 번
+// fetch 한다. 근사치라는 사실·출처·상표 고지·「모니터로 승인받지 마라」까지 전부
+// pantone.mjs 가 소유한다(그 머리말이 이 기능의 절반이다).
+import {
+  loadPantone, searchPantone, findPantone, cmykTextOf, pmsCodeOf, _resetPantoneCache, TP,
+} from "./pantone.mjs";
 
 // ── 색 · 치수 ──────────────────────────────────────────────────────
 //  ★ 회색 두 단의 용도가 갈려 있다 — 섞지 마라.
@@ -170,6 +176,9 @@ const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 export default function ShowroomPage({ carried = null }) {
   const [lang, setLang] = useState("ko");
   const t = T(lang);
+  // 팬톤 사전은 따로다 — 남의 상표를 다루는 말이라 출처·면책과 한 덩어리로 읽혀야 한다
+  // (price-formula 가 ADMIN_T 를 직접 들고 있는 것과 같은 판단).
+  const tp = TP(lang);
 
   // 전개도 전체크기 직접입력으로 실려 온 사양(슬리브 등)은 W·D·H 공식이 없다.
   // 훅이 아니라 파생값이다 — carried 는 이 화면이 사는 동안 안 바뀐다.
@@ -202,6 +211,45 @@ export default function ShowroomPage({ carried = null }) {
   const put = (k, v) => setOver(p => ({ ...p, [k]: v }));
   // 별색은 0~8 — 견적 앱(PrintPanel)과 같은 범위로 접는다. 여기서 넓히면 두 화면이 갈린다.
   const putSp = (k, v) => put(k, String(Math.max(0, Math.min(8, parseInt(v, 10) || 0))));
+
+  // ── ★ 별색 팬톤 번호 (26-08-27) ─────────────────────────────────
+  //  사용자 요구 원문: 「우리꺼에 팬톤색상 검색하면 나올 수 있도록 그런 기능은 추가가안되나?」
+  //  부스에서 고객이 「이 색」 하고 **번호를 부른다.** 그 번호를 화면에서 찾아 견본과
+  //  CMYK 근사를 같이 본다. 정직성 문구·검색·색표는 pantone.mjs 가 소유한다.
+  //
+  //  ★ **금액은 안 움직인다.** `over` 에 안 넣는 것이 그 사실의 구조적 표현이다 —
+  //    `over` 는 specOf 로 걸러 quoteInputOf 에 흘러 들어가는 **사양 한 벌**이고,
+  //    거기 한 칸 끼우면 팬톤이 금액 계산기의 입력이 된다. 별개 상태로 둔다.
+  //    (링크에도 `q=` 가 아니라 형제 파라미터 `pf=`·`pb=` 로 실린다 — state.mjs 주석.)
+  //  ⚠ 값은 **짧은 코드**(「185 C」)로 든다. 주소창에 그대로 읽히고(encodeSpec 과 같은
+  //    규율), findPantone 이 「Pantone 」 접두 유무를 둘 다 받는다.
+  const [pms, setPms] = useState(
+    () => (typeof window === "undefined" ? { f: "", b: "" } : pmsOfHash(window.location.hash)));
+  const [pmsQ, setPmsQ] = useState({ f: "", b: "" });
+  // null = 아직 안 받았다 · {ok:false} = 못 받았다(오프라인 부스·404). 둘은 다른 말이다.
+  const [pmsData, setPmsData] = useState(null);
+  const [pmsTry, setPmsTry] = useState(0);              // 「다시 시도」 카운터
+  const spotOf = sd => int(over[`${sd}pSp`]);
+  // 별색이 앞뒤 다 0 이면 **색표를 받지도 않는다.** 첫 화면을 178KB 만큼 무겁게 하지
+  // 않겠다는 것이 fetch 로 미룬 이유였다 — 그 이유를 여기서 지킨다.
+  const pmsNeeded = spotOf("f") > 0 || spotOf("b") > 0;
+  useEffect(() => {
+    if (!pmsNeeded) return;
+    let live = true;
+    loadPantone().then(r => { if (live) setPmsData(r); });
+    return () => { live = false; };
+  }, [pmsNeeded, pmsTry]);
+  /** 목록에서 **실제로 찾은** 항목만 준다. 링크로 들어온 낯선 문자열로 견본을 칠하지
+   *  않는다 — 출처를 못 대는 색을 고객에게 보여주는 것이 이 기능이 막으려는 일이다. */
+  const pmsRec = sd => (pmsData?.ok ? findPantone(pmsData.list, pms[sd]) : null);
+  /** 사양 줄·화면에 적을 이름. 별색 0 이면 빈 문자열 — 안 쓰는 색을 사양에 적지 않는다. */
+  const pmsName = sd => (spotOf(sd) > 0 ? (pmsRec(sd)?.name || "") : "");
+  const pickPms = (sd, o) => {
+    setPms(p => ({ ...p, [sd]: o ? pmsCodeOf(o) : "" }));
+    setPmsQ(p => ({ ...p, [sd]: "" }));                 // 고르면 결과 목록을 접는다
+  };
+  // 오프라인 부스에서 랜선이 돌아왔을 때 — 화면을 새로고침하게 만들지 않는다.
+  const retryPms = () => { _resetPantoneCache(); setPmsData(null); setPmsTry(n => n + 1); };
 
   // ── 배치 ────────────────────────────────────────────────────────
   const [items, setItemsRaw] = useState(null);          // 확정 배치 (null = 아직 안 앉힘)
@@ -701,7 +749,14 @@ export default function ShowroomPage({ carried = null }) {
   //    「견적서 사양 · (개당단가는 개발비 제외)」라는 뜻 없는 줄이 남는다. 그러면
   //    아무 말도 하지 않는다 — 설명할 단가 자체가 없다(결과도 「—」다).
   //    표준사양 문구로 접으면 안 된다: 실려 온 사양이 아닌 것을 말하게 된다.
-  const specSum = carried ? specSummaryOf((qShow || qAuto)?.lines, t) : "";
+  //  ★ 26-08-27 — 팬톤 이름을 **그 면의 인쇄 줄 안에** 넣어 넘긴다(specSummaryOf 주석).
+  //    부스에서 고객이 방금 「185」라고 불렀는데 사양 줄이 「별색 2도」로만 끝나면
+  //    그 대화가 화면 밖에만 남는다.
+  //  ⚠ 단독 진입(`#showroom`, carried 없음)의 사양 줄은 종전대로 **고정 문구**(t.specLine)라
+  //    팬톤이 안 실린다. 그 줄은 지금도 화면에서 만진 지종·도수를 반영하지 않는다 —
+  //    이번 변경과 별개인 기존 한계이고, 고치려면 견적 라인에서 뽑는 경로로 바꿔야 한다.
+  const specSum = carried
+    ? specSummaryOf((qShow || qAuto)?.lines, t, { f: pmsName("f"), b: pmsName("b") }) : "";
   const specNote = carried
     ? (specSum ? `${t.specFrom} · ${specSum} ${t.exDev}` : "")
     : t.specLine;
@@ -762,7 +817,12 @@ export default function ShowroomPage({ carried = null }) {
   //  ★ 가리는 중이면 **가림 비트를 같이 싣는다**(`&nc=1`). 이 주소가 곧 부스 밖으로
   //    나가는 링크다 — 비트가 없으면 받는 브라우저가 원가로 접힌다(state.noCostOfHash
   //    주석의 실측 critical). 수식 자체는 여전히 안 싣는다.
-  const syncHash = specHash("showroom", linkState(sheetId), { nc: hiding });
+  //  ★ 팬톤 번호도 같이 싣는다(`&pf=`·`&pb=`) — 새로고침·주소 공유에서 살아야 부스에서
+  //    「그 사양 그대로 다시 띄워 주세요」가 주소 하나로 넘어간다. 값이 비면 주소는
+  //    **한 글자도 안 늘어난다**(state.specHash 의 sib).
+  //  ⚠ 별색 도수를 0 으로 내려도 코드는 계속 싣는다 — 화면은 접히지만 도수를 다시
+  //    올리면 고른 색이 그대로 돌아온다. 부스에서 「역시 별색 넣죠」에 다시 치게 하지 않는다.
+  const syncHash = specHash("showroom", linkState(sheetId), { nc: hiding, pf: pms.f, pb: pms.b });
   useEffect(() => {
     if (typeof window === "undefined") return;
     const id = setTimeout(() => {
@@ -818,10 +878,10 @@ export default function ShowroomPage({ carried = null }) {
         )}
       </header>
 
-      <main style={{ flex: 1, display: "flex", minHeight: 0 }}>
+      <main data-pane="wrap" style={{ flex: 1, display: "flex", minHeight: 0 }}>
 
         {/* ══ 왼쪽 — 입력 ══════════════════════════════════════════ */}
-        <aside style={{ width: 292, flexShrink: 0, background: C.panel, borderRight: `1px solid ${C.line}`,
+        <aside data-pane="aside" style={{ width: 292, flexShrink: 0, background: C.panel, borderRight: `1px solid ${C.line}`,
                         padding: 18, overflowY: "auto", display: "flex", flexDirection: "column", gap: 18 }}>
 
           {/* 도면 */}
@@ -958,6 +1018,138 @@ export default function ShowroomPage({ carried = null }) {
                 ))}
               </div>
             </Row>
+
+            {/* ══ ★ 팬톤 — 별색 도수 **바로 밑**, 별색이 0 이면 통째로 접힌다 (26-08-27) ══
+                사용자 요구 원문: 「우리꺼에 팬톤색상 검색하면 나올 수 있도록 그런 기능은
+                추가가안되나?」 부스에서 고객이 「이 색」 하고 번호를 부른다.
+
+                ⚠ 왜 별색 칸 **옆**이 아니라 **밑**인가 — aside 폭이 292px(내용 256px)이고
+                  Row 의 값 영역은 194px 다. 거기에 검색칸·결과·견본·CMYK 를 넣으면 이름이
+                  세 글자마다 줄바꿈된다(실측: 「Pantone Reflex Blue C」 = 150px). 바로 밑
+                  전폭이 그 칸에서 **물리적으로 가장 가까운 자리**다.
+                ⚠ 앞/뒤를 두 섹션으로 나누지 않는다 — 그러면 정직성 두 줄이 두 벌이 되고,
+                  그 두 줄은 화면에서 **한 번만** 크게 읽혀야 하는 말이다.
+
+                ★★ 알록달록 금지의 **유일한 예외**가 여기다. 색 견본은 그 색이어야 한다 —
+                   그것이 이 기능의 전부다. 다만 견본 **말고는** 한 색도 늘리지 않는다:
+                   글·테두리·배경은 전부 기존 C 팔레트이고, 판(SVG)에는 손대지 않는다
+                   (도면 stroke 2종 · SVG text 0개 규칙 그대로). */}
+            {pmsNeeded && (
+              <section data-pms="1" style={{ marginTop: 10, padding: "9px 10px", borderRadius: 7,
+                                             background: C.soft, border: `1px solid ${C.line}` }}>
+                <div style={{ fontSize: 10.5, fontWeight: 700, color: C.faint,
+                              letterSpacing: ".12em", marginBottom: 4 }}>{tp.label}</div>
+
+                {["f", "b"].filter(sd => spotOf(sd) > 0).map(sd => {
+                  const rec = pmsRec(sd);
+                  const q = pmsQ[sd];
+                  // 색표를 못 받았으면 검색 자체를 안 돌린다 — 「0건」이 아니라 「못 불러왔다」다.
+                  const res = (q.trim() && pmsData?.ok) ? searchPantone(pmsData.list, q) : null;
+                  return (
+                    <div key={sd} data-pms-side={sd} style={{ marginTop: 6 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                        <span style={{ fontSize: 11, color: C.faint, width: 15, flexShrink: 0 }}>
+                          {sd === "f" ? t.sideF : t.sideB}</span>
+                        {/* ⚠ **받는 중에는 안 잠근다.** 색표를 받기 시작하는 순간이 곧
+                            운영자가 이 칸을 누르는 순간이다(별색 도수를 올린 직후). 전시장
+                            Wi-Fi 에서 178KB 가 한두 초 걸리는데 그동안 칸이 잠겨 있으면
+                            고객 앞에서 친 「185」가 통째로 사라진다. 친 것은 남고, 표가
+                            도착하는 순간 결과가 뜬다. 잠그는 것은 **못 받았을 때**뿐이다 —
+                            그때는 아무리 쳐도 나올 것이 없고, 화면이 그 이유를 말한다. */}
+                        <input value={q} data-pms-q={sd} placeholder={tp.ph}
+                          disabled={!!pmsData && !pmsData.ok}
+                          onChange={e => setPmsQ(p => ({ ...p, [sd]: e.target.value }))}
+                          style={{ flex: 1, minWidth: 0, boxSizing: "border-box", padding: "5px 7px",
+                                   borderRadius: 5, border: `1px solid ${C.line}`,
+                                   background: (pmsData && !pmsData.ok) ? C.bg : "#fff",
+                                   color: C.ink, font: `12px ${FONT}` }}/>
+                      </div>
+
+                      {/* 결과 — 몇 개만. 자른 사실을 「6/24건」으로 적는다(「이게 전부」로 안 읽히게). */}
+                      {res && res.hits.map(o => (
+                        <button key={o.name} type="button" data-pms-hit={o.name}
+                          onClick={() => pickPms(sd, o)}
+                          style={{ display: "flex", alignItems: "center", gap: 7, width: "100%",
+                                   marginTop: 3, padding: "4px 6px", borderRadius: 5, cursor: "pointer",
+                                   border: `1px solid ${C.line}`, background: "#fff",
+                                   font: `12px ${FONT}`, color: C.ink, textAlign: "left" }}>
+                          {/* ★ 견본 — 여기만 색이 는다. 테두리는 흰색·아주 밝은 색이
+                              배경(#fff)에 녹아 「견본이 없는 것」처럼 보이는 것을 막는다. */}
+                          <span style={{ width: 15, height: 15, borderRadius: 3, flexShrink: 0,
+                                         background: o.hex, border: `1px solid ${C.line}` }}/>
+                          <span style={{ flex: 1, minWidth: 0, overflow: "hidden",
+                                         textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{o.name}</span>
+                        </button>
+                      ))}
+                      {res && res.total > res.hits.length && (
+                        <div style={{ fontSize: 10, color: C.faint, marginTop: 3 }}>
+                          {tp.more(res.hits.length, res.total)}</div>)}
+                      {/* ★ 「없는 번호」와 「없는 색」은 다른 말이다 — 이 색표는 팬톤 전체가
+                          아니다(수록 100–699 · 7400–7549 · 이름색 55). 부스에서 운영자가
+                          「그런 색 없습니다」라고 말해 버리면 하지 않은 확인을 한 셈이 된다. */}
+                      {res && res.hits.length === 0 && (
+                        <div data-pms-none={sd} style={{ fontSize: 10.5, color: C.warn,
+                                                         marginTop: 4, lineHeight: 1.55 }}>{tp.none}</div>)}
+
+                      {/* 색표 상태 — 조용히 죽지 않는다 */}
+                      {!pmsData && (
+                        <div style={{ fontSize: 10.5, color: C.sub, marginTop: 4 }}>{tp.loading}</div>)}
+                      {pmsData && !pmsData.ok && (
+                        <div data-pms-offline={sd} style={{ fontSize: 10.5, color: C.bad,
+                                                            marginTop: 4, lineHeight: 1.55 }}>
+                          {tp.offline}{" "}
+                          <button type="button" data-pms-retry={sd} onClick={retryPms}
+                            style={{ border: 0, background: "none", padding: 0, cursor: "pointer",
+                                     color: C.acc, font: `10.5px ${FONT}`,
+                                     textDecoration: "underline" }}>{tp.retry}</button>
+                        </div>)}
+
+                      {/* 고른 색 — 견본 + 이름 + CMYK */}
+                      {pms[sd] && (
+                        <div data-pms-picked={sd} data-pms-hex={rec ? rec.hex : undefined}
+                          style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 5,
+                                   padding: "5px 6px", borderRadius: 5, background: "#fff",
+                                   border: `1px solid ${C.line}` }}>
+                          {rec ? (<>
+                            <span style={{ width: 26, height: 26, borderRadius: 4, flexShrink: 0,
+                                           background: rec.hex, border: `1px solid ${C.line}` }}/>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: 12, fontWeight: 700, overflow: "hidden",
+                                            textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{rec.name}</div>
+                              <div style={{ fontSize: 10.5, color: C.sub,
+                                            fontVariantNumeric: "tabular-nums" }}>{cmykTextOf(rec)}</div>
+                            </div>
+                          </>) : (
+                            // 링크로 들어온 코드를 색표에서 못 찾았다 — **견본을 안 그린다.**
+                            <div style={{ flex: 1, minWidth: 0, fontSize: 10.5, color: C.warn,
+                                          lineHeight: 1.55 }}>{tp.unknown(pms[sd])}</div>)}
+                          <button type="button" data-pms-clear={sd} onClick={() => pickPms(sd, null)}
+                            style={{ border: 0, background: "none", padding: 0, cursor: "pointer",
+                                     color: C.acc, font: `10.5px ${FONT}`, flexShrink: 0 }}>{tp.clear}</button>
+                        </div>)}
+                    </div>
+                  );
+                })}
+
+                {/* ★★ 정직성 — 견본 **바로 밑**이다. 구석에 작게 숨기지 마라.
+                    ① 모니터로 색을 승인받으면 그게 그대로 분쟁이 된다(sRGB 는 별색을
+                       재현하지 못한다). ② 색을 골라도 금액이 안 바뀐다 — 안 적으면
+                       고객은 「반영이 안 됐나」로 읽는다. 문구는 pantone.mjs 가 소유한다.
+                    ⚠ 색은 C.sub(#6a7280, 대비 4.20:1) — 읽어야 하는 글이다. faint 로
+                      내리지 마라(1.86:1, 부스 조명에서 안 읽힌다 · C 주석). */}
+                <div data-pms-warn="screen" style={{ fontSize: 10.5, color: C.sub, lineHeight: 1.6,
+                                                     marginTop: 8 }}>{tp.warnScreen}</div>
+                <div data-pms-warn="price" style={{ fontSize: 10.5, color: C.sub,
+                                                    lineHeight: 1.6 }}>{tp.warnPrice}</div>
+                {/* 출처·라이선스·상표 — 이 앱은 gh-pages 로 **공개 배포**된다.
+                    ⚠ 이 줄도 C.sub 다. 처음에 faint(1.86:1)로 깔았다가 되돌렸다 — 남의
+                      상표에 대한 고지를 「부스 조명에서 안 보이는 회색」으로 적는 것은
+                      적어 놓고 안 적은 것과 같다(C 주석: 「DOM 에 있는 정직성 문구는
+                      읽히지 않으면 없는 것과 같다」). 위계는 **크기**로만 준다. */}
+                <div data-pms-src="1" style={{ fontSize: 10, color: C.sub, lineHeight: 1.55,
+                                               marginTop: 5 }}>{tp.src}</div>
+              </section>
+            )}
 
             {/* 코팅 앞/뒤 — 한 줄에 둘. 종류 이름이 짧아(무광·유광·IR) 좁아도 읽힌다 */}
             <Row label={t.fCoat}>
@@ -1199,7 +1391,28 @@ export default function ShowroomPage({ carried = null }) {
           잦지는 않지만 막는 비용이 한 줄이다.
           ⚠ 이 화면은 스타일이 전부 인라인이라 걸 자리가 없다 — 그래서 <style> 한 조각을
             둔다. 여기에 다른 규칙을 늘리지 마라(인라인 규율이 무너진다). */}
-      <style>{"@media print{[data-admin]{display:none !important}}"}</style>
+      <style>{
+        "@media print{[data-admin]{display:none !important}}" +
+        // ★ 26-08-27 좁은 화면 — 사용자 신고 「모바일에서는 수정이 안된다 관리자화면」.
+        //   index.html 에 뷰포트 메타를 넣자 비로소 375px 로 그려지는데, 그러면 이번엔
+        //   좌패널 292px 고정 때문에 가로 스크롤이 생긴다. 둘은 한 벌로 고쳐야 한다.
+        //   860px 에서 가른 이유: 좌패널 292 + 판이 읽히는 최소 폭(~520) + 여백.
+        //   ⚠ 부스 기기는 노트북(1280×800)이고 그 폭은 이 규칙에 **안 걸린다** —
+        //     전시회 화면을 건드리지 않는 것이 이 breakpoint 의 첫 조건이다.
+        "@media (max-width:860px){" +
+          // ⚠ **!important 가 필요하다.** 이 화면은 스타일이 전부 인라인이고
+          //   인라인 선언은 스타일시트 규칙을 이긴다(명시도와 무관). 실측: 없이 두면
+          //   패널 width:336·left:16 이 그대로 살아 right 382 > 화면 375 로 삐져나갔고
+          //   좌패널도 292 고정이 유지됐다. 위 @media print 규칙이 이미 같은 이유로 붙여 뒀다.
+          "[data-pane=wrap]{flex-direction:column}" +
+          // 좌패널을 위로 눕히고 폭을 풀어 준다. 높이를 반으로 제한해 판이 늘 보인다.
+          "[data-pane=aside]{width:auto!important;max-height:52vh;border-right:none;border-bottom:1px solid " + C.line + "}" +
+          // 관리자 패널 — 화면 폭을 넘지 않게. 세로로 길면 스스로 스크롤한다.
+          "[data-admin]{width:auto!important;left:8px!important;right:8px!important;bottom:8px!important;max-height:80vh;overflow-y:auto}" +
+          // 손가락으로 닫을 수 있어야 한다. Esc 는 키보드가 있어야 눌린다.
+          "[data-act=admin-close]{padding:8px 12px;margin:-8px -12px}" +
+        "}"
+      }</style>
     </div>
   );
 }

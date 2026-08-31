@@ -20,6 +20,7 @@
 //  §J  거래처·품명 — 링크에 안 싣고 **초기값으로 접지도 않는다**
 //  §M  ★ 관리자 수식 → 고객 표시가 — 파서 · 원가 유출 · 거부 거동 · 하위호환 (26-08-25)
 //  §N  ★ 고객과 같이 넣는 사양 칸 + 수량별 개당단가 — 왕복 불변식 · 원가 유출 (26-08-26)
+//  §O  ★ 별색 팬톤 조회 — 가격 불변 · 정직성 문구 · 검색 · 오프라인 거동 (26-08-27)
 //
 //  ── 26-08-19: 이 스위트가 「장식」이던 자리 둘을 고쳤다 ─────────────
 //  58/58 초록인 채로 critical 1건 + major 1건이 살아 있었다. 이유가 둘 다 구조적이다:
@@ -47,7 +48,12 @@ import {
   paperChoices, coatChoices, glueChoices, thomChoices,
   upForPrice, resetKindOf,
 } from "../src/showroom/showroom-core.mjs";
-import { upGateOf } from "../src/ui/state.mjs";
+import { upGateOf, pmsOfHash } from "../src/ui/state.mjs";
+// §O — 별색 팬톤 조회 (26-08-27). 도메인이 아니라 **표시·주석 레이어**다: 금액을 한 원도
+//   안 움직인다(그 논증은 state.mjs 의 `pf=`·`pb=` 주석과 pantone.mjs 머리말이 소유한다).
+import {
+  loadPantone, searchPantone, findPantone, cmykTextOf, pmsCodeOf, _resetPantoneCache,
+} from "../src/showroom/pantone.mjs";
 // §M — 관리자 수식 → 고객 표시가. 도메인이 아니라 **표시 레이어**다(그 파일 머리말).
 import {
   applyFormula, roundFor, shownPriceOf, shownRowsOf, adminViewOf,
@@ -1120,8 +1126,13 @@ console.log("\n── §M  관리자 수식 → 고객 표시가 ─────
     ok("가리는 중이면 고객 화면의 «견적 앱으로 →» 버튼이 없다 (관리자 패널로 옮긴다)",
        /\{!hiding && \([\s\S]{0,200}data-act="back"/.test(p) &&
        /data-act="admin-toquote"/.test(p));
+    // ⚠ 26-08-27 — 종전에는 **호출 한 줄을 통째로** 리터럴 대조했다(`{ nc: hiding }`).
+    //   그러면 같은 opt 객체에 형제 파라미터가 하나 늘 때(팬톤 `pf`·`pb`) 「가림 비트가
+    //   빠졌다」고 **거짓 실패**한다 — 비트는 그대로 있는데. 이 줄이 재려는 것은
+    //   「syncHash 가 nc 를 나르는가」 하나이므로 거기까지만 잰다. 자리(어느 호출의 opt 인가)는
+    //   그대로 못박는다 — 다른 곳에 `nc: hiding` 이 적혀 있는 것으로는 안 통과한다.
     ok("주소에 가림 비트를 싣는다 (syncHash 에 nc)",
-       /specHash\("showroom", linkState\(sheetId\), \{ nc: hiding \}\)/.test(p));
+       /specHash\("showroom", linkState\(sheetId\), \{[^}]*\bnc: hiding\b[^}]*\}\)/.test(p));
     // ★ 26-08-26 — 수량별 표도 **표시값만** 그린다. 이 표는 화면에서 가장 여러 번 읽히는
     //   숫자라(부스 대화의 본체), 여기로 원가가 새면 큰 글씨 하나를 가린 것이 무의미해진다.
     //   위 「원가를 만지는 줄 6줄」이 안 늘어난 것과 짝이다 — 표는 원가 배열을 받지 않고
@@ -1866,6 +1877,242 @@ console.log("\n── §N  고객과 같이 넣는 사양 + 수량별 개당단�
     ok("사전을 안 넘겨도 안 죽는다 (한국어로 떨어진다)",
        specSummaryOf(r.q?.lines).includes("인쇄 없음"));
   }
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  §O  ★ 별색 팬톤 조회 (26-08-27)
+//
+//  사용자 요구 원문: 「우리꺼에 팬톤색상 검색하면 나올 수 있도록 그런 기능은 추가가안되나?」
+//
+//  이 기능의 위험은 **금액이 아니라 말**이다. 그래서 이 절이 재는 것도 넷 다 「말」이다:
+//   ① ★ **가격이 안 바뀐다** — 팬톤은 금액 경로에 닿으면 안 된다. 링크 전 구간을 태워서 잰다.
+//   ② ★ **정직성 문구가 화면에 있다** — 모니터로 색을 승인받으면 그게 그대로 분쟁이 된다.
+//      출처·라이선스·상표(Pantone LLC 무관)도 화면에 있어야 한다(이 앱은 공개 배포된다).
+//   ③ 검색이 **부스에서 치는 것**을 찾는다 — 번호 정확일치가 이름 부분일치보다 위다.
+//   ④ 색표를 **못 받았을 때 조용히 죽지 않는다** — 오프라인 부스·404 가 실제 경로다.
+// ══════════════════════════════════════════════════════════════════
+console.log("\n── §O  별색 팬톤 조회 ────────────────────────────────────────");
+{
+  // ── ① 데이터 파일 — 있는가 · 온전한가 · 고지가 붙어 있는가 ─────────
+  //  ⚠ 이 파일이 사라지거나 반쪽이 되면 부스에서 검색칸이 통째로 죽는다. CI 가 잡아야 한다.
+  const dataUrl = new URL("../public/pantone-approx.json", import.meta.url);
+  const j = JSON.parse(readFileSync(dataUrl, "utf8"));
+  ok(`색표가 public/ 에 있고 2,415건이다 (실측 ${j.colors?.length}건)`, j.colors?.length === 2415);
+  const HEXRE = /^#[0-9A-Fa-f]{6}$/;
+  const badHex = j.colors.filter(o => !HEXRE.test(String(o.hex))).length;
+  const badName = j.colors.filter(o => !/^Pantone .+ [CUM]$|^Pantone .+$/.test(String(o.name))).length;
+  const badCmyk = j.colors.filter(o => ["c", "m", "y", "k"]
+    .some(k => typeof o[k] !== "number" || o[k] < 0 || o[k] > 100)).length;
+  ok("hex 가 전부 «#RRGGBB» 다 (깨진 항목 0건)", badHex === 0, `${badHex}건`);
+  ok("이름 형식이 고르다 «Pantone …» (깨진 항목 0건)", badName === 0, `${badName}건`);
+  ok("CMYK 가 전부 0–100 이다 (깨진 항목 0건)", badCmyk === 0, `${badCmyk}건`);
+  //  ★ 고지 — **이 앱은 gh-pages 로 공개 배포된다.** 화면이 「팬톤 인증 색상」이라고
+  //    말하면 안 되고, 파일도 그렇게 말하면 안 된다.
+  const nt = JSON.stringify(j._notice || {});
+  ok("파일 머리에 **출처**가 있다 (mcp-print)", /mcp-print/.test(nt));
+  ok("파일 머리에 **라이선스**가 있고 «코드에 붙은 MIT» 라고 적혀 있다",
+     /MIT/.test(nt) && /코드/.test(nt));
+  ok("파일 머리가 **근사치**임을 말한다 (인증 색상이 아니다)",
+     /근사/.test(nt) && /인증 색상이 아니다/.test(nt));
+  ok("파일 머리에 **Pantone LLC 와 무관**하다고 적혀 있다",
+     /Pantone LLC/.test(nt) && /(무관|not affiliated)/.test(nt));
+  ok("파일 머리가 **수록 범위가 팬톤 전체가 아님**을 말한다 (2925 가 없다)",
+     /팬톤 전체가 아니다/.test(nt) && /2925/.test(nt));
+
+  // ── ② 로드 — fetch 를 세워 **실제 경로**를 태운다 ────────────────
+  const realFetch = globalThis.fetch;
+  const setFetch = f => { globalThis.fetch = f; _resetPantoneCache(); };
+  setFetch(async () => ({ ok: true, status: 200, json: async () => j }));
+  const loaded = await loadPantone();
+  ok(`색표를 받아 색인 ${loaded.list.length}건을 세운다`, loaded.ok && loaded.list.length === 2415);
+  const L = loaded.list;
+
+  // ── ③ ★ 검색 — 부스에서 실제로 치는 넷 ─────────────────────────
+  const hit = (q, n) => searchPantone(L, q, n);
+  ok("«185» → Pantone 185 C 가 **맨 위** (번호 정확일치가 1순위)",
+     hit("185").hits[0]?.name === "Pantone 185 C", hit("185").hits.map(o => o.name).join(" | "));
+  ok("«185» 는 C·U·M 세 벌만 나온다 (번호 정확일치)",
+     hit("185").total === 3, `${hit("185").total}건`);
+  ok("«185 C» · «185c» · «Pantone 185C» 가 **같은 한 건**이다 (대소문자·공백·접두 무시)",
+     ["185 C", "185c", "Pantone 185C", "pms 185-c"].every(
+       q => hit(q).total === 1 && hit(q).hits[0].name === "Pantone 185 C"));
+  ok("«reflex» → Reflex Blue (이름 부분일치)",
+     hit("reflex").hits[0]?.name === "Pantone Reflex Blue C" && hit("reflex").total === 3);
+  ok("«black» → Pantone Black C 가 맨 위 (이름 정확일치가 «Black 2» 보다 위)",
+     hit("black").hits[0]?.name === "Pantone Black C", hit("black").hits.map(o => o.name).join(" | "));
+  //  ★ 「없는 번호」다 — **없는 색이 아니다.** 이 색표는 100–699 · 7400–7549 · 이름색 55 뿐이다.
+  //    부스에서 운영자가 「그런 색 없습니다」라고 말해 버리면 하지 않은 확인을 한 셈이 된다.
+  //    화면 문구가 그 구별을 하는지는 아래 ⑥ 이 잰다.
+  ok("«2925» 는 **이 색표에 없다** (0건) — 화면이 「없는 번호」라고 말해야 한다",
+     hit("2925").total === 0);
+  ok("이빨: 그 0건이 검색 고장이 아니다 — 같은 자리 «292» 는 찾힌다",
+     hit("292").total > 0, hit("292").hits.map(o => o.name).join(" | "));
+  ok("결과는 몇 개만 — 24건 매칭이어도 6건까지만 준다 (total 은 24 로 남는다)",
+     hit("black", 6).hits.length === 6 && hit("black", 6).total === 24);
+  ok("빈 질의는 0건 (전체 2,415건을 쏟지 않는다)",
+     hit("").total === 0 && hit("   ").total === 0);
+  //  ★ 실측 — 2,415건 선형 스캔이 타이핑마다 돌아도 되는가. 최악 질의로 잰다.
+  {
+    const N = 200, t0 = Date.now();
+    for (let i = 0; i < N; i++) searchPantone(L, "1", 6);
+    const per = (Date.now() - t0) / N;
+    ok(`최악 질의 «1»(542건 매칭)이 60fps 예산 16.7ms 안에 든다 — ${per.toFixed(3)}ms/회`,
+       per < 2, `${per}ms`);
+  }
+
+  // ── ④ ★ 못 받았을 때 — 조용히 죽지 않는다 ───────────────────────
+  for (const [nm, f] of [
+    ["오프라인 (네트워크 없음)", async () => { throw new Error("offline"); }],
+    ["404 (배포 누락)", async () => ({ ok: false, status: 404, json: async () => ({}) })],
+    ["빈 파일", async () => ({ ok: true, status: 200, json: async () => ({ colors: [] }) })],
+    ["깨진 JSON", async () => ({ ok: true, status: 200, json: async () => { throw new Error("bad"); } })],
+  ]) {
+    setFetch(f);
+    const r = await loadPantone();
+    ok(`${nm} — 던지지 않고 «못 받았다»를 값으로 준다 (화면이 말할 수 있다)`,
+       r.ok === false && Array.isArray(r.list) && r.list.length === 0 && !!r.why, JSON.stringify(r).slice(0, 90));
+  }
+  // 캐시 — 두 번 부르면 요청은 한 번이다(타이핑마다 178KB 를 다시 받지 않는다)
+  {
+    let n = 0;
+    setFetch(async () => { n++; return { ok: true, status: 200, json: async () => j }; });
+    await loadPantone(); await loadPantone(); await loadPantone();
+    ok("색표는 **한 번만** 받는다 (모듈 캐시)", n === 1, `요청 ${n}회`);
+  }
+  setFetch(async () => ({ ok: true, status: 200, json: async () => j }));
+  await loadPantone();
+
+  // ── ⑤ ★★ 가격 불변 — 이 절의 본체 ──────────────────────────────
+  //  팬톤은 **금액을 한 원도 안 움직인다.** 움직이는 것은 별색 도수(fpSp/bpSp)다.
+  //  구조로 증명한다: ① 목록에 없다 ② 페이로드에 없다 ③ 링크 전 구간을 태워도 204 다.
+  {
+    const pmsish = k => /pms|pantone|팬톤|^pf$|^pb$/i.test(k);
+    ok("★ SPEC_KEYS 에 팬톤 키가 없다 (SPEC_KEYS 는 「금액을 움직이는 키」의 목록이다)",
+       !SPEC_KEYS.some(pmsish), SPEC_KEYS.filter(pmsish).join(","));
+    ok("★ 쇼룸 사양 칸(SHOWROOM_SPEC_KEYS)에도 없다 — quoteInputOf 로 안 흘러간다",
+       !SHOWROOM_SPEC_KEYS.some(pmsish), SHOWROOM_SPEC_KEYS.filter(pmsish).join(","));
+    const payload = encodeSpec({ ...SOSCO, fpSp: "2" });
+    ok("페이로드(q=)에 팬톤이 없다", !/pf~|pb~|antone/i.test(payload), payload.slice(0, 80));
+
+    // ★ 링크 전 구간 — 팬톤을 실은 주소를 견적서가 받아도 **204원 그대로**다.
+    const spotSpec = { ...SOSCO, fpSp: "2" };
+    const plain = specHash("showroom", spotSpec);
+    const withPms = specHash("showroom", spotSpec, { pf: "185 C", pb: "Reflex Blue C" });
+    const back = decodeSpec(payloadOfHash(withPms));
+    const a = quoteScreen(spotSpec).totals, b = quoteScreen(back).totals;
+    ok(`★★ 팬톤을 실은 링크가 **같은 금액**으로 돌아온다 — 개당 ${a.perEA}원 = ${b.perEA}원 · ` +
+       `공정합계 ${a.process.toLocaleString()}원 = ${b.process.toLocaleString()}원`,
+       a.perEA === b.perEA && a.process === b.process && a.perEA > 0,
+       `${a.perEA}/${b.perEA} · ${a.process}/${b.process}`);
+    ok("★ 팬톤이 붙어도 `q=` 페이로드는 **한 글자도 안 바뀐다**",
+       payloadOfHash(plain) === payloadOfHash(withPms));
+    ok("팬톤이 비면 주소가 **종전과 바이트 동일**하다 (기존 링크·왕복 게이트가 안 움직인다)",
+       specHash("showroom", spotSpec, { pf: "", pb: "" }) === plain &&
+       specHash("showroom", spotSpec, {}) === plain);
+    // 이빨 — 위 「금액이 같다」가 「아무것도 안 실렸으니 같다」가 아님을 보인다.
+    ok("이빨: 그래도 팬톤은 **주소에 실려 있다** (안 실리면 새로고침에 사라진다)",
+       /&pf=185(%20| )C/.test(withPms) && /&pb=Reflex(%20| )Blue(%20| )C/.test(withPms), withPms.slice(-40));
+    // 이빨 — 별색 **도수**는 금액을 실제로 움직인다(그래서 SPEC_KEYS 에 있다)
+    ok("이빨: 별색 도수는 금액을 움직인다 (204 ≠ 별색 2도)",
+       quoteScreen(SOSCO).totals.perEA !== a.perEA,
+       `원색4 ${quoteScreen(SOSCO).totals.perEA}원 / +별색2 ${a.perEA}원`);
+  }
+
+  // ── ⑥ 해시 왕복 — 부스에서 새로고침·주소 공유에 살아남는가 ────────
+  {
+    const h = specHash("showroom", SOSCO, { nc: true, pf: "185 C", pb: "Reflex Blue C" });
+    const got = pmsOfHash(h);
+    ok("팬톤이 해시 왕복에서 그대로다", got.f === "185 C" && got.b === "Reflex Blue C", JSON.stringify(got));
+    ok("가림 비트와 **같이** 실려도 서로 안 먹는다",
+       noCostOfHash(h) && pmsOfHash(h).f === "185 C" && payloadOfHash(h) === encodeSpec(SOSCO));
+    ok("팬톤이 없는 주소는 빈 값을 준다", JSON.stringify(pmsOfHash(specHash("showroom", SOSCO))) ===
+       JSON.stringify({ f: "", b: "" }));
+    //  ⚠ 해시는 **바깥에서 들어오는 값**이다 — 누가 링크를 고쳐 보낼 수 있다.
+    ok("깨진 %-쌍은 그 칸만 버린다 (링크 하나가 화면을 못 죽인다)",
+       pmsOfHash("#/showroom?q=x&pf=%E0%A4%A&pb=185%20C").b === "185 C");
+    ok("긴 문자열은 32자로 자른다 (주소 오염 방어)",
+       pmsOfHash(`#/showroom?q=x&pf=${"A".repeat(200)}`).f.length === 32);
+    //  ★★ 낯선 문자열로 **견본을 칠하지 않는다** — 출처를 못 대는 색을 고객에게
+    //     보여주는 것이 이 기능이 막으려는 바로 그 일이다.
+    ok("★ 색표에 없는 이름은 findPantone 이 null 이다 (견본을 못 그린다)",
+       findPantone(L, "<script>x</script>") === null &&
+       findPantone(L, "Pantone 2925 C") === null && findPantone(L, "") === null);
+    ok("이빨: 색표에 있는 이름은 찾는다 (검사가 공허하지 않다)",
+       findPantone(L, "185 C")?.hex === "#FF173D" && findPantone(L, "Pantone 185 C")?.name === "Pantone 185 C");
+    ok("주소에 실을 코드가 짧다 «185 C» (부스에서 주소창을 그대로 읽는다)",
+       pmsCodeOf(findPantone(L, "Pantone 185 C")) === "185 C");
+    ok("CMYK 는 출처 값 그대로 적는다 (우리가 환산하지 않는다)",
+       cmykTextOf(findPantone(L, "185 C")) === "C 0 · M 91 · Y 76 · K 0", cmykTextOf(findPantone(L, "185 C")));
+  }
+
+  // ── ⑦ 사양 줄 — 「별색 2도」로 끝나면 무슨 색인지가 화면에서 빠진다 ─
+  {
+    const r = showroomScreen(SOSCO, { spec: { ...specOf(baseOf(SOSCO)), fpSp: "2", bpSp: "1", bpColor: true } });
+    const plain = specSummaryOf(r.q?.lines, T("ko"));
+    const withP = specSummaryOf(r.q?.lines, T("ko"), { f: "Pantone 185 C", b: "Pantone Reflex Blue C" });
+    ok("사양 줄에 팬톤 이름이 남는다 (앞·뒤 각각)",
+       withP.includes("(Pantone 185 C)") && withP.includes("(Pantone Reflex Blue C)"), withP);
+    // ★ 자리 — **그 면의 인쇄 줄 안**이다. 맨 끝에 붙이면 어느 면 이야기인지 사라진다.
+    ok("★ 자리가 그 면의 인쇄 줄 **안**이다 (맨 끝이 아니다)",
+       /별색[^·]*\(Pantone 185 C\)/.test(withP) && !/\(Pantone 185 C\)\s*$/.test(withP), withP);
+    ok("일본어 화면에서도 같은 자리에 남는다",
+       /特色|별색/.test(specSummaryOf(r.q?.lines, T("ja"), { f: "Pantone 185 C" })) &&
+       specSummaryOf(r.q?.lines, T("ja"), { f: "Pantone 185 C" }).includes("(Pantone 185 C)"));
+    ok("★ 하위호환 — 팬톤을 안 넘기면 **종전과 같은 문자열**이다",
+       specSummaryOf(r.q?.lines, T("ko"), undefined) === plain &&
+       specSummaryOf(r.q?.lines, T("ko"), { f: "", b: "" }) === plain, plain);
+  }
+
+  // ── ⑧ ★ 화면이 정직성을 **말하는가** (소스 대조 · §M ⑪ 과 같은 규율) ──
+  //  이 기능의 절반이 이 문구다. 지우면 이 게이트가 빨개진다.
+  {
+    const p = readFileSync(new URL("../src/showroom/ShowroomPage.jsx", import.meta.url), "utf8");
+    const pm = readFileSync(new URL("../src/showroom/pantone.mjs", import.meta.url), "utf8");
+    ok("★ 견본 옆에 «화면 색은 참고» 가 있다 (모니터로 색을 승인받으면 분쟁이 된다)",
+       /data-pms-warn="screen"/.test(p) && /warnScreen/.test(p));
+    ok("★ 견본 옆에 «색을 골라도 금액은 안 바뀐다» 가 있다",
+       /data-pms-warn="price"/.test(p) && /warnPrice/.test(p));
+    ok("★ 검색 패널 안에 출처·상표 한 줄이 있다",
+       /data-pms-src="1"/.test(p) && /warnScreen[\s\S]{0,900}data-pms-src/.test(p));
+    ok("두 언어 다 있다 — 일본어는 1급이다 (고객이 읽는 쪽)",
+       ["warnScreen", "warnPrice", "src", "none", "offline", "unknown", "loading"]
+         .every(k => new RegExp(`\\b${k}:`).test(pm.split("const PMS_JA")[0]) &&
+                     new RegExp(`\\b${k}:`).test(pm.split("const PMS_JA")[1] || "")));
+    ok("일본어 문구가 실제로 일본어다 (한국어 사전을 복사해 두지 않았다)",
+       /画面の色は参考です/.test(pm) && /金額は変わりません/.test(pm) &&
+       /Pantone LLC とは無関係/.test(pm));
+    ok("한국어 문구가 «Pantone LLC 와 무관» 을 명시한다",
+       /Pantone LLC 와 무관/.test(pm) && /등록상표/.test(pm) && /근사값/.test(pm));
+    ok("★ 「없는 번호」와 「없는 색」을 구별해 말한다 (수록 범위를 적는다)",
+       /팬톤 전체가 아닙니다/.test(pm) && /100–699/.test(pm) &&
+       /パントン全体ではありません/.test(pm));
+    ok("★ 못 받으면 화면이 말한다 (조용히 안 죽는다)",
+       /data-pms-offline/.test(p) && /色表を読み込めませんでした/.test(pm) &&
+       /색표를 못 불러왔습니다/.test(pm));
+    // ★ **받는 중에는 검색칸을 안 잠근다** — 색표를 받기 시작하는 순간이 곧 운영자가
+    //   이 칸을 누르는 순간이다(별색 도수를 올린 직후). 전시장 Wi-Fi 에서 178KB 가
+    //   한두 초 걸리는데 그동안 잠겨 있으면 고객 앞에서 친 「185」가 통째로 사라진다.
+    ok("★ 받는 중(pmsData null)에는 검색칸이 안 잠긴다 — 잠그는 것은 못 받았을 때뿐이다",
+       /disabled=\{!!pmsData && !pmsData\.ok\}/.test(p) && !/disabled=\{!pmsData\?\.ok\}/.test(p));
+    // ★ 별색 0 이면 접힌다 — 안 쓰는 칸이 고객 앞 화면을 채우지 않는다.
+    ok("별색이 0 이면 팬톤 칸이 통째로 접힌다",
+       /const pmsNeeded = spotOf\("f"\) > 0 \|\| spotOf\("b"\) > 0;/.test(p) &&
+       /\{pmsNeeded && \(/.test(p) &&
+       /\["f", "b"\]\.filter\(sd => spotOf\(sd\) > 0\)/.test(p));
+    // ★ 팬톤은 `over`(= quoteInputOf 로 흘러가는 사양 한 벌)와 **다른 상태**다.
+    //   같은 훅에 끼우는 순간 팬톤이 금액 계산기의 입력이 된다.
+    ok("★ 팬톤이 `over` 가 아니라 **별개 상태**다 (금액 경로에 안 닿는다)",
+       /const \[pms, setPms\] = useState\(/.test(p) && !/put\("[fb]p[A-Za-z]*[Pp]ms/.test(p));
+    // ★ 견본은 **색표에서 찾은 항목**으로만 칠한다.
+    ok("★ 견본은 findPantone 이 찾은 항목(rec)으로만 칠한다 — 링크 문자열로 안 칠한다",
+       /background: rec\.hex/.test(p) && /rec \? \(<>/.test(p) && !/background: pms\[sd\]/.test(p));
+    // ★ 첫 화면을 무겁게 하지 않는다 — 178KB 는 fetch 로 미룬다(동적 import 는 금지다).
+    ok("색표를 번들에 안 넣는다 (fetch · import.meta.env.BASE_URL)",
+       /fetch\(urlOf\(\)\)/.test(pm) && /import\.meta\.env\?\.BASE_URL/.test(pm) &&
+       !/from "\.\..*pantone-approx/.test(pm));
+  }
+
+  globalThis.fetch = realFetch; _resetPantoneCache();
 }
 
 console.log(`\n${"=".repeat(78)}`);
