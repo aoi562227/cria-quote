@@ -28,7 +28,8 @@ export default {
   // verified 는 라벨 문자열이 아니라 필드다 — 표시(✓)는 UI 가 붙인다.
   // 종전 label 에 「✓칼선실측」을 넣었더니 드롭다운 문자열이 곧 근거 표기가 되어
   // 태그 추출(label 첫 낱말)까지 얽혔다.
-  id: "gtype_tray", label: "G형 트레이 (뚜껑일체)", tag: "G형트레이",
+  id: "gtype_tray", label: "G형 트레이 (뚜껑일체)", labelJa: "G型トレー（フタ一体）",
+  tag: "G형트레이",
   verified: "bbox 4건(폴리곤 없음)", polygon: false,
 
   netSize(W, D, H, { hangTab = 0 } = {}) {

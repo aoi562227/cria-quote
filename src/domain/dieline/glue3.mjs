@@ -90,7 +90,7 @@ import { GLUE_TAB, TIP_W } from "./geometry.mjs";
  *      이번 날개 재분배로는 풀리지 않는다(netH 는 s·b 가 정하고 패널 분배는 관여 안 한다).
  */
 export default {
-  id: "glue_3side", label: "삼면접착", polygon: true,
+  id: "glue_3side", label: "삼면접착", labelJa: "三面貼り", polygon: true,
 
   netSize(W, D, H, { hangTab = 0 } = {}) {
     const topLid   = 0.67 * D + 0.03 * W + 2.8;   // 작은 띠 (위)

@@ -2072,15 +2072,43 @@ console.log("\n── §O  별색 팬톤 조회 ──────────�
        /data-pms-warn="screen"/.test(p) && /warnScreen/.test(p));
     ok("★ 견본 옆에 «색을 골라도 금액은 안 바뀐다» 가 있다",
        /data-pms-warn="price"/.test(p) && /warnPrice/.test(p));
+    // ⚠ 「가까이 있는가」를 **글자 수**로 재지 마라 — 주석 한 문단에 창이 넘친다(그렇게
+    //   깨졌다). 재는 것은 「이 섹션 **안**에 있는가」이므로 위치 순서로 잰다:
+    //   섹션 시작 < 출처 줄 < 다음 형제(코팅 줄).
     ok("★ 검색 패널 안에 출처·상표 한 줄이 있다",
-       /data-pms-src="1"/.test(p) && /warnScreen[\s\S]{0,900}data-pms-src/.test(p));
+       p.indexOf('data-pms-src="1"') > p.indexOf('data-pms="1"') &&
+       p.indexOf('data-pms-src="1"') < p.indexOf("{/* 코팅 앞/뒤"));
+    // ★★ 26-09-03 — 정직성 두 줄이 **견본보다 먼저** 나오는가.
+    //  종전에는 f/b 반복 블록 **아래**였고, 1280×800 부스 노트북에서 공유 링크로 들어온
+    //  초기 화면(scrollTop=0)에 견본은 보이는데 두 줄은 화면 밖이었다(실측 warnScreen
+    //  y=916 · 뷰포트 하단 808). 「DOM 에 있는 정직성 문구는 읽히지 않으면 없는 것과
+    //  같다」가 이 저장소의 원칙이라, **소스 순서**로 그 자리를 못박는다.
+    ok("★★ 정직성 두 줄이 견본(f/b 반복 블록)보다 **위**에 있다 — 링크 초기 화면에서 읽힌다",
+       p.indexOf('data-pms-warn="screen"') > 0 &&
+       p.indexOf('data-pms-warn="screen"') < p.indexOf('{["f", "b"].filter(sd => spotOf(sd) > 0)') &&
+       p.indexOf('data-pms-warn="price"') < p.indexOf('{["f", "b"].filter(sd => spotOf(sd) > 0)'));
     ok("두 언어 다 있다 — 일본어는 1급이다 (고객이 읽는 쪽)",
        ["warnScreen", "warnPrice", "src", "none", "offline", "unknown", "loading"]
          .every(k => new RegExp(`\\b${k}:`).test(pm.split("const PMS_JA")[0]) &&
                      new RegExp(`\\b${k}:`).test(pm.split("const PMS_JA")[1] || "")));
     ok("일본어 문구가 실제로 일본어다 (한국어 사전을 복사해 두지 않았다)",
-       /画面の色は参考です/.test(pm) && /金額は変わりません/.test(pm) &&
+       /実際の特色と大きく異なる/.test(pm) && /金額は変わりません/.test(pm) &&
        /Pantone LLC とは無関係/.test(pm));
+    // ★★ 26-09-03 — 견본 색의 한계를 **원인과 크기로** 말하는가.
+    //  종전 문구는 「sRGB 모니터가 별색을 재현 못 한다」였는데 원인이 틀렸다: hex
+    //  2,374/2,415건이 같은 줄 CMYK 의 **단순 환산**과 정확히 일치하고(측정값이 아니다),
+    //  실제 팬톤 sRGB 와 표본 24건 중앙값 ΔE 32 · 최대 87 이다(Green C 실제 청록 →
+    //  화면 네온 초록). 「모니터 편차」로 적으면 고객은 그 정도로 읽고, 그 차이가 그대로
+    //  색 분쟁이 된다. U·M 이 C 에서 파생된 값(Δk=+3 고정)이라는 사실도 같이 적는다.
+    ok("★★ 견본 색의 한계를 원인(CMYK 단순환산)과 U·M 파생까지 적는다 — 모니터 탓으로 돌리지 않는다",
+       /CMYK 값을 단순 환산/.test(pm) && /CMYK 値を単純換算/.test(pm) &&
+       /U·M 견본은 C 에서 계산한 값/.test(pm) && /U・M の見本は C から計算した値/.test(pm));
+    // ★ 「없는 번호」와 「원래 화면으로 볼 수 없는 색」을 구별한다 — 실측: 871~877(금·은·동)
+    //   전건 0 건. 이 줄이 없으면 운영자가 「자료가 없다」로 말한다(금속색은 sRGB 견본이
+    //   원리적으로 무의미한 색이다 — 다른 말이다).
+    ok("★ 금속·형광은 「이 색표에 없다」가 아니라 「화면으로 볼 색이 아니다」로 적는다",
+       /금속색과 형광색은/.test(pm) && /화면으로 보여드릴 수 있는 색이 아닙니다/.test(pm) &&
+       /メタリックと蛍光色/.test(pm) && /画面ではお見せできない色です/.test(pm));
     ok("한국어 문구가 «Pantone LLC 와 무관» 을 명시한다",
        /Pantone LLC 와 무관/.test(pm) && /등록상표/.test(pm) && /근사값/.test(pm));
     ok("★ 「없는 번호」와 「없는 색」을 구별해 말한다 (수록 범위를 적는다)",

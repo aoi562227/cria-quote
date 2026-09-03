@@ -238,7 +238,7 @@ export const isValidTabW = v => Number.isFinite(Number(v))
 export const crossTabW = opt => (isValidTabW(opt?.glueTabW) ? Number(opt.glueTabW) : CROSS_TAB_W);
 
 export default {
-  id: "cross", label: "십자조립 (크로스바텀)", polygon: true,
+  id: "cross", label: "십자조립 (크로스바텀)", labelJa: "クロスボトム（組立式）", polygon: true,
 
   netSize(W, D, H, opt = {}) {
     const { hangTab = 0 } = opt;

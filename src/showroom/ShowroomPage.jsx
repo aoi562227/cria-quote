@@ -40,13 +40,16 @@ import { readDielineFile } from "../domain/pdf-dieline.mjs";
 // handleBoxType)과 **같은 함수**를 부른다: 여기서 따로 적으면 같은 구조를 골라도 두 화면의
 // 톰슨이 갈린다. (⚠ BoxSpec.jsx 에는 이 호출이 없다 — 대조하려면 App.jsx 를 열어라.)
 import { pdfPickOf, specHash, customSheetOf, noCostOfHash, nextThomId, pmsOfHash } from "../ui/state.mjs";
-import { BOX_TYPES } from "../ui/box-types.mjs";
+// ⚠ 구조·판형 목록은 **ui/box-types.mjs 를 안 쓴다.** 그쪽은 견적 앱용이라 라벨에
+//   검증 배지(「✓bbox 4건(폴리곤 없음)」)를 접어 넣는다 — 고객이 여는 목록에 둘 말이
+//   아니다. 이유는 showroom-core.boxChoices 주석이 소유한다.
 import { resolveDrop, findSpot, itemW, itemH, SNAP_PX } from "../ui/viz/nest-drag.mjs";
 import {
-  SHEET_CHOICES, frameOf, partOf, auditItems, autoPlace, fillMore,
+  frameOf, partOf, auditItems, autoPlace, fillMore,
   quoteInputOf, specSummaryOf, seedFromAuto, capToQuoteUp, seedOf, precisionKeyOf,
   linkStateOf, baseOf, specOf, qtyStepsOf, qtyRowsOf, upForPrice, resetKindOf,
-  paperChoices, coatChoices, glueChoices, thomChoices, T, LANGS,
+  paperChoices, coatChoices, glueChoices, thomChoices, boxChoices, sheetChoices,
+  sheetLabelOf, loadLang, saveLang, T, LANGS,
 } from "./showroom-core.mjs";
 // 고객에게 **얼마로 보여줄지**는 price-formula 가 소유한다 — 파서·반올림·통화 표기·
 // 저장·「거부되면 원가로 안 돌아간다」까지 전부. 이 파일은 그 결과만 그린다.
@@ -174,7 +177,11 @@ const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 //      그래서 아래 useState 초기화 함수로 한 번만 읽는다(값이 바뀌어 재초기화되기를
 //      기대하지 마라 — 그건 마운트 때만 돈다).
 export default function ShowroomPage({ carried = null }) {
-  const [lang, setLang] = useState("ko");
+  // ★ 26-09-03 — 초기값을 **이 브라우저에 적어둔 언어**에서 읽는다. 종전 useState("ko")는
+  //   새로고침·절전 복귀·크래시 복원 한 번에 일본 고객 앞 화면을 통째로 한국어로 되돌렸다
+  //   (금액·사양은 살아남는데 언어만 죽었다). 저장·판정은 showroom-core 가 소유한다.
+  const [lang, setLangRaw] = useState(loadLang);
+  const setLang = v => { setLangRaw(v); saveLang(v); };
   const t = T(lang);
   // 팬톤 사전은 따로다 — 남의 상표를 다루는 말이라 출처·면책과 한 덩어리로 읽혀야 한다
   // (price-formula 가 ADMIN_T 를 직접 들고 있는 것과 같은 판단).
@@ -393,6 +400,19 @@ export default function ShowroomPage({ carried = null }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [srcMode, pick, dlKey]);
 
+  // ── ★ 결과가 없을 때 **정확한 이유** (26-09-03) ────────────────────
+  //  종전에는 `!part || !frame` 하나로 묶여 전부 needDraw(「먼저 도면이나 치수를
+  //  입력하세요」)가 떴다. 부스 실측: 수량 0·음수·문자·공란과 치수 999(어느 판에도
+  //  안 들어감)까지 **다섯 경우 전부** 같은 말이었고, 그 옆에는 「전개도 4010.3 ×
+  //  2715.1 mm」가 같이 떠 있었다 — 화면이 이미 받은 것을 다시 달라고 한 셈이다.
+  //  운영자는 고객 앞에서 엉뚱한 칸을 고치게 된다.
+  //  ⚠ frame 이 없는 경우는 판형이 「자동」인데 도메인이 판을 못 고른 때뿐이다
+  //    (판형을 명시로 고르면 sheetBase 가 늘 잡힌다). 그 안에서 다시 둘로 갈린다:
+  //    수량이 성립하지 않으면 견적 자체가 못 서고, 성립하는데도 판이 없으면 안 들어가는
+  //    것이다. noFit 문구는 원래 있었는데 이 갈래가 없어 **도달을 못 했다.**
+  const blockWhy = !part ? t.needDraw
+                 : frame ? "" : (int(qty) > 0 ? t.noFit : t.needQty);
+
   // 도형이나 판이 바뀌면 앉힌 배치는 **뜻을 잃는다**(좌표가 다른 판의 좌표가 된다).
   // 조용히 남겨두면 옛 배치의 up 으로 새 도형의 단가가 나간다 — 지우고 다시 앉히게 한다.
   //
@@ -462,6 +482,13 @@ export default function ShowroomPage({ carried = null }) {
   // ── PDF ─────────────────────────────────────────────────────────
   const loadPdf = async (file, page = 0) => {
     if (!file || busy) return;
+    // ★ 26-09-03 — PDF 가 아니면 **거절을 말한다.** 부스 실측: text/plain 을 드롭하면
+    //   화면이 한 글자도 안 바뀌고 콘솔도 조용했다 — 고객이 AI·EPS·PNG 를 건네면
+    //   운영자가 두세 번 다시 떨어뜨려 보다가 사과하게 된다.
+    //   파일 선택 input 은 accept 로 이미 막혀 있어 **드롭 경로만** 비어 있었다.
+    if (!/\.pdf$/i.test(file.name || "") && file.type !== "application/pdf") {
+      setMsg(t.notPdf); return;
+    }
     setBusy("pdf"); setMsg("");
     try {
       const r = await readDielineFile(file, { page });
@@ -493,7 +520,7 @@ export default function ShowroomPage({ carried = null }) {
   //     · 400ms 디바운스라 수량을 「5 → 50 → 500 → 5000」으로 쳐도 **한 번만** 돈다.
   //    @param noteOf 성공했는데 고정 판걸이 안내가 없을 때 적을 말. (n) => string
   const runAuto = (noteOf) => {
-    if (!part || !frame) { setMsg(t.needDraw); return; }
+    if (blockWhy) { setMsg(blockWhy); return; }
     // ⚠ 다시 앉히는 중(noteOf)에는 **먼저 뜬 말을 지우지 않는다** — 지우면 그 사이
     //   온보딩 문구(「「자동 배치」를 누르면 …」)가 깜빡이고, 그건 지금 상황이 아니다.
     setBusy("auto"); if (!noteOf) setMsg("");
@@ -583,7 +610,7 @@ export default function ShowroomPage({ carried = null }) {
 
   // ── 손배치 ───────────────────────────────────────────────────────
   const enterHand = () => {
-    if (!part || !frame) { setMsg(t.needDraw); return; }
+    if (blockWhy) { setMsg(blockWhy); return; }
     if (!items) {
       // 씨앗은 자동 격자해 → 없으면 한 장. 한 장도 안 들어가면 켜지 않는다.
       // 손배치 씨앗도 고정값을 넘기지 않는다 — 넘치면 자른다(복원은 하지 않는다:
@@ -729,7 +756,7 @@ export default function ShowroomPage({ carried = null }) {
   //   주소가 가림 표시를 달고 왔거나(고객이 받은 링크). 둘 중 하나라도 참이면
   //   ① 주소에 가림 비트를 싣고 ② 「견적 앱으로 →」 문을 고객 화면에서 치운다.
   const hiding = isPriceOn(priceCfg) || linkNoCost;
-  const sheetLabel = frame ? (frame.sheet.label || frame.sheet.id).trim() : "";
+  const sheetLabel = frame ? sheetLabelOf(frame.sheet, lang) : "";
   const netW = part?.w ?? 0, netH = part?.h ?? 0;
   // 자유 배치 제안 — **아직 안 채택했을 때만** 낸다. 조건이 `via === "free"` 가
   // 아니게 된 이유는 autoPlace 주석에 있다(이제 자동 배치는 격자해를 앉힌다).
@@ -752,14 +779,27 @@ export default function ShowroomPage({ carried = null }) {
   //  ★ 26-08-27 — 팬톤 이름을 **그 면의 인쇄 줄 안에** 넣어 넘긴다(specSummaryOf 주석).
   //    부스에서 고객이 방금 「185」라고 불렀는데 사양 줄이 「별색 2도」로만 끝나면
   //    그 대화가 화면 밖에만 남는다.
-  //  ⚠ 단독 진입(`#showroom`, carried 없음)의 사양 줄은 종전대로 **고정 문구**(t.specLine)라
-  //    팬톤이 안 실린다. 그 줄은 지금도 화면에서 만진 지종·도수를 반영하지 않는다 —
-  //    이번 변경과 별개인 기존 한계이고, 고치려면 견적 라인에서 뽑는 경로로 바꿔야 한다.
+  //  ★★ 26-09-03 — 단독 진입(carried 없음)의 **고정 문구가 거짓말을 하고 있었다.**
+  //    부스 실측: 용지를 밍크지 Bold 350g 로, 코팅을 벨벳으로 바꿔 ¥36 → ¥58 → ¥67 로
+  //    금액이 정확히 따라 움직이는 동안, 그 바로 위 줄은 세 번 다 「標準仕様・AB 350g・
+  //    プロセス4色・IRコート・片面貼り」로 고정이었다 — **화면이 A 사양을 적어 놓고
+  //    B 사양의 값을 부른다.** 아래 KO 주석이 실려 온 사양에 대해 「그건 최악이다」라고
+  //    적어 둔 바로 그 경우가, 부스 기본 경로인 단독 진입에서 그대로 일어났다.
+  //    ⟹ **사양을 하나라도 만지면 그 문구를 지운다.** 표준사양 그대로일 때만 적는다
+  //      (그 상태에서는 참이고, verify-speclink §C 가 STD 계산과 대조해 지킨다).
+  //    ⚠ 왜 specSummaryOf 로 갈아타지 않았나 — 그 함수는 **견적 라인의 한국어 spec
+  //      문자열**을 잇는다(도메인이 만든 문장이라 labelJa 통로로 못 고친다). 일본 고객
+  //      화면에 한국어 사양 줄을 새로 만드는 셈이고, 전시회 직전에 치를 값이 아니다.
+  //      만진 사양은 **왼쪽 칸 자체가 이미 보여준다**(지종·도수·코팅 드롭다운이 바로 위다) —
+  //      화면이 틀린 말을 하느니 그 자리를 비우는 쪽이 낫다. 유보(개발비 제외)는 남긴다.
+  const stdSpec = useMemo(() => specOf(baseOf(null)), []);
+  const specTouched = useMemo(
+    () => Object.keys(stdSpec).some(k => over[k] !== stdSpec[k]), [over, stdSpec]);
   const specSum = carried
     ? specSummaryOf((qShow || qAuto)?.lines, t, { f: pmsName("f"), b: pmsName("b") }) : "";
   const specNote = carried
     ? (specSum ? `${t.specFrom} · ${specSum} ${t.exDev}` : "")
-    : t.specLine;
+    : (specTouched ? t.exDev : t.specLine);
 
   // ── 해시에 실을 상태 한 벌 ───────────────────────────────────────
   //  ★ **지금 화면의 값을 그대로 들고** 돌아간다. 부스에서 고객이 「조금 키우면?」
@@ -944,7 +984,7 @@ export default function ShowroomPage({ carried = null }) {
                     thomsonDefault 이고 화면은 읽기만 한다). */}
                 <Select value={boxType}
                   onChange={v => { setBoxType(v); put("thomId", nextThomId(v, over.thomId)); }}
-                  options={BOX_TYPES.map(b => [b.id, b.label])}/>
+                  options={boxChoices(lang)}/>
                 <div style={{ display: "flex", gap: 6 }}>
                   <Num label={t.w} value={bW} onChange={setBW}/>
                   <Num label={t.d} value={bD} onChange={setBD}/>
@@ -964,11 +1004,11 @@ export default function ShowroomPage({ carried = null }) {
                 고른 값이 목록에 없어 브라우저가 첫 항목(「자동」)을 보여주는데 상태는
                 여전히 custom 이라, 화면이 실제와 다른 판형을 말한다. */}
             <Select value={sheetId} onChange={setSheetId}
-              options={[["auto", `${t.auto}${qAuto?.sheet ? ` · ${(qAuto.sheet.label || "").trim()}` : ""}`],
+              options={[["auto", `${t.auto}${qAuto?.sheet ? ` · ${sheetLabelOf(qAuto.sheet, lang)}` : ""}`],
                         ...(sheetId === "custom" && frame
-                            ? [["custom", `${(frame.sheet.label || "").split("(")[0].trim()} ` +
+                            ? [["custom", `${sheetLabelOf(frame.sheet, lang).split("(")[0].trim()} ` +
                                           `(${mm1(frame.sheet.w)}×${mm1(frame.sheet.h)})`]] : []),
-                        ...SHEET_CHOICES.map(b => [b.id, `${b.label.trim()}`])]}/>
+                        ...sheetChoices(lang)]}/>
           </section>
 
           {/* 수량 */}
@@ -1040,6 +1080,30 @@ export default function ShowroomPage({ carried = null }) {
                 <div style={{ fontSize: 10.5, fontWeight: 700, color: C.faint,
                               letterSpacing: ".12em", marginBottom: 4 }}>{tp.label}</div>
 
+                {/* ★★ 정직성 — 견본보다 **먼저** 읽혀야 한다.
+                    ① 견본 색은 CMYK 를 단순 환산한 값이라 실제 별색과 크게 다를 수 있다
+                       (원인·실측은 pantone.mjs 의 warnScreen 주석이 소유한다).
+                    ② 색을 골라도 금액이 안 바뀐다 — 안 적으면 고객은 「반영이 안 됐나」로 읽는다.
+
+                    ★★ 26-09-03 — 이 두 줄을 **f/b 반복 블록 위로 올렸다.** 종전에는 반복
+                       블록 **아래**였고, 1280×800 부스 노트북에서 공유 링크로 들어온 초기
+                       화면(scrollTop=0)에 **견본은 보이는데 이 줄들은 화면 밖**이었다
+                       (실측: 앞 견본 y=785 · warnScreen y=916 · 뷰포트 하단 808 — 227px 더
+                       내려야 읽힌다). 운영자가 직접 번호를 칠 때는 검색칸까지 내려가므로
+                       보이지만, 「그 사양 그대로 다시 띄워 주세요」로 링크를 열어 노트북을
+                       고객 쪽으로 돌리는 순간 — pantone.mjs 가 요구의 본체라고 적은 바로 그
+                       동작 — 고객은 색과 금액만 보고 유보는 못 본다.
+                       이 저장소의 원칙에 정면으로 걸린다: 「DOM 에 있는 정직성 문구는
+                       읽히지 않으면 없는 것과 같다」.
+                    ⚠ 반복 블록 **밖**이라 앞뒤 두 벌이 되지 않는다(한 번만 뜬다) — 위치를
+                      옮긴 뒤에도 그 성질은 그대로다.
+                    ⚠ 색은 C.sub — 읽어야 하는 글이다. faint 로 내리지 마라(부스 조명에서
+                      안 읽힌다 · C 주석). */}
+                <div data-pms-warn="screen" style={{ fontSize: 10.5, color: C.sub, lineHeight: 1.6,
+                                                     marginTop: 2 }}>{tp.warnScreen}</div>
+                <div data-pms-warn="price" style={{ fontSize: 10.5, color: C.sub,
+                                                    lineHeight: 1.6, marginBottom: 2 }}>{tp.warnPrice}</div>
+
                 {["f", "b"].filter(sd => spotOf(sd) > 0).map(sd => {
                   const rec = pmsRec(sd);
                   const q = pmsQ[sd];
@@ -1048,7 +1112,9 @@ export default function ShowroomPage({ carried = null }) {
                   return (
                     <div key={sd} data-pms-side={sd} style={{ marginTop: 6 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                        <span style={{ fontSize: 11, color: C.faint, width: 15, flexShrink: 0 }}>
+                        {/* ⚠ C.sub 다 — 앞뒤 별색을 둘 다 쓸 때 두 검색칸을 구별하는
+                            **유일한** 표식이라, 안 보이면 앞 색을 뒤 칸에 넣는다. */}
+                        <span style={{ fontSize: 11, color: C.sub, width: 15, flexShrink: 0 }}>
                           {sd === "f" ? t.sideF : t.sideB}</span>
                         {/* ⚠ **받는 중에는 안 잠근다.** 색표를 받기 시작하는 순간이 곧
                             운영자가 이 칸을 누르는 순간이다(별색 도수를 올린 직후). 전시장
@@ -1082,7 +1148,12 @@ export default function ShowroomPage({ carried = null }) {
                         </button>
                       ))}
                       {res && res.total > res.hits.length && (
-                        <div style={{ fontSize: 10, color: C.faint, marginTop: 3 }}>
+                        // ⚠ C.sub 다(faint 1.99:1 은 부스 조명에서 안 읽힌다 · C 주석).
+                        //   이 줄은 pantone.mjs 가 total 을 두는 이유 그 자체다 —
+                        //   운영자가 「이게 전부」로 오해하지 않게 하는 정직성 줄인데,
+                        //   안 읽히면 24건 중 6건만 보고 「그 번호는 6건뿐입니다」라고 말한다.
+                        //   위계는 크기(10px)로 이미 준다.
+                        <div style={{ fontSize: 10, color: C.sub, marginTop: 3 }}>
                           {tp.more(res.hits.length, res.total)}</div>)}
                       {/* ★ 「없는 번호」와 「없는 색」은 다른 말이다 — 이 색표는 팬톤 전체가
                           아니다(수록 100–699 · 7400–7549 · 이름색 55). 부스에서 운영자가
@@ -1131,16 +1202,6 @@ export default function ShowroomPage({ carried = null }) {
                   );
                 })}
 
-                {/* ★★ 정직성 — 견본 **바로 밑**이다. 구석에 작게 숨기지 마라.
-                    ① 모니터로 색을 승인받으면 그게 그대로 분쟁이 된다(sRGB 는 별색을
-                       재현하지 못한다). ② 색을 골라도 금액이 안 바뀐다 — 안 적으면
-                       고객은 「반영이 안 됐나」로 읽는다. 문구는 pantone.mjs 가 소유한다.
-                    ⚠ 색은 C.sub(#6a7280, 대비 4.20:1) — 읽어야 하는 글이다. faint 로
-                      내리지 마라(1.86:1, 부스 조명에서 안 읽힌다 · C 주석). */}
-                <div data-pms-warn="screen" style={{ fontSize: 10.5, color: C.sub, lineHeight: 1.6,
-                                                     marginTop: 8 }}>{tp.warnScreen}</div>
-                <div data-pms-warn="price" style={{ fontSize: 10.5, color: C.sub,
-                                                    lineHeight: 1.6 }}>{tp.warnPrice}</div>
                 {/* 출처·라이선스·상표 — 이 앱은 gh-pages 로 **공개 배포**된다.
                     ⚠ 이 줄도 C.sub 다. 처음에 faint(1.86:1)로 깔았다가 되돌렸다 — 남의
                       상표에 대한 고지를 「부스 조명에서 안 보이는 회색」으로 적는 것은
@@ -1183,7 +1244,7 @@ export default function ShowroomPage({ carried = null }) {
               ⚠ 견적서에서 사양이 실려 오면 이 줄이 **그 사양**을 말해야 한다. 표준사양
                 문구를 그대로 두면 화면은 295AB 로 계산하고 글은 AB350 이라고 적는
                 거짓말이 된다 (data-spec 으로 실측 확인한다). */}
-          <div data-spec={carried ? "carried" : "std"}
+          <div data-spec={carried ? "carried" : specTouched ? "custom" : "std"}
             style={{ fontSize: 10.5, color: C.sub, lineHeight: 1.7 }}>{specNote}</div>
         </aside>
 
@@ -1241,7 +1302,8 @@ export default function ShowroomPage({ carried = null }) {
                 onDown={onDown} onMove={onMove} onUp={onUp} onKey={onKey}
                 onBlank={() => { setSel(null); setMsg(""); }}/>
             ) : (
-              <div style={{ color: C.faint, fontSize: 13 }}>{t.needDraw}</div>
+              // 판이 없을 때도 **이유가 맞는 말**이어야 한다 — 위 blockWhy 주석 참조.
+              <div style={{ color: C.faint, fontSize: 13 }}>{blockWhy || t.needDraw}</div>
             )}
           </div>
 
@@ -1294,8 +1356,9 @@ export default function ShowroomPage({ carried = null }) {
             <Big value={shown.main} unit={shown.unitKey ? t[shown.unitKey] : ""} pre={t.perEA}/>
             <div style={{ flex: 1 }}/>
             <div style={{ fontSize: 12, color: C.sub, lineHeight: 1.9, textAlign: "right" }}>
+              {/* ⚠ 판이 없으면 「0 × 0 mm」가 아니라 「—」다 — 0×0 판은 존재하지 않는다. */}
               <div><span style={{ color: C.faint }}>{t.sheetSize}</span>{"  "}
-                {sheetLabel} · {mm1(frame?.drawW ?? 0)} × {mm1(frame?.drawH ?? 0)} mm</div>
+                {frame ? `${sheetLabel} · ${mm1(frame.drawW)} × ${mm1(frame.drawH)} mm` : "—"}</div>
               <div><span style={{ color: C.faint }}>{t.netSize}</span>{"  "}
                 {mm1(netW)} × {mm1(netH)} mm</div>
               {/* ⚠ 수량은 **지금 수량이 아래 표에 없을 때만** 여기서 말한다. 표에 있으면
@@ -1349,6 +1412,24 @@ export default function ShowroomPage({ carried = null }) {
                     </div>
                   );
                 })}
+              </div>
+            )}
+
+            {/* ══ ★★ 이 수가 무엇인지 말한다 (26-09-03) ═══════════════
+                부스 실측에서 고객 화면 전수 검색 결과 税·消費税·税別·参考·見積·有効·
+                送料·為替 가 **0건**이었다. 유일한 유보는 왼쪽 아래 사양 줄 끝의
+                「(개당단가는 개발비 제외)」뿐인데, 그건 ¥ 에서 320px 떨어져 있고
+                고객이 읽는 것은 큰 글씨다. 일본 상거래에서 税抜/税込 는 반드시 묻는
+                항목이고, 부스에서 본 수는 그대로 **약속**으로 남는다.
+                ⚠ 자리는 상자 **안**이다 — 밖에 두면 「금액과 무관한 안내」로 읽힌다.
+                ⚠ 값이 없을 때(「—」)는 안 적는다: 유보할 수가 없다.
+                ⚠ 환율·기준일은 **화면이 모른다**(운영자가 관리자 패널에 손으로 친
+                  수식에서 나온 값이다). 모르는 것을 적지 않고, 「우리가 정한 환산값」
+                  이라는 사실만 적는다 — 문구는 showroom-core 가 소유한다. */}
+            {shown.main !== "—" && (
+              <div data-refnote="1" style={{ flexBasis: "100%", fontSize: 10.5, color: C.sub,
+                                             lineHeight: 1.5, marginTop: 2 }}>
+                {t.refPrice}{shown.cur === "JPY" ? ` ${t.refFx}` : ""}
               </div>
             )}
           </div>
