@@ -39,7 +39,7 @@ import { readDielineFile } from "../domain/pdf-dieline.mjs";
 // nextThomId — 구조가 톰슨 기본값을 선언했으면 그걸로 바꾼다. 견적 앱(App.jsx 의
 // handleBoxType)과 **같은 함수**를 부른다: 여기서 따로 적으면 같은 구조를 골라도 두 화면의
 // 톰슨이 갈린다. (⚠ BoxSpec.jsx 에는 이 호출이 없다 — 대조하려면 App.jsx 를 열어라.)
-import { pdfPickOf, specHash, customSheetOf, noCostOfHash, nextThomId, pmsOfHash } from "../ui/state.mjs";
+import { pdfPickOf, specHash, customSheetOf, noCostOfHash, nextThomId } from "../ui/state.mjs";
 // ⚠ 구조·판형 목록은 **ui/box-types.mjs 를 안 쓴다.** 그쪽은 견적 앱용이라 라벨에
 //   검증 배지(「✓bbox 4건(폴리곤 없음)」)를 접어 넣는다 — 고객이 여는 목록에 둘 말이
 //   아니다. 이유는 showroom-core.boxChoices 주석이 소유한다.
@@ -57,12 +57,11 @@ import {
   shownPriceOf, shownRowsOf, adminViewOf, loadPriceCfg, savePriceCfg, isPriceOn,
   CUR_CHOICES, ADMIN_T,
 } from "./price-formula.mjs";
-// 팬톤 색표는 **178KB 라 번들에 안 넣는다** — public/ 에 두고 별색을 쓸 때 처음 한 번
-// fetch 한다. 근사치라는 사실·출처·상표 고지·「모니터로 승인받지 마라」까지 전부
-// pantone.mjs 가 소유한다(그 머리말이 이 기능의 절반이다).
+// 환율은 **fx-rate 가 소유한다** — 어디서 받고·언제 받았고·쓸 수 있는 값인지까지.
+// 이 파일이 하는 일은 「언제 받을지」를 통제하는 것 하나뿐이다(진입 1회 + 관리자 버튼).
 import {
-  loadPantone, searchPantone, findPantone, cmykTextOf, pmsCodeOf, _resetPantoneCache, TP,
-} from "./pantone.mjs";
+  fetchFxRate, loadFx, saveFx, fxViewOf, needFxFetch, manualFxOf, FX_ADMIN_T,
+} from "./fx-rate.mjs";
 
 // ── 색 · 치수 ──────────────────────────────────────────────────────
 //  ★ 회색 두 단의 용도가 갈려 있다 — 섞지 마라.
@@ -183,9 +182,6 @@ export default function ShowroomPage({ carried = null }) {
   const [lang, setLangRaw] = useState(loadLang);
   const setLang = v => { setLangRaw(v); saveLang(v); };
   const t = T(lang);
-  // 팬톤 사전은 따로다 — 남의 상표를 다루는 말이라 출처·면책과 한 덩어리로 읽혀야 한다
-  // (price-formula 가 ADMIN_T 를 직접 들고 있는 것과 같은 판단).
-  const tp = TP(lang);
 
   // 전개도 전체크기 직접입력으로 실려 온 사양(슬리브 등)은 W·D·H 공식이 없다.
   // 훅이 아니라 파생값이다 — carried 는 이 화면이 사는 동안 안 바뀐다.
@@ -218,45 +214,6 @@ export default function ShowroomPage({ carried = null }) {
   const put = (k, v) => setOver(p => ({ ...p, [k]: v }));
   // 별색은 0~8 — 견적 앱(PrintPanel)과 같은 범위로 접는다. 여기서 넓히면 두 화면이 갈린다.
   const putSp = (k, v) => put(k, String(Math.max(0, Math.min(8, parseInt(v, 10) || 0))));
-
-  // ── ★ 별색 팬톤 번호 (26-08-27) ─────────────────────────────────
-  //  사용자 요구 원문: 「우리꺼에 팬톤색상 검색하면 나올 수 있도록 그런 기능은 추가가안되나?」
-  //  부스에서 고객이 「이 색」 하고 **번호를 부른다.** 그 번호를 화면에서 찾아 견본과
-  //  CMYK 근사를 같이 본다. 정직성 문구·검색·색표는 pantone.mjs 가 소유한다.
-  //
-  //  ★ **금액은 안 움직인다.** `over` 에 안 넣는 것이 그 사실의 구조적 표현이다 —
-  //    `over` 는 specOf 로 걸러 quoteInputOf 에 흘러 들어가는 **사양 한 벌**이고,
-  //    거기 한 칸 끼우면 팬톤이 금액 계산기의 입력이 된다. 별개 상태로 둔다.
-  //    (링크에도 `q=` 가 아니라 형제 파라미터 `pf=`·`pb=` 로 실린다 — state.mjs 주석.)
-  //  ⚠ 값은 **짧은 코드**(「185 C」)로 든다. 주소창에 그대로 읽히고(encodeSpec 과 같은
-  //    규율), findPantone 이 「Pantone 」 접두 유무를 둘 다 받는다.
-  const [pms, setPms] = useState(
-    () => (typeof window === "undefined" ? { f: "", b: "" } : pmsOfHash(window.location.hash)));
-  const [pmsQ, setPmsQ] = useState({ f: "", b: "" });
-  // null = 아직 안 받았다 · {ok:false} = 못 받았다(오프라인 부스·404). 둘은 다른 말이다.
-  const [pmsData, setPmsData] = useState(null);
-  const [pmsTry, setPmsTry] = useState(0);              // 「다시 시도」 카운터
-  const spotOf = sd => int(over[`${sd}pSp`]);
-  // 별색이 앞뒤 다 0 이면 **색표를 받지도 않는다.** 첫 화면을 178KB 만큼 무겁게 하지
-  // 않겠다는 것이 fetch 로 미룬 이유였다 — 그 이유를 여기서 지킨다.
-  const pmsNeeded = spotOf("f") > 0 || spotOf("b") > 0;
-  useEffect(() => {
-    if (!pmsNeeded) return;
-    let live = true;
-    loadPantone().then(r => { if (live) setPmsData(r); });
-    return () => { live = false; };
-  }, [pmsNeeded, pmsTry]);
-  /** 목록에서 **실제로 찾은** 항목만 준다. 링크로 들어온 낯선 문자열로 견본을 칠하지
-   *  않는다 — 출처를 못 대는 색을 고객에게 보여주는 것이 이 기능이 막으려는 일이다. */
-  const pmsRec = sd => (pmsData?.ok ? findPantone(pmsData.list, pms[sd]) : null);
-  /** 사양 줄·화면에 적을 이름. 별색 0 이면 빈 문자열 — 안 쓰는 색을 사양에 적지 않는다. */
-  const pmsName = sd => (spotOf(sd) > 0 ? (pmsRec(sd)?.name || "") : "");
-  const pickPms = (sd, o) => {
-    setPms(p => ({ ...p, [sd]: o ? pmsCodeOf(o) : "" }));
-    setPmsQ(p => ({ ...p, [sd]: "" }));                 // 고르면 결과 목록을 접는다
-  };
-  // 오프라인 부스에서 랜선이 돌아왔을 때 — 화면을 새로고침하게 만들지 않는다.
-  const retryPms = () => { _resetPantoneCache(); setPmsData(null); setPmsTry(n => n + 1); };
 
   // ── 배치 ────────────────────────────────────────────────────────
   const [items, setItemsRaw] = useState(null);          // 확정 배치 (null = 아직 안 앉힘)
@@ -321,6 +278,48 @@ export default function ShowroomPage({ carried = null }) {
     const next = typeof fn === "function" ? fn(priceCfg) : fn;
     setPriceCfg(next);
     if (!isPriceOn(next)) setLinkNoCost(false);
+  };
+
+  // ── ★ 환율 — **갱신 시점을 여기서 통제한다** (26-09-04) ──────────
+  //  왜 상태에 얼려 두는가: 고객에게 ¥38 을 보여준 뒤 환율이 갱신돼 ¥39 가 되면
+  //  그 자체가 사고다. 그래서 값이 바뀌는 경로는 **둘뿐**이다 —
+  //    ① 화면 진입(마운트) 시 1회, 그것도 캐시가 낡았을 때만(needFxFetch)
+  //    ② 관리자가 「지금 갱신」을 누를 때
+  //  ⚠ 타이머·폴링·렌더마다 부르기를 넣지 마라. 상담 중에 값이 조용히 바뀐다.
+  const [fxStore, setFxStore] = useState(loadFx);
+  const [fxBusy, setFxBusy] = useState(false);
+  const [fxErr, setFxErr] = useState("");
+  /** ★ 화면과 관리자 패널이 **같은 객체**를 본다. adminOpen 을 의존에 넣는 이유는
+   *  낡음(며칠 지났나)이 시간이 흐르면 달라지기 때문이다 — 패널을 열 때마다 다시 잰다.
+   *  값(v) 자체는 fxStore 가 안 바뀌면 안 바뀐다 = 금액은 그대로다. */
+  const fx = useMemo(() => fxViewOf(fxStore, Date.now()), [fxStore, adminOpen]);
+
+  /** 받아서 저장까지. 실패해도 **기존 값을 안 지운다** — 마지막으로 받은 값이 남는다. */
+  const pullFx = async () => {
+    setFxBusy(true); setFxErr("");
+    const r = await fetchFxRate({});
+    setFxBusy(false);
+    if (!r.ok) { setFxErr(r.why); return; }
+    setFxStore(s => { const n = { ...s, net: r.rec }; saveFx(n); return n; });
+  };
+  useEffect(() => {
+    if (typeof window === "undefined") return;      // SSR·테스트 렌더에서는 망을 안 탄다
+    if (!needFxFetch(fxStore, Date.now())) return;  // 캐시가 신선하면 안 탄다(태블릿·새로고침)
+    pullFx();
+    // ⚠ 의존배열이 **비어 있어야** 한다. fxStore 를 넣으면 받은 값이 다시 효과를 깨워
+    //   고리가 된다. 「진입 시 1회」가 이 대괄호 안의 공백이다.
+  }, []);
+  /** 수동 입력 — 부스에 망이 없거나 **사내 환율**을 써야 할 때. 망 값보다 이긴다. */
+  const setManualFx = text => {
+    const r = manualFxOf(text);
+    if (!r.ok) { setFxErr(r.why); return false; }
+    setFxErr("");
+    setFxStore(s => { const n = { ...s, manual: r.rec }; saveFx(n); return n; });
+    return true;
+  };
+  const clearManualFx = () => {
+    setFxErr("");
+    setFxStore(s => { const n = { ...s, manual: null }; saveFx(n); return n; });
   };
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -728,11 +727,13 @@ export default function ShowroomPage({ carried = null }) {
   //   그 뒤로는 화면에 안 나온다 — 고객이 보는 것은 `shown`(원가·수식·이유가 없는
   //   객체)이고, 원가는 `av`(관리자 몫)에만 있으며 관리자 패널 안에서만 그린다.
   //   이 분리가 「고객 화면 DOM 에 원가가 없다」를 보증하는 자리다(verify-speclink §M).
-  const shown = useMemo(() => shownPriceOf({ perEA, up, cfg: priceCfg, lang, hideCost: linkNoCost }),
-                        [perEA, up, priceCfg, lang, linkNoCost]);
+  //   ⚠ `fx` 는 **환율을 쓰는 수식에만** 영향을 준다. 기존 숫자 수식(`*1.7/10`)은
+  //     트리에 환율 잎이 없어 이 인자를 아예 안 읽는다(price-formula usesRate).
+  const shown = useMemo(() => shownPriceOf({ perEA, up, cfg: priceCfg, lang, hideCost: linkNoCost, fx }),
+                        [perEA, up, priceCfg, lang, linkNoCost, fx]);
   const av = useMemo(() => (adminOpen
-    ? adminViewOf({ perEA, up, cfg: priceCfg, lang, hideCost: linkNoCost }) : null),
-                     [adminOpen, perEA, up, priceCfg, lang, linkNoCost]);
+    ? adminViewOf({ perEA, up, cfg: priceCfg, lang, hideCost: linkNoCost, fx }) : null),
+                     [adminOpen, perEA, up, priceCfg, lang, linkNoCost, fx]);
 
   // ── ★ 수량별 개당 — 「1,000개면 얼마, 5,000개면 얼마」 ─────────────
   //  ★ 이 파일은 **원가를 한 번도 만지지 않는다.** qtyRowsOf 가 도메인(buildQuoteRange)에서
@@ -750,8 +751,8 @@ export default function ShowroomPage({ carried = null }) {
     ? qtyRowsOf({ ...spec, sheetId: sheetBase.id, up }, qtySteps) : []),
                           [spec, sheetBase?.id, up, qtySteps]);
   const qtyShown = useMemo(
-    () => shownRowsOf({ rows: qtyRows, cfg: priceCfg, lang, hideCost: linkNoCost }),
-    [qtyRows, priceCfg, lang, linkNoCost]);
+    () => shownRowsOf({ rows: qtyRows, cfg: priceCfg, lang, hideCost: linkNoCost, fx }),
+    [qtyRows, priceCfg, lang, linkNoCost, fx]);
   // ★ 지금 원가를 가리고 있는가. 두 갈래다 — 이 브라우저에 수식이 있거나(부스 노트북),
   //   주소가 가림 표시를 달고 왔거나(고객이 받은 링크). 둘 중 하나라도 참이면
   //   ① 주소에 가림 비트를 싣고 ② 「견적 앱으로 →」 문을 고객 화면에서 치운다.
@@ -776,9 +777,6 @@ export default function ShowroomPage({ carried = null }) {
   //    「견적서 사양 · (개당단가는 개발비 제외)」라는 뜻 없는 줄이 남는다. 그러면
   //    아무 말도 하지 않는다 — 설명할 단가 자체가 없다(결과도 「—」다).
   //    표준사양 문구로 접으면 안 된다: 실려 온 사양이 아닌 것을 말하게 된다.
-  //  ★ 26-08-27 — 팬톤 이름을 **그 면의 인쇄 줄 안에** 넣어 넘긴다(specSummaryOf 주석).
-  //    부스에서 고객이 방금 「185」라고 불렀는데 사양 줄이 「별색 2도」로만 끝나면
-  //    그 대화가 화면 밖에만 남는다.
   //  ★★ 26-09-03 — 단독 진입(carried 없음)의 **고정 문구가 거짓말을 하고 있었다.**
   //    부스 실측: 용지를 밍크지 Bold 350g 로, 코팅을 벨벳으로 바꿔 ¥36 → ¥58 → ¥67 로
   //    금액이 정확히 따라 움직이는 동안, 그 바로 위 줄은 세 번 다 「標準仕様・AB 350g・
@@ -796,7 +794,7 @@ export default function ShowroomPage({ carried = null }) {
   const specTouched = useMemo(
     () => Object.keys(stdSpec).some(k => over[k] !== stdSpec[k]), [over, stdSpec]);
   const specSum = carried
-    ? specSummaryOf((qShow || qAuto)?.lines, t, { f: pmsName("f"), b: pmsName("b") }) : "";
+    ? specSummaryOf((qShow || qAuto)?.lines, t) : "";
   const specNote = carried
     ? (specSum ? `${t.specFrom} · ${specSum} ${t.exDev}` : "")
     : (specTouched ? t.exDev : t.specLine);
@@ -857,12 +855,7 @@ export default function ShowroomPage({ carried = null }) {
   //  ★ 가리는 중이면 **가림 비트를 같이 싣는다**(`&nc=1`). 이 주소가 곧 부스 밖으로
   //    나가는 링크다 — 비트가 없으면 받는 브라우저가 원가로 접힌다(state.noCostOfHash
   //    주석의 실측 critical). 수식 자체는 여전히 안 싣는다.
-  //  ★ 팬톤 번호도 같이 싣는다(`&pf=`·`&pb=`) — 새로고침·주소 공유에서 살아야 부스에서
-  //    「그 사양 그대로 다시 띄워 주세요」가 주소 하나로 넘어간다. 값이 비면 주소는
-  //    **한 글자도 안 늘어난다**(state.specHash 의 sib).
-  //  ⚠ 별색 도수를 0 으로 내려도 코드는 계속 싣는다 — 화면은 접히지만 도수를 다시
-  //    올리면 고른 색이 그대로 돌아온다. 부스에서 「역시 별색 넣죠」에 다시 치게 하지 않는다.
-  const syncHash = specHash("showroom", linkState(sheetId), { nc: hiding, pf: pms.f, pb: pms.b });
+  const syncHash = specHash("showroom", linkState(sheetId), { nc: hiding });
   useEffect(() => {
     if (typeof window === "undefined") return;
     const id = setTimeout(() => {
@@ -893,8 +886,16 @@ export default function ShowroomPage({ carried = null }) {
             왜 3번인가 — 고객이 제목을 우연히 세 번 연속 누르지는 않는다(라벨도 배지도
             커서 변화도 없다). 단축키를 못 쓰는 상황(맥 키보드·IME·터치)에서도 열린다.
             ⚠ 눈에 보이는 「관리자」 버튼으로 만들지 마라 — 그 순간 고객이 누른다. */}
-        <div onClick={bumpTitleTap} style={{ fontSize: 15, fontWeight: 800, letterSpacing: ".02em",
-                                             userSelect: "none" }}>{t.title}</div>
+        {/* ★ 26-09-04 터치 — 실측 1280×800 에서 이 칸의 히트영역이 **199×21px** 이었다.
+            손가락으로 21px 을 TAP_GAP_MS 안에 세 번 맞히는 것은 사실상 안 된다(권장 44px).
+            게다가 뷰포트 메타에 user-scalable 제한이 없어 **더블탭 확대**가 살아 있고,
+            그게 2·3번째 탭을 가로채 확대만 되고 카운터는 안 오르는 조합이 된다.
+            둘 다 아래 @media(pointer:coarse) 에서 푼다 — 마우스 화면은 21px 그대로다.
+            ⚠ data-titletap 은 그 규칙이 잡을 손잡이다. 지우면 태블릿에서 관리자 패널로
+              들어갈 길이 **다시** 막힌다(사용자가 두 번 물었던 그 고장). */}
+        <div data-titletap="1" onClick={bumpTitleTap}
+             style={{ fontSize: 15, fontWeight: 800, letterSpacing: ".02em",
+                      userSelect: "none" }}>{t.title}</div>
         <div style={{ flex: 1 }}/>
         <div style={{ display: "flex", gap: 2 }}>
           {LANGS.map(([id, label]) => (
@@ -1059,159 +1060,6 @@ export default function ShowroomPage({ carried = null }) {
               </div>
             </Row>
 
-            {/* ══ ★ 팬톤 — 별색 도수 **바로 밑**, 별색이 0 이면 통째로 접힌다 (26-08-27) ══
-                사용자 요구 원문: 「우리꺼에 팬톤색상 검색하면 나올 수 있도록 그런 기능은
-                추가가안되나?」 부스에서 고객이 「이 색」 하고 번호를 부른다.
-
-                ⚠ 왜 별색 칸 **옆**이 아니라 **밑**인가 — aside 폭이 292px(내용 256px)이고
-                  Row 의 값 영역은 194px 다. 거기에 검색칸·결과·견본·CMYK 를 넣으면 이름이
-                  세 글자마다 줄바꿈된다(실측: 「Pantone Reflex Blue C」 = 150px). 바로 밑
-                  전폭이 그 칸에서 **물리적으로 가장 가까운 자리**다.
-                ⚠ 앞/뒤를 두 섹션으로 나누지 않는다 — 그러면 정직성 두 줄이 두 벌이 되고,
-                  그 두 줄은 화면에서 **한 번만** 크게 읽혀야 하는 말이다.
-
-                ★★ 알록달록 금지의 **유일한 예외**가 여기다. 색 견본은 그 색이어야 한다 —
-                   그것이 이 기능의 전부다. 다만 견본 **말고는** 한 색도 늘리지 않는다:
-                   글·테두리·배경은 전부 기존 C 팔레트이고, 판(SVG)에는 손대지 않는다
-                   (도면 stroke 2종 · SVG text 0개 규칙 그대로). */}
-            {pmsNeeded && (
-              <section data-pms="1" style={{ marginTop: 10, padding: "9px 10px", borderRadius: 7,
-                                             background: C.soft, border: `1px solid ${C.line}` }}>
-                <div style={{ fontSize: 10.5, fontWeight: 700, color: C.faint,
-                              letterSpacing: ".12em", marginBottom: 4 }}>{tp.label}</div>
-
-                {/* ★★ 정직성 — 견본보다 **먼저** 읽혀야 한다.
-                    ① 견본 색은 CMYK 를 단순 환산한 값이라 실제 별색과 크게 다를 수 있다
-                       (원인·실측은 pantone.mjs 의 warnScreen 주석이 소유한다).
-                    ② 색을 골라도 금액이 안 바뀐다 — 안 적으면 고객은 「반영이 안 됐나」로 읽는다.
-
-                    ★★ 26-09-03 — 이 두 줄을 **f/b 반복 블록 위로 올렸다.** 종전에는 반복
-                       블록 **아래**였고, 1280×800 부스 노트북에서 공유 링크로 들어온 초기
-                       화면(scrollTop=0)에 **견본은 보이는데 이 줄들은 화면 밖**이었다
-                       (실측: 앞 견본 y=785 · warnScreen y=916 · 뷰포트 하단 808 — 227px 더
-                       내려야 읽힌다). 운영자가 직접 번호를 칠 때는 검색칸까지 내려가므로
-                       보이지만, 「그 사양 그대로 다시 띄워 주세요」로 링크를 열어 노트북을
-                       고객 쪽으로 돌리는 순간 — pantone.mjs 가 요구의 본체라고 적은 바로 그
-                       동작 — 고객은 색과 금액만 보고 유보는 못 본다.
-                       이 저장소의 원칙에 정면으로 걸린다: 「DOM 에 있는 정직성 문구는
-                       읽히지 않으면 없는 것과 같다」.
-                    ⚠ 반복 블록 **밖**이라 앞뒤 두 벌이 되지 않는다(한 번만 뜬다) — 위치를
-                      옮긴 뒤에도 그 성질은 그대로다.
-                    ⚠ 색은 C.sub — 읽어야 하는 글이다. faint 로 내리지 마라(부스 조명에서
-                      안 읽힌다 · C 주석). */}
-                <div data-pms-warn="screen" style={{ fontSize: 10.5, color: C.sub, lineHeight: 1.6,
-                                                     marginTop: 2 }}>{tp.warnScreen}</div>
-                <div data-pms-warn="price" style={{ fontSize: 10.5, color: C.sub,
-                                                    lineHeight: 1.6, marginBottom: 2 }}>{tp.warnPrice}</div>
-
-                {["f", "b"].filter(sd => spotOf(sd) > 0).map(sd => {
-                  const rec = pmsRec(sd);
-                  const q = pmsQ[sd];
-                  // 색표를 못 받았으면 검색 자체를 안 돌린다 — 「0건」이 아니라 「못 불러왔다」다.
-                  const res = (q.trim() && pmsData?.ok) ? searchPantone(pmsData.list, q) : null;
-                  return (
-                    <div key={sd} data-pms-side={sd} style={{ marginTop: 6 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                        {/* ⚠ C.sub 다 — 앞뒤 별색을 둘 다 쓸 때 두 검색칸을 구별하는
-                            **유일한** 표식이라, 안 보이면 앞 색을 뒤 칸에 넣는다. */}
-                        <span style={{ fontSize: 11, color: C.sub, width: 15, flexShrink: 0 }}>
-                          {sd === "f" ? t.sideF : t.sideB}</span>
-                        {/* ⚠ **받는 중에는 안 잠근다.** 색표를 받기 시작하는 순간이 곧
-                            운영자가 이 칸을 누르는 순간이다(별색 도수를 올린 직후). 전시장
-                            Wi-Fi 에서 178KB 가 한두 초 걸리는데 그동안 칸이 잠겨 있으면
-                            고객 앞에서 친 「185」가 통째로 사라진다. 친 것은 남고, 표가
-                            도착하는 순간 결과가 뜬다. 잠그는 것은 **못 받았을 때**뿐이다 —
-                            그때는 아무리 쳐도 나올 것이 없고, 화면이 그 이유를 말한다. */}
-                        <input value={q} data-pms-q={sd} placeholder={tp.ph}
-                          disabled={!!pmsData && !pmsData.ok}
-                          onChange={e => setPmsQ(p => ({ ...p, [sd]: e.target.value }))}
-                          style={{ flex: 1, minWidth: 0, boxSizing: "border-box", padding: "5px 7px",
-                                   borderRadius: 5, border: `1px solid ${C.line}`,
-                                   background: (pmsData && !pmsData.ok) ? C.bg : "#fff",
-                                   color: C.ink, font: `12px ${FONT}` }}/>
-                      </div>
-
-                      {/* 결과 — 몇 개만. 자른 사실을 「6/24건」으로 적는다(「이게 전부」로 안 읽히게). */}
-                      {res && res.hits.map(o => (
-                        <button key={o.name} type="button" data-pms-hit={o.name}
-                          onClick={() => pickPms(sd, o)}
-                          style={{ display: "flex", alignItems: "center", gap: 7, width: "100%",
-                                   marginTop: 3, padding: "4px 6px", borderRadius: 5, cursor: "pointer",
-                                   border: `1px solid ${C.line}`, background: "#fff",
-                                   font: `12px ${FONT}`, color: C.ink, textAlign: "left" }}>
-                          {/* ★ 견본 — 여기만 색이 는다. 테두리는 흰색·아주 밝은 색이
-                              배경(#fff)에 녹아 「견본이 없는 것」처럼 보이는 것을 막는다. */}
-                          <span style={{ width: 15, height: 15, borderRadius: 3, flexShrink: 0,
-                                         background: o.hex, border: `1px solid ${C.line}` }}/>
-                          <span style={{ flex: 1, minWidth: 0, overflow: "hidden",
-                                         textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{o.name}</span>
-                        </button>
-                      ))}
-                      {res && res.total > res.hits.length && (
-                        // ⚠ C.sub 다(faint 1.99:1 은 부스 조명에서 안 읽힌다 · C 주석).
-                        //   이 줄은 pantone.mjs 가 total 을 두는 이유 그 자체다 —
-                        //   운영자가 「이게 전부」로 오해하지 않게 하는 정직성 줄인데,
-                        //   안 읽히면 24건 중 6건만 보고 「그 번호는 6건뿐입니다」라고 말한다.
-                        //   위계는 크기(10px)로 이미 준다.
-                        <div style={{ fontSize: 10, color: C.sub, marginTop: 3 }}>
-                          {tp.more(res.hits.length, res.total)}</div>)}
-                      {/* ★ 「없는 번호」와 「없는 색」은 다른 말이다 — 이 색표는 팬톤 전체가
-                          아니다(수록 100–699 · 7400–7549 · 이름색 55). 부스에서 운영자가
-                          「그런 색 없습니다」라고 말해 버리면 하지 않은 확인을 한 셈이 된다. */}
-                      {res && res.hits.length === 0 && (
-                        <div data-pms-none={sd} style={{ fontSize: 10.5, color: C.warn,
-                                                         marginTop: 4, lineHeight: 1.55 }}>{tp.none}</div>)}
-
-                      {/* 색표 상태 — 조용히 죽지 않는다 */}
-                      {!pmsData && (
-                        <div style={{ fontSize: 10.5, color: C.sub, marginTop: 4 }}>{tp.loading}</div>)}
-                      {pmsData && !pmsData.ok && (
-                        <div data-pms-offline={sd} style={{ fontSize: 10.5, color: C.bad,
-                                                            marginTop: 4, lineHeight: 1.55 }}>
-                          {tp.offline}{" "}
-                          <button type="button" data-pms-retry={sd} onClick={retryPms}
-                            style={{ border: 0, background: "none", padding: 0, cursor: "pointer",
-                                     color: C.acc, font: `10.5px ${FONT}`,
-                                     textDecoration: "underline" }}>{tp.retry}</button>
-                        </div>)}
-
-                      {/* 고른 색 — 견본 + 이름 + CMYK */}
-                      {pms[sd] && (
-                        <div data-pms-picked={sd} data-pms-hex={rec ? rec.hex : undefined}
-                          style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 5,
-                                   padding: "5px 6px", borderRadius: 5, background: "#fff",
-                                   border: `1px solid ${C.line}` }}>
-                          {rec ? (<>
-                            <span style={{ width: 26, height: 26, borderRadius: 4, flexShrink: 0,
-                                           background: rec.hex, border: `1px solid ${C.line}` }}/>
-                            <div style={{ flex: 1, minWidth: 0 }}>
-                              <div style={{ fontSize: 12, fontWeight: 700, overflow: "hidden",
-                                            textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{rec.name}</div>
-                              <div style={{ fontSize: 10.5, color: C.sub,
-                                            fontVariantNumeric: "tabular-nums" }}>{cmykTextOf(rec)}</div>
-                            </div>
-                          </>) : (
-                            // 링크로 들어온 코드를 색표에서 못 찾았다 — **견본을 안 그린다.**
-                            <div style={{ flex: 1, minWidth: 0, fontSize: 10.5, color: C.warn,
-                                          lineHeight: 1.55 }}>{tp.unknown(pms[sd])}</div>)}
-                          <button type="button" data-pms-clear={sd} onClick={() => pickPms(sd, null)}
-                            style={{ border: 0, background: "none", padding: 0, cursor: "pointer",
-                                     color: C.acc, font: `10.5px ${FONT}`, flexShrink: 0 }}>{tp.clear}</button>
-                        </div>)}
-                    </div>
-                  );
-                })}
-
-                {/* 출처·라이선스·상표 — 이 앱은 gh-pages 로 **공개 배포**된다.
-                    ⚠ 이 줄도 C.sub 다. 처음에 faint(1.86:1)로 깔았다가 되돌렸다 — 남의
-                      상표에 대한 고지를 「부스 조명에서 안 보이는 회색」으로 적는 것은
-                      적어 놓고 안 적은 것과 같다(C 주석: 「DOM 에 있는 정직성 문구는
-                      읽히지 않으면 없는 것과 같다」). 위계는 **크기**로만 준다. */}
-                <div data-pms-src="1" style={{ fontSize: 10, color: C.sub, lineHeight: 1.55,
-                                               marginTop: 5 }}>{tp.src}</div>
-              </section>
-            )}
-
             {/* 코팅 앞/뒤 — 한 줄에 둘. 종류 이름이 짧아(무광·유광·IR) 좁아도 읽힌다 */}
             <Row label={t.fCoat}>
               <div style={{ display: "flex", gap: 5 }}>
@@ -1351,15 +1199,25 @@ export default function ShowroomPage({ carried = null }) {
             style={{ background: C.panel, border: `1px solid ${C.line}`, borderRadius: 10,
                      padding: "16px 22px", display: "flex", alignItems: "flex-end",
                      columnGap: 34, rowGap: 10, flexWrap: "wrap" }}>
-            <Big value={up > 0 ? String(up) : "—"} unit={t.up}/>
+            {/* ⚠ 뜻풀이는 **up 이 있을 때만**이다 — 「— 面付 1シートに0個」은 틀린 말이다
+                (0개 들어간다는 뜻이 아니라 아직 안 세어 봤다는 뜻이다). 이 화면의
+                「값이 없을 때는 유보를 안 적는다」 규칙(refnote)과 같은 갈림이다. */}
+            <Big value={up > 0 ? String(up) : "—"} unit={t.up}
+                 sub={up > 0 ? t.upMeans(up) : ""}/>
             <div style={{ width: 1, alignSelf: "stretch", background: C.line }}/>
             <Big value={shown.main} unit={shown.unitKey ? t[shown.unitKey] : ""} pre={t.perEA}/>
             <div style={{ flex: 1 }}/>
             <div style={{ fontSize: 12, color: C.sub, lineHeight: 1.9, textAlign: "right" }}>
               {/* ⚠ 판이 없으면 「0 × 0 mm」가 아니라 「—」다 — 0×0 판은 존재하지 않는다. */}
-              <div><span style={{ color: C.faint }}>{t.sheetSize}</span>{"  "}
+              {/* 용어 뒤에 뜻을 붙인다(범례와 같은 형식) — 「シート」한 단어는 브랜드
+                  담당자에게 안 읽힌다. 자리가 **용어 바로 뒤**인 이유는 사전 주석 참조.
+                  ⚠ 이 두 줄은 오른쪽 정렬이라 길어지면 **왼쪽 빈칸으로 자란다** —
+                    그래서 판·큰 글씨를 밀지 않는다(실측으로 확인한다). */}
+              <div><span style={{ color: C.faint }}>{t.sheetSize}</span>
+                <Sub>{t.sheetSizeSub}</Sub>{"  "}
                 {frame ? `${sheetLabel} · ${mm1(frame.drawW)} × ${mm1(frame.drawH)} mm` : "—"}</div>
-              <div><span style={{ color: C.faint }}>{t.netSize}</span>{"  "}
+              <div><span style={{ color: C.faint }}>{t.netSize}</span>
+                <Sub>{t.netSizeSub}</Sub>{"  "}
                 {mm1(netW)} × {mm1(netH)} mm</div>
               {/* ⚠ 수량은 **지금 수량이 아래 표에 없을 때만** 여기서 말한다. 표에 있으면
                   강조된 칸으로 이미 크게 떠 있어 같은 값을 두 번 말하는 셈이고
@@ -1423,13 +1281,22 @@ export default function ShowroomPage({ carried = null }) {
                 항목이고, 부스에서 본 수는 그대로 **약속**으로 남는다.
                 ⚠ 자리는 상자 **안**이다 — 밖에 두면 「금액과 무관한 안내」로 읽힌다.
                 ⚠ 값이 없을 때(「—」)는 안 적는다: 유보할 수가 없다.
-                ⚠ 환율·기준일은 **화면이 모른다**(운영자가 관리자 패널에 손으로 친
-                  수식에서 나온 값이다). 모르는 것을 적지 않고, 「우리가 정한 환산값」
-                  이라는 사실만 적는다 — 문구는 showroom-core 가 소유한다. */}
+
+                ★★ 26-09-04 — **환율·기준일 자리가 채워졌다.** 종전 주석은 「환율·기준일은
+                  화면이 모른다」였는데, 이제 수식이 «환율» 토큰을 쓰면 화면이 안다
+                  (fx-rate 가 망에서 받고 price-formula 가 그 수를 실제로 썼는지 판정한다).
+                ⚠ **수식이 환율을 안 쓰면 종전 문구 그대로**다. `*1.7/10` 의 10 은 환율이
+                  아니므로 거기에 「환율 8.70」을 적으면 화면이 거짓말을 한다. 그 갈림은
+                  shown.fx 가 null 인지로만 판단한다 — 여기서 조건을 늘리지 마라. */}
             {shown.main !== "—" && (
-              <div data-refnote="1" style={{ flexBasis: "100%", fontSize: 10.5, color: C.sub,
-                                             lineHeight: 1.5, marginTop: 2 }}>
-                {t.refPrice}{shown.cur === "JPY" ? ` ${t.refFx}` : ""}
+              <div data-refnote="1" data-fx-rate={shown.fx?.rate ?? ""}
+                   data-fx-asof={shown.fx?.asOf ?? ""}
+                   style={{ flexBasis: "100%", fontSize: 10.5, color: C.sub,
+                            lineHeight: 1.5, marginTop: 2 }}>
+                {t.refPrice}
+                {shown.cur === "JPY"
+                  ? ` ${shown.fx ? t.refFxLive(shown.fx.rate, shown.fx.asOf) : t.refFx}`
+                  : ""}
               </div>
             )}
           </div>
@@ -1462,6 +1329,8 @@ export default function ShowroomPage({ carried = null }) {
           자리는 왼쪽 아래(운영자 쪽 입력 패널 위) — 판과 결과 상자를 가리지 않는다. */}
       {adminOpen && av && (
         <AdminPanel a={ADMIN_T} v={av} cfg={priceCfg} set={setCfg} hiding={hiding}
+          f={FX_ADMIN_T} fx={fx} fxBusy={fxBusy} fxErr={fxErr}
+          onFxRefresh={pullFx} onFxManual={setManualFx} onFxClear={clearManualFx}
           onQuote={() => { window.location.hash = backHash(); }}
           onClose={() => setAdminOpen(false)}/>
       )}
@@ -1471,7 +1340,10 @@ export default function ShowroomPage({ carried = null }) {
           Chrome 인쇄에서 첫 페이지에 원가와 수식이 그대로 찍혔다. 쇼룸을 인쇄할 일이
           잦지는 않지만 막는 비용이 한 줄이다.
           ⚠ 이 화면은 스타일이 전부 인라인이라 걸 자리가 없다 — 그래서 <style> 한 조각을
-            둔다. 여기에 다른 규칙을 늘리지 마라(인라인 규율이 무너진다). */}
+            둔다. 여기에 다른 규칙을 늘리지 마라(인라인 규율이 무너진다).
+          ⚠ 규칙 넷이 있는데 넷 다 **인라인으로는 쓸 수 없는 것**들이다: @media print ·
+            폭(max-width:860px) · 입력장치(pointer:coarse). 인라인으로 쓸 수 있는 것을
+            여기로 가져오지 마라 — 그 순간 「스타일은 인라인」이라는 규율이 무너진다. */}
       <style>{
         "@media print{[data-admin]{display:none !important}}" +
         // ★ 26-08-27 좁은 화면 — 사용자 신고 「모바일에서는 수정이 안된다 관리자화면」.
@@ -1486,12 +1358,72 @@ export default function ShowroomPage({ carried = null }) {
           //   패널 width:336·left:16 이 그대로 살아 right 382 > 화면 375 로 삐져나갔고
           //   좌패널도 292 고정이 유지됐다. 위 @media print 규칙이 이미 같은 이유로 붙여 뒀다.
           "[data-pane=wrap]{flex-direction:column}" +
+          // ★★ 26-09-04 — **금액이 화면 밖이었다.** 태블릿 세로(768×1024) 실측:
+          //   결과 상자가 y=1292 인데 뿌리 div 가 height:100vh·overflow:hidden 이라
+          //   scrollHeight 1464 / clientHeight 1024 = **440px 이 잘려 못 닿는다.**
+          //   잘려 나간 것이 개당가·수량별 표·「참고 가격입니다 — 세금·운송비 별도」다.
+          //   즉 세로로 든 태블릿에서는 이 화면이 **가격을 한 번도 안 보여준다.**
+          //   (위 세로 눕히기 규칙이 26-08-27 에 들어올 때부터 그랬다 — 그때는 375px
+          //    한 폭만 봤고, 375 는 좌패널이 짧아 우연히 안 걸렸다.)
+          //   ⚠ 고치는 자리가 여기인 이유: 자르는 것은 뿌리의 overflow:hidden 인데
+          //     그건 부스 노트북에서 **판을 고정 높이로 잡아 주는 장치**라 못 건드린다.
+          //     대신 이 폭에서만 wrap 이 스스로 스크롤하게 한다 — 뿌리는 그대로다.
+          //   ⚠ 좌패널 max-height(52vh) 는 **남긴다.** 그게 없으면 좌패널 895px 가
+          //     판을 통째로 아래로 밀어, 스크롤은 되지만 첫 화면에 도면이 안 보인다.
+          "[data-pane=wrap]{overflow-y:auto}" +
           // 좌패널을 위로 눕히고 폭을 풀어 준다. 높이를 반으로 제한해 판이 늘 보인다.
           "[data-pane=aside]{width:auto!important;max-height:52vh;border-right:none;border-bottom:1px solid " + C.line + "}" +
           // 관리자 패널 — 화면 폭을 넘지 않게. 세로로 길면 스스로 스크롤한다.
           "[data-admin]{width:auto!important;left:8px!important;right:8px!important;bottom:8px!important;max-height:80vh;overflow-y:auto}" +
           // 손가락으로 닫을 수 있어야 한다. Esc 는 키보드가 있어야 눌린다.
           "[data-act=admin-close]{padding:8px 12px;margin:-8px -12px}" +
+        "}" +
+
+        // ★★ 26-09-04 태블릿(터치) — 사용자 지시 「태블릿에서도 빨리 가능하도록」.
+        //   실측(1280×800·1024×768·768×1024·375×812 네 폭 전부 동일): 탭 대상 33개 중
+        //   **29개가 44px 미만**이었다. 최악은 UV 알약 33×25 와 별색 칸 34×26,
+        //   자동배치·직접앉히기 103×39, 사양 셀렉트 35, 언어 27, 제목(관리자 문) 199×21.
+        //   손가락 접촉면이 ~45px 이므로 25px 짜리는 **옆 것이 눌린다** — 부스에서
+        //   고객 앞에 두고 「別のところが押される」가 되는 자리다.
+        //
+        //   ⚠ 가름을 **폭이 아니라 `pointer:coarse` 로 한다.** 이게 이번 규칙의 핵심이다:
+        //     · 부스 노트북(1280×800·마우스)은 pointer:fine 이라 **원리적으로 안 걸린다.**
+        //       폭으로 갈랐다면 1280 규칙을 건드리지 않는다는 보장이 「1280 > 문턱」이라는
+        //       산술에 기대게 되고, 창을 줄이면 깨진다. 여기서는 입력장치가 다르다.
+        //     · 반대로 **태블릿 가로(1024)도 걸린다.** 위 860px 규칙은 세로(768)만 잡고
+        //       가로는 놓치는데, 가로에서도 손가락은 그대로다. 폭 규칙과 터치 규칙은
+        //       **다른 것을 묻는 질문**이라 문턱을 공유하면 안 된다.
+        //   ⚠ 인라인 스타일을 이기려면 !important 가 필요하다(위 860px 주석과 같은 이유).
+        "@media (pointer:coarse){" +
+          // ① 탭 지연·더블탭 확대를 끈다. 뷰포트 메타에 user-scalable 제한이 없어서
+          //    브라우저가 「두 번째 탭이 올까」를 기다리는 구간이 살아 있다 — 그 대기가
+          //    **누를 때마다** 붙는다. 확대는 페이지 전체(pinch)로 여전히 된다.
+          //    ★ 제목 3연타(관리자 문)는 이게 없으면 확대에 가로채여 아예 안 열린다.
+          "button,select,input,[data-titletap],[data-cell]{touch-action:manipulation}" +
+          // ② 누르는 것들을 44px 로. 알약·미니버튼은 글자를 키우지 않고 **위아래 여백**만
+          //    늘린다 — 글자를 키우면 좌패널이 통째로 커져 판이 밀린다.
+          "[data-pane=aside] select,[data-pane=aside] input," +
+          "[data-pane=aside] button,[data-act]{min-height:44px!important}" +
+          // ②-b ★ **관리자 패널의 입력칸도 같이 키운다.** ② 의 선택자가 aside 와
+          //    [data-act] 뿐이라 관리자 패널은 **버튼만** 44px 이 되고 **치는 칸**은
+          //    안 걸렸다(375 실측: 통화 select 35 · 원화/엔화 수식 31 · 수동 환율 31).
+          //    하필 그 넷이 운영자가 태블릿에서 실제로 고치는 칸 전부다 —
+          //    사용자 신고 「모바일에서는 수정이 안된다 관리자화면」이 가리킨 자리이고,
+          //    이번 지시(「태블릿에서도 빨리 가능하도록」)의 운영자 쪽 절반이다.
+          //  ⚠ 패널이 그만큼 세로로 자라지만 **삐져나가지 않는다** — 인라인
+          //    maxHeight:calc(100vh-32px)+overflowY:auto 와 860px 규칙의 max-height:80vh
+          //    가 이미 스스로 스크롤하게 해 뒀다(실측으로 확인).
+          "[data-admin] select,[data-admin] input{min-height:44px!important}" +
+          // ③ 좁은 것도 손가락보다 넓어야 한다. UV 33px·별색 34px 이 여기 걸린다.
+          "[data-pane=aside] button,[data-pane=aside] input{min-width:44px!important}" +
+          // ④ 알약은 가운데 정렬이 필요하다 — min-height 만 주면 글자가 위로 붙는다.
+          "[data-pane=aside] button{display:inline-flex;align-items:center;justify-content:center}" +
+          // ⑤ 언어 단추(27px)는 머리줄이라 ② 가 안 닿는다. 머리줄 높이(52px) 안에 든다.
+          "[data-lang]{min-height:44px!important;min-width:44px!important}" +
+          // ⑥ 제목 = 관리자 문. 히트영역만 머리줄 높이로 늘린다(글자 크기는 그대로).
+          //    ⚠ align-self:stretch 가 아니라 padding 이다 — stretch 는 flex 부모의
+          //      align-items:center 를 덮어 제목이 위로 붙는다.
+          "[data-titletap]{padding:15px 4px;margin:-15px -4px}" +
         "}"
       }</style>
     </div>
@@ -1653,6 +1585,15 @@ function Legend({ t, crease, glue, note }) {
   );
 }
 
+/** 용어 뒤 뜻풀이 한 조각. 범례 Key 의 `sub` 와 **같은 색·같은 역할**이다.
+ *  ⚠ **괄호는 사전이 갖는다** — 한국어는 반각 `( )`, 일본어는 전각 `（）`가 관용이고,
+ *    여기서 괄호를 지으면 일본어 괄호가 한국어 화면에 그대로 나간다. 이 파일의 규칙이
+ *    「화면에서 문자열을 다시 짓지 마라」인 것과 같은 이유다.
+ *  ⚠ 줄바꿈 금지 — 좁은 폭에서 「印刷す/る紙」로 쪼개지면 고장으로 보인다(Key 와 같은 규율). */
+const Sub = ({ children }) => (
+  <span style={{ color: C.faint, whiteSpace: "nowrap" }}>{children}</span>
+);
+
 const Key = ({ sw, name, sub, kind }) => (
   <span data-key={kind} style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>
     <span data-sw={kind} style={{ width: 20, flexShrink: 0, ...sw }}/>
@@ -1719,12 +1660,24 @@ const Num = ({ label, value, onChange, suffix, wide }) => (
   </label>
 );
 
-const Big = ({ value, unit, pre }) => (
+/** @param {string} [sub] 용어의 **뜻풀이**. 범례(Key)와 같은 형식이다 —
+ *  용어는 그대로 두고 옆에 연한 글씨로 뜻을 붙인다. 고객이 브랜드 담당자라
+ *  「面付」한 단어로는 안 읽히는데, 지워 버리면 협력사와 말할 때 쓸 말이 사라진다.
+ *  ⚠ **큰 글씨 아래가 아니라 옆**이다. 아래에 두면 이 블록이 46 → 63px 로 자라고
+ *    결과 상자가 그만큼 두꺼워져 판(sheet) 높이를 먹는다 — 1280×800 에서 판이
+ *    17px 줄어든다. 옆으로 두면 결과 줄에 이미 있는 빈칸(flex 스페이서 257px)
+ *    안에서 자라 **아무것도 밀지 않는다.**
+ *  ⚠ baseline 정렬이라 그냥 넣으면 46px 글자의 밑선에 붙는다 — 그래서 unit 과
+ *    같은 span 묶음에 넣는다(둘 다 작은 글씨라 서로의 밑선이 맞는다). */
+const Big = ({ value, unit, pre, sub }) => (
   <div style={{ display: "flex", alignItems: "baseline", gap: 7 }}>
     {pre && <span style={{ fontSize: 13, color: C.sub }}>{pre}</span>}
     <span style={{ fontSize: 46, fontWeight: 700, lineHeight: 1, letterSpacing: "-.02em",
                    fontVariantNumeric: "tabular-nums" }}>{value}</span>
     <span style={{ fontSize: 15, color: C.sub, fontWeight: 600 }}>{unit}</span>
+    {/* 뜻풀이는 **글**이다 — 범례 Key 와 같은 이유로 C.sub 다. faint 로 두면
+        용어만 읽히고 뜻이 사라져 반만 전달된다. */}
+    {sub && <span style={{ fontSize: 11.5, color: C.sub, whiteSpace: "nowrap" }}>{sub}</span>}
   </div>
 );
 
@@ -1738,10 +1691,17 @@ const chip = (fg, bg) => ({ fontSize: 11.5, color: fg, background: bg, borderRad
 //  놓는 것이 요점이다 — 부스에서 「204 원이 ¥35 로 맞나」를 눈으로 즉석 검산한다.
 //  거부됐으면 그 이유가 여기에만 뜨고, 고객 화면 금액 자리는 「—」다(원가로 안 돌아간다).
 //  ⚠ 문구는 price-formula 의 ADMIN_T 가 소유한다(한국어 한 벌 — 왜인지는 그 파일 주석).
-const AdminPanel = ({ a, v, cfg, set, hiding, onQuote, onClose }) => {
+//    환율 칸의 말만 fx-rate 의 FX_ADMIN_T 다(같은 이유·다른 소유자 — 그 파일 주석).
+const AdminPanel = ({ a, v, cfg, set, hiding, f, fx, fxBusy, fxErr,
+                      onFxRefresh, onFxManual, onFxClear, onQuote, onClose }) => {
   const row = { display: "flex", alignItems: "center", gap: 8 };
   const lab = { fontSize: 11, color: C.faint, width: 62, flexShrink: 0 };
-  const fx = (key, label) => (
+  // 수동 입력은 **누를 때까지 적용되지 않는다.** 타이핑 도중의 「8」이 곧바로 환율이
+  // 되면 상담 중에 금액이 두세 번 튄다 — 그것이 이 기능이 막으려는 사고다.
+  const [manualDraft, setManualDraft] = useState("");
+  // ⚠ 이름이 `fxIn` 이다 — `fx` 는 이제 **환율 상태**의 이름이다(위 prop). 종전 이름을
+  //   그대로 뒀으면 수식 칸이 환율을 가려 조용히 엉뚱한 것을 그렸을 자리다.
+  const fxIn = (key, label) => (
     <div style={row}>
       <div style={lab}>{label}</div>
       <input value={cfg[key]} placeholder={a.ph} spellCheck={false}
@@ -1755,6 +1715,13 @@ const AdminPanel = ({ a, v, cfg, set, hiding, onQuote, onClose }) => {
   return (
     <div data-admin="1" style={{
       position: "fixed", left: 16, bottom: 16, width: 336, zIndex: 60,
+      // ★ 26-09-04 — **화면보다 커지면 스크롤한다.** 환율 칸이 붙으며 패널이 850px 가
+      //   됐고 부스 노트북(1280×800)에서 **위쪽 66px 가 화면 밖으로 잘렸다**(실측) —
+      //   잘린 자리가 하필 제목·통화·원화 수식이라 거기 손이 닿지 않았다.
+      //   자리는 bottom 고정이므로 위로 자란다: 높이를 막지 않으면 위가 잘린다.
+      //   ⚠ boxSizing 이 **같이** 있어야 한다. 기본 content-box 로는 maxHeight 가 안쪽
+      //     상자에만 걸려 padding 14×2 + 테두리 2 만큼 여전히 삐져나간다(실측 798px).
+      maxHeight: "calc(100vh - 32px)", overflowY: "auto", boxSizing: "border-box",
       background: C.panel, border: `1px solid ${C.acc}`, borderRadius: 10,
       boxShadow: "0 8px 28px rgba(17,22,29,.18)", padding: 14,
       display: "flex", flexDirection: "column", gap: 9, font: `13px ${FONT}`, color: C.ink }}>
@@ -1774,8 +1741,78 @@ const AdminPanel = ({ a, v, cfg, set, hiding, onQuote, onClose }) => {
           <Select value={cfg.cur} onChange={c => set(p => ({ ...p, cur: c }))} options={CUR_CHOICES}/>
         </div>
       </div>
-      {fx("KRW", a.fxKRW)}
-      {fx("JPY", a.fxJPY)}
+      {fxIn("KRW", a.fxKRW)}
+      {fxIn("JPY", a.fxJPY)}
+
+      {/* ══ ★ 환율 — 받은 값·시각·출처를 **여기서만** 말한다 (26-09-04) ═══════
+          고객 화면에는 환산에 실제로 쓴 환율과 기준일만 나간다(참고견적 줄). 출처·
+          받은 시각·수동 여부·낡음 경고는 운영자의 판단 재료이지 고객의 정보가 아니다.
+          ⚠ 「지금 갱신」이 **유일한 수동 갱신 문**이다. 타이머를 넣지 마라 — 상담 중에
+            값이 조용히 바뀌는 것이 이 기능이 막으려는 사고다. */}
+      <div data-fxbox="1" style={{ background: C.soft, borderRadius: 8, padding: "9px 11px",
+            display: "flex", flexDirection: "column", gap: 6 }}>
+        <div style={{ ...row, flexWrap: "wrap" }}>
+          <div style={lab}>{f.title}</div>
+          <div data-fx-now={fx.v ?? ""} style={{ fontSize: 17, fontWeight: 700,
+                color: fx.v == null ? C.bad : C.ink, fontVariantNumeric: "tabular-nums" }}>
+            {fx.text}
+          </div>
+          <span style={{ fontSize: 11, color: C.sub }}>{f.unit}</span>
+          <button type="button" data-act="fx-refresh" onClick={onFxRefresh} disabled={fxBusy}
+            style={{ ...btnStyle("mini", !fxBusy), marginLeft: "auto" }}>
+            {fxBusy ? f.fetching : f.refresh}
+          </button>
+        </div>
+        {/* 수식으로 어떻게 옮기는지 — **환율 옆에** 둔다. 이 상자 밖에 두면 「환율 이야기」와
+            「수식 이야기」가 갈려서 부스에서 둘을 연결해 읽지 못한다. */}
+        <div style={{ fontSize: 10.5, color: C.sub, lineHeight: 1.6 }}>{a.fxHint}</div>
+        {/* 출처·받은 시각·기준일 — 셋이 한 줄에 있어야 부스에서 즉석 판단이 된다 */}
+        <div data-fx-meta="1" style={{ fontSize: 10.5, color: C.sub, lineHeight: 1.6 }}>
+          {fx.from === "manual" ? f.manualLab : (fx.srcLabel || f.none)}
+          {" · "}{f.got} {fx.at ? new Date(fx.at).toLocaleString() : f.none}
+          {" · "}{f.asOf} {fx.asOf || f.none}
+        </div>
+        {/* ★ 낡음 — 며칠 지난 값이면 화면이 말한다(ECB 는 영업일에만 내므로 3일은 정상) */}
+        {fx.stale && (
+          <div data-fx-stale={fx.ageDays} style={{ fontSize: 11.5, color: C.warn, lineHeight: 1.6 }}>
+            {f.stale(fx.ageDays, fx.asOf)}
+          </div>
+        )}
+        {/* 수동 — 부스에 망이 없거나 **사내 환율**이 따로 있을 때. 망 값보다 이긴다. */}
+        <div style={{ ...row, flexWrap: "wrap" }}>
+          <div style={lab}>{f.manualLab}</div>
+          <input value={manualDraft} placeholder={f.manualPh} spellCheck={false} inputMode="decimal"
+            data-fx-manual="1" onChange={e => setManualDraft(e.target.value)}
+            style={{ flex: 1, minWidth: 60, boxSizing: "border-box", padding: "6px 8px",
+                     borderRadius: 6, border: `1px solid ${C.line}`, background: "#fff",
+                     color: C.ink, font: `13px ${FONT}`, fontVariantNumeric: "tabular-nums" }}/>
+          <button type="button" data-act="fx-apply" style={btnStyle("mini")}
+            onClick={() => { if (onFxManual(manualDraft)) setManualDraft(""); }}>{f.apply}</button>
+          {!!fx.manual && (
+            <button type="button" data-act="fx-clear" style={btnStyle("mini")}
+              onClick={onFxClear}>{f.clear}</button>
+          )}
+        </div>
+        {!!fx.manual && (
+          <div data-fx-manual-on="1" style={{ fontSize: 10.5, color: C.warn, lineHeight: 1.6 }}>
+            {f.manualOn(fx.manual.v)}{fx.net ? ` ${f.netAlso(fx.net)}` : ""}
+          </div>
+        )}
+        {/* ★ 못 받았다 — **조용히 죽지 않는다.** 원가로 폴백하지 않는다는 사실까지 적는다. */}
+        {!!fxErr && (
+          <div data-fx-err="1" style={{ fontSize: 11.5, color: C.bad, lineHeight: 1.6,
+                                        whiteSpace: "pre-line" }}>{f.failed(fxErr)}</div>
+        )}
+        {/* ★ 「수식이 환율을 안 쓴다」가 가장 값싼 사고다 — 환율은 8.70 이라고 떠 있는데
+            금액에는 아무 영향이 없고, 운영자는 반영됐다고 믿는다. */}
+        {v.mode !== "cost" && (
+          <div data-fx-used={v.usesFx ? "1" : "0"}
+               style={{ fontSize: 10.5, lineHeight: 1.6, color: v.usesFx ? C.sub : C.bad }}>
+            {v.usesFx ? f.used : (fx.v != null ? f.notUsed(fx.v) : "")}
+          </div>
+        )}
+        <div style={{ fontSize: 10.5, color: C.faint, lineHeight: 1.6 }}>{f.hint}</div>
+      </div>
 
       {/* 원가 ↔ 적용 결과 — 나란히. 이 줄이 이 패널의 본체다. */}
       <div style={{ display: "flex", gap: 10, background: C.soft, borderRadius: 8, padding: "9px 11px" }}>

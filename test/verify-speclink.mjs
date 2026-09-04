@@ -20,7 +20,6 @@
 //  §J  거래처·품명 — 링크에 안 싣고 **초기값으로 접지도 않는다**
 //  §M  ★ 관리자 수식 → 고객 표시가 — 파서 · 원가 유출 · 거부 거동 · 하위호환 (26-08-25)
 //  §N  ★ 고객과 같이 넣는 사양 칸 + 수량별 개당단가 — 왕복 불변식 · 원가 유출 (26-08-26)
-//  §O  ★ 별색 팬톤 조회 — 가격 불변 · 정직성 문구 · 검색 · 오프라인 거동 (26-08-27)
 //
 //  ── 26-08-19: 이 스위트가 「장식」이던 자리 둘을 고쳤다 ─────────────
 //  58/58 초록인 채로 critical 1건 + major 1건이 살아 있었다. 이유가 둘 다 구조적이다:
@@ -48,17 +47,21 @@ import {
   paperChoices, coatChoices, glueChoices, thomChoices,
   upForPrice, resetKindOf,
 } from "../src/showroom/showroom-core.mjs";
-import { upGateOf, pmsOfHash } from "../src/ui/state.mjs";
-// §O — 별색 팬톤 조회 (26-08-27). 도메인이 아니라 **표시·주석 레이어**다: 금액을 한 원도
-//   안 움직인다(그 논증은 state.mjs 의 `pf=`·`pb=` 주석과 pantone.mjs 머리말이 소유한다).
-import {
-  loadPantone, searchPantone, findPantone, cmykTextOf, pmsCodeOf, _resetPantoneCache,
-} from "../src/showroom/pantone.mjs";
+import { upGateOf } from "../src/ui/state.mjs";
 // §M — 관리자 수식 → 고객 표시가. 도메인이 아니라 **표시 레이어**다(그 파일 머리말).
 import {
   applyFormula, roundFor, shownPriceOf, shownRowsOf, adminViewOf,
   savePriceCfg, loadPriceCfg, EMPTY_PRICE_CFG, ADMIN_T,
+  compileFormula, usesRate,
 } from "../src/showroom/price-formula.mjs";
+// §M ⑰⑱ — 환율을 망에서 받아 자동으로 반영 (26-09-04)
+//  ⚠ **CI 에는 망이 없다.** 이 스위트는 fetch 를 한 번도 안 부른다 —
+//    fetchFxRate 에 가짜 fetch 를 주입해 응답 모양·거부 조건만 잰다.
+//    실제 망·CORS 는 브라우저 실측이 맡는다(둘이 다른 일을 한다 — fx-rate 머리말).
+import {
+  fetchFxRate, checkFx, fxViewOf, needFxFetch, manualFxOf, loadFx, saveFx,
+  roundFx, fmtFx, FX_SOURCES, FX_MIN, FX_MAX, FX_STALE_DAYS, FX_FRESH_MS, FX_ADMIN_T,
+} from "../src/showroom/fx-rate.mjs";
 import { readFileSync, readdirSync } from "node:fs";
 
 let pass = 0, total = 0;
@@ -1127,7 +1130,7 @@ console.log("\n── §M  관리자 수식 → 고객 표시가 ─────
        /\{!hiding && \([\s\S]{0,200}data-act="back"/.test(p) &&
        /data-act="admin-toquote"/.test(p));
     // ⚠ 26-08-27 — 종전에는 **호출 한 줄을 통째로** 리터럴 대조했다(`{ nc: hiding }`).
-    //   그러면 같은 opt 객체에 형제 파라미터가 하나 늘 때(팬톤 `pf`·`pb`) 「가림 비트가
+    //   그러면 같은 opt 객체에 형제 파라미터가 하나 늘 때 「가림 비트가
     //   빠졌다」고 **거짓 실패**한다 — 비트는 그대로 있는데. 이 줄이 재려는 것은
     //   「syncHash 가 nc 를 나르는가」 하나이므로 거기까지만 잰다. 자리(어느 호출의 opt 인가)는
     //   그대로 못박는다 — 다른 곳에 `nc: hiding` 이 적혀 있는 것으로는 안 통과한다.
@@ -1425,6 +1428,424 @@ console.log("\n── §M  관리자 수식 → 고객 표시가 ─────
        !/data-act="back"/.test(asCust) && /data-act="back"/.test(html));
 
     rmSync(outDir, { recursive: true, force: true });
+  }
+
+  // ── ⑰ ★★ 하위호환 회귀 게이트 — 기존 수식이 **한 글자도 안 바뀐다** (26-09-04) ──
+  //  수식에 환율 토큰을 들이면서 파서·평가기·resolve 가 전부 손을 탔다. 부스 노트북과
+  //  링크에는 이미 `*1.7/10` 같은 **순수 숫자 수식**이 저장돼 있고, 그것이 전시회 당일
+  //  다르게 계산되는 것이 이 변경의 최악 실패다. 「환율이 없으면 안 바뀐다」로는 부족하다 —
+  //  **환율이 있든 없든·0 이든 NaN 이든 무한대든** 결과가 같아야 한다.
+  //
+  //  왜 이런 모양인가 — 위 ①②⑫ 의 표를 **다시 적지 않고 그대로 재사용**한다. 표를 베끼면
+  //  둘이 늙어 갈리고, 그때 이 게이트는 「옛 표에 대해서만」 하위호환을 보증하게 된다.
+  {
+    const RATES = [undefined, null, 0, -1, NaN, Infinity, 8.69, 1e9];
+    // ★ 위 절들이 쓴 수식을 전부 모은다(정상 · 거부 · 0 부류 · 전각).
+    const CORPUS = [
+      "*1.7/10", "(*1.7/10)", "x*1.7/10", "원가*1.7/10", "(x*1.7)/10", " * 1.7 / 10 ",
+      "*1.7", "/10", "+500", "-4", "x", "X", "x*1.7/10+500", "*1.7/10-4",
+      "2+3*4", "(2+3)*4", "x/2/2", "x-1-1", "x*.5", "*2*3", "x*(1.7/10)", "/10*2",
+      "500", "x*1+0", "100/2/5", "*1.35", "*0.9", "*17/10", "*1.7*10",
+      "", "   ", "*", "/", "1.2.3", ".", "(1+2", "1+2)", "()", "/0", "x/(1-1)",
+      "-1000", "*-2", "y*2", "cost*2", "1e9", "2^3", "1,7", "*1.7;alert(1)",
+      "*99999999", "x x", "원가2", "*0", "*0.0", "x*0", "(*0)", "0", "*(1-1)",
+      "-204", "x-x", "/1000000000", "*0.001", "/500", "/408", "/409", "-203.6",
+      "*-0", "*0*-1", "x*-0", "*(0*-1)", "＊1.7/10", "*１.７/１０", "＊１．７／１０",
+      "*1.7ー4", "*1.7¥10", "*1.7​/10",
+    ];
+    // 이 표에 환율 토큰이 섞여 있으면 게이트 자체가 틀린다 — 먼저 그것을 못박는다.
+    const leaked = CORPUS.filter(s => { const c = compileFormula(s); return c.ok && usesRate(c.node); });
+    ok(`하위호환 표 ${CORPUS.length}건에 환율 토큰이 **하나도 없다** (표가 오염되면 게이트가 거짓말한다)`,
+       leaked.length === 0, leaked.join(" "));
+    ok(`하위호환 표본이 ${CORPUS.length}건 이상이다 (요구 60건)`, CORPUS.length >= 60);
+
+    // ⓐ 평가기 — 3번째 인자(환율)를 무엇으로 줘도 **2인자 호출과 같은 객체**여야 한다
+    const diffs = [];
+    for (const src of CORPUS) {
+      for (const cost of [204, 223, 1, 0, null]) {
+        const before = JSON.stringify(applyFormula(src, cost));
+        for (const rate of RATES) {
+          const after = JSON.stringify(applyFormula(src, cost, rate));
+          if (after !== before) diffs.push(`«${src}» 원가${cost} 환율${rate}: ${before} → ${after}`);
+        }
+      }
+    }
+    ok(`★ 수식 ${CORPUS.length}건 × 원가 5벌 × 환율 ${RATES.length}벌 = ` +
+       `${CORPUS.length * 5 * RATES.length}건이 **전부 바이트 동일**하다`,
+       diffs.length === 0, diffs.slice(0, 4).join("\n     "));
+
+    // ⓑ 화면 — shownPriceOf·shownRowsOf·adminViewOf 도 fx 를 줘도 안 움직인다
+    const FXS = [null, { v: 8.69, text: "8.69", asOf: "2026-09-04" },
+                 { v: 12.4, text: "12.40", asOf: "2020-01-01" }, { v: null, text: "—", asOf: "" }];
+    const rowsIn = [{ qty: 1000, up: 4, perEA: 531 }, { qty: 4000, up: 4, perEA: 204 }];
+    const sDiffs = [];
+    for (const src of ["*1.7/10", "*1.35", "*1.7/", "*0", "", "y*2"]) {
+      for (const [cur, lang] of [["JPY", "ja"], ["KRW", "ko"]]) {
+        const cfg = { cur, KRW: cur === "KRW" ? src : "", JPY: cur === "JPY" ? src : "" };
+        const a0 = JSON.stringify(shownPriceOf({ perEA: 204, up: 4, cfg, lang }));
+        const r0 = JSON.stringify(shownRowsOf({ rows: rowsIn, cfg, lang }));
+        const v0 = JSON.stringify(adminViewOf({ perEA: 204, up: 4, cfg, lang }));
+        for (const fx of FXS) {
+          if (JSON.stringify(shownPriceOf({ perEA: 204, up: 4, cfg, lang, fx })) !== a0)
+            sDiffs.push(`shown «${src}» ${cur} fx=${fx && fx.v}`);
+          if (JSON.stringify(shownRowsOf({ rows: rowsIn, cfg, lang, fx })) !== r0)
+            sDiffs.push(`rows «${src}» ${cur} fx=${fx && fx.v}`);
+          if (JSON.stringify(adminViewOf({ perEA: 204, up: 4, cfg, lang, fx })) !== v0)
+            sDiffs.push(`admin «${src}» ${cur} fx=${fx && fx.v}`);
+        }
+      }
+    }
+    ok("★ 화면 3문(고객·표·관리자)도 환율을 줘도 **바이트 동일**하다 (숫자 수식일 때)",
+       sDiffs.length === 0, sDiffs.slice(0, 4).join(" / "));
+    // 미설정(종전 동작)도 환율에 안 흔들린다
+    ok("★ 수식 미설정(mode cost)은 환율이 있어도 종전대로 원가 원화다",
+       JSON.stringify(shownPriceOf({ perEA: 204, up: 4, cfg: EMPTY_PRICE_CFG, lang: "ko",
+         fx: { v: 8.69, text: "8.69", asOf: "2026-09-04" } })) ===
+       JSON.stringify(shownPriceOf({ perEA: 204, up: 4, cfg: EMPTY_PRICE_CFG, lang: "ko" })));
+
+    // ⓒ ★ 저장소에 **옛 모양** 그대로 남아 있어도 산다 (환율 키가 없던 시절의 설정)
+    {
+      const box = new Map([["cria-quote.showprice.v1",
+        JSON.stringify({ cur: "JPY", KRW: "*1.35", JPY: "*1.7/10" })]]);
+      const real = globalThis.localStorage;
+      globalThis.localStorage = { getItem: k => (box.has(k) ? box.get(k) : null),
+                                  setItem: (k, v) => box.set(k, String(v)) };
+      const old = loadPriceCfg();
+      ok("★ 옛 localStorage 설정(환율 키 없음)이 그대로 되읽힌다",
+         old.cur === "JPY" && old.KRW === "*1.35" && old.JPY === "*1.7/10", JSON.stringify(old));
+      ok("★ 그 설정이 부스에서 **같은 금액**을 낸다 (204원 → ¥35)",
+         shownPriceOf({ perEA: 204, up: 4, cfg: old, lang: "ja",
+                        fx: { v: 8.69, text: "8.69", asOf: "2026-09-04" } }).main === "¥35");
+      ok("환율 저장 키가 없어도 loadFx 가 안 죽는다 (미설정으로 접는다)",
+         loadFx().net === null && loadFx().manual === null);
+      if (real === undefined) delete globalThis.localStorage; else globalThis.localStorage = real;
+    }
+
+    // ⓓ ★★ 이빨 — 위 전부가 「환율이 아무 데도 안 닿는다」로 통과하는 것이 아님을 증명한다.
+    //     환율을 **쓰는** 수식은 환율을 따라 실제로 움직여야 한다.
+    {
+      const F = (v, text, asOf = "2026-09-04") => ({ v, text, asOf });
+      const at = r => shownPriceOf({ perEA: 204, up: 4,
+        cfg: { cur: "JPY", KRW: "", JPY: "*1.7/환율" }, lang: "ja", fx: r });
+      const a = at(F(8.69, "8.69")), b = at(F(9.55, "9.55")), c = at(F(null, "—", ""));
+      ok(`이빨: «*1.7/환율» 은 환율을 따라 움직인다 (8.69 → ${a.main} · 9.55 → ${b.main})`,
+         a.main === "¥40" && b.main === "¥36" && a.main !== b.main, `${a.main} ${b.main}`);
+      ok("이빨: 같은 원가·같은 마진인데 «*1.7/10» 은 ¥35 로 **안 움직인다** (숫자를 박았으니까)",
+         shownPriceOf({ perEA: 204, up: 4, cfg: { cur: "JPY", KRW: "", JPY: "*1.7/10" },
+                        lang: "ja", fx: F(9.55, "9.55") }).main === "¥35");
+      ok("★ 환율이 없으면 «*1.7/환율» 은 **거부**다 — 원가로 안 돌아간다",
+         c.mode === "blocked" && c.main === "—" && !JSON.stringify(c).includes("204"), JSON.stringify(c));
+      ok("그 거부에는 이유가 붙는다 (관리자에게만 · 없으면 부스에서 못 고친다)",
+         /환율/.test(adminViewOf({ perEA: 204, up: 4, cfg: { cur: "JPY", KRW: "", JPY: "*1.7/환율" },
+                                   lang: "ja", fx: null }).why));
+      ok("별칭 «rate» 가 «환율» 과 같은 값을 낸다",
+         at(F(8.69, "8.69")).main ===
+         shownPriceOf({ perEA: 204, up: 4, cfg: { cur: "JPY", KRW: "", JPY: "*1.7/rate" },
+                        lang: "ja", fx: F(8.69, "8.69") }).main);
+      ok("모르는 이름은 여전히 거부하고, 이유가 **쓸 수 있는 이름 전부**를 적는다",
+         (() => { const r = compileFormula("*1.7/환률");
+                  return !r.ok && r.why.includes("환율") && r.why.includes("rate") &&
+                         r.why.includes("원가"); })(),
+         compileFormula("*1.7/환률").why);
+    }
+  }
+
+  // ── ⑱ ★ 환율을 망에서 받는다 — 틀린 값을 **절대** 내놓지 않는다 (26-09-04) ──
+  //  ⚠ 이 절은 **fetch 를 한 번도 안 부른다.** CI 에 망이 없고, 테스트가 망을 타면
+  //    CI 가 남의 서버 상태에 묶인다. 가짜 fetch 를 주입해 응답 모양만 잰다.
+  //    실제 망·CORS 는 브라우저 실측이 맡는다(그 결과는 fx-rate 머리말에 적혀 있다).
+  {
+    const J = (body, status = 200) => () =>
+      Promise.resolve({ ok: status < 400, status, json: async () => body });
+    const OKBODY = { result: "success", base_code: "KRW",
+                     time_last_update_unix: 1788480151, rates: { JPY: 0.115068 } };
+    const one = [FX_SOURCES[0]];
+
+    // ⓐ 출처 목록의 **계약** — 실측으로 걸러낸 결과다. 되돌리면 부스에서 조용히 죽는다.
+    ok(`출처가 ${FX_SOURCES.length}곳이다 (하나가 죽어도 부스가 산다)`, FX_SOURCES.length >= 2);
+    ok("모든 출처가 https 다", FX_SOURCES.every(s => s.url.startsWith("https://")));
+    ok("주소에 API 키가 없다 (키가 필요한 순간 부스에서 못 쓴다)",
+       FX_SOURCES.every(s => !/(access_key|apikey|api_key|token)=/i.test(s.url)),
+       FX_SOURCES.map(s => s.url).join(" "));
+    ok("모든 출처가 KRW 를 기준으로 부른다", FX_SOURCES.every(s => /KRW/.test(s.url)));
+    // ★★ 브라우저 실측으로 못 쓴다고 판정한 두 곳. **주소에 다시 나타나면 안 된다.**
+    //    · api.frankfurter.app — node 에서는 ACAO 가 보이는데 **브라우저에서 CORS 로 막힌다**
+    //      (실측 문구는 fx-rate ① 절에 그대로 적어 뒀다). `.dev` 로 써야 한다.
+    //    · api.exchangerate.host — 이제 access_key 를 요구한다.
+    const banned = FX_SOURCES.filter(s => /frankfurter\.app|exchangerate\.host/.test(s.url));
+    ok("★ 브라우저에서 막히는 frankfurter.app · 키를 요구하는 exchangerate.host 가 **없다**",
+       banned.length === 0, banned.map(s => s.url).join(" "));
+    ok("frankfurter 는 **.dev** 호스트로 쓴다 (.app 은 브라우저 CORS 로 막힌다 — 실측)",
+       FX_SOURCES.some(s => s.url.includes("api.frankfurter.dev")));
+
+    // ⓑ 정상 — 받은 값이 **화면에 적을 수**로 바뀐다 (계산과 표시가 같은 수여야 한다)
+    {
+      const r = await fetchFxRate({ fetchImpl: J(OKBODY), sources: one });
+      ok("정상 응답에서 원/엔 값을 얻는다 (0.115068 → 8.69)",
+         r.ok && r.rec.v === 8.69 && r.rec.src === "erapi", JSON.stringify(r).slice(0, 120));
+      ok("기준일을 응답에서 읽는다 (unix → YYYY-MM-DD)", r.ok && /^\d{4}-\d{2}-\d{2}$/.test(r.rec.asOf), r.ok && r.rec.asOf);
+      ok("★ 쓰는 값과 적는 값이 **같은 수**다 (고객이 화면 환율로 검산하면 화면 금액이 나온다)",
+         r.ok && fmtFx(r.rec.v) === "8.69" && roundFx(r.rec.v) === r.rec.v);
+      // 실제로 검산해 본다 — 화면 환율 8.69 로 손계산한 값과 화면 금액이 같아야 한다
+      const shown = shownPriceOf({ perEA: 204, up: 4, cfg: { cur: "JPY", KRW: "", JPY: "*1.7/환율" },
+        lang: "ja", fx: { v: r.rec.v, text: fmtFx(r.rec.v), asOf: r.rec.asOf } });
+      ok(`★ 화면 검산: 204×1.7÷8.69 = ${(204 * 1.7 / 8.69).toFixed(2)} → ${shown.main}`,
+         shown.main === `¥${Math.round(204 * 1.7 / 8.69)}`, shown.main);
+    }
+
+    // ⓒ ★ 이상한 응답은 **전부 거부**한다 — 화면에 닿으면 안 된다
+    const BADS = [
+      ["rates.JPY 가 0", J({ ...OKBODY, rates: { JPY: 0 } })],
+      ["음수", J({ ...OKBODY, rates: { JPY: -0.115 } })],
+      ["null", J({ ...OKBODY, rates: { JPY: null } })],
+      ["문자열", J({ ...OKBODY, rates: { JPY: "0.115" } })],
+      ["NaN", J({ ...OKBODY, rates: { JPY: NaN } })],
+      ["통화 키 없음", J({ ...OKBODY, rates: { USD: 0.0007 } })],
+      ["rates 자체가 없음", J({ result: "success", base_code: "KRW" })],
+      ["10배 작다(0.0115)", J({ ...OKBODY, rates: { JPY: 0.0115 } })],
+      ["10배 크다(1.15)", J({ ...OKBODY, rates: { JPY: 1.15 } })],
+      ["방향이 뒤집힘(8.69)", J({ ...OKBODY, rates: { JPY: 8.69 } })],
+      ["result 가 error", J({ result: "error" })],
+      ["기준통화가 USD", J({ ...OKBODY, base_code: "USD" })],
+      ["빈 응답", J(null)],
+      ["배열", J([1, 2, 3])],
+      ["HTTP 404", J({ status: 404 }, 404)],
+      ["HTTP 500", J({}, 500)],
+      ["HTTP 429", J({}, 429)],
+      ["JSON 깨짐", () => Promise.resolve({ ok: true, status: 200,
+        json: async () => { throw new SyntaxError("Unexpected token"); } })],
+      ["오프라인", () => Promise.reject(new TypeError("Failed to fetch"))],
+      ["fetch 가 동기로 던짐", () => { throw new TypeError("Failed to fetch"); }],
+      ["응답이 null", () => Promise.resolve(null)],
+    ];
+    const slipped = [];
+    for (const [nm, f] of BADS) {
+      const r = await fetchFxRate({ fetchImpl: f, sources: one });
+      if (r.ok) slipped.push(`${nm} → v=${r.rec.v}`);
+      else if (!r.why || r.why.length < 5) slipped.push(`${nm} → 이유가 비었다`);
+    }
+    ok(`★ 이상한 응답 ${BADS.length}부류가 **전부 이유와 함께 거부**된다`,
+       slipped.length === 0, slipped.join(" / "));
+    ok(`이상 응답 표본이 ${BADS.length}건 이상이다 (요구 15건)`, BADS.length >= 15);
+    // ⚠ **거부됐다**만 재면 부족하다 (26-09-04 이빨 실측): HTTP 상태 검사를 통째로
+    //   지워도 위 줄이 초록이었다 — 404 본문이 응답 **모양** 검사에 걸려서 어쩌다
+    //   거부됐기 때문이다. 모양 검사는 둘째 방어선이지 첫째가 아니다. 그래서 HTTP
+    //   부류만은 **이유가 상태코드를 말하는지**까지 잰다(그래야 층이 안 지워진다).
+    {
+      const codes = [404, 500, 429, 503];
+      const miss = [];
+      for (const c of codes) {
+        const r = await fetchFxRate({ sources: one,
+          fetchImpl: J({ result: "success", base_code: "KRW", rates: { JPY: 0.115068 } }, c) });
+        // 본문은 **정상**이다 — 상태코드만 나쁘다. 상태를 안 보면 여기서 통과해 버린다.
+        if (r.ok) miss.push(`HTTP ${c} 인데 통과 (v=${r.rec.v})`);
+        else if (!r.why.includes(String(c))) miss.push(`HTTP ${c} 이유에 상태코드가 없다: ${r.why}`);
+      }
+      ok(`★ 본문이 멀쩡해도 HTTP ${codes.join("·")} 는 거부하고 **상태코드를 말한다**`,
+         miss.length === 0, miss.join(" / "));
+    }
+    // 타임아웃 — 응답이 안 오면 화면이 무한히 기다리지 않는다
+    //  ⚠ 감시견을 같이 건다. 타임아웃이 사라지면 이 await 가 **영영 안 끝나고** CI 가
+    //    「실패」가 아니라 **정지**한다(실측: exit 13 · unsettled top-level await).
+    //    정지는 원인을 안 알려 준다 — 빨간 한 줄이 낫다.
+    {
+      const t0 = Date.now();
+      const r = await Promise.race([
+        fetchFxRate({ timeoutMs: 120, sources: one,
+          fetchImpl: (u, o) => new Promise((_, rej) => o.signal.addEventListener("abort",
+            () => rej(Object.assign(new Error("aborted"), { name: "AbortError" })))) }),
+        new Promise(res => setTimeout(() => res({ ok: false, why: "★ 감시견 — 타임아웃이 안 걸렸다" }), 4000)),
+      ]);
+      ok(`타임아웃이 걸린다 (120ms → ${Date.now() - t0}ms 에 끝났고 이유가 있다)`,
+         !r.ok && /안에 응답이 없습니다/.test(r.why) && Date.now() - t0 < 3000, r.why);
+    }
+    // ★ 첫 출처가 죽으면 둘째로 넘어간다 (부스에서 고칠 방법이 없으므로 둘을 둔다)
+    {
+      const r = await fetchFxRate({ fetchImpl: u => u.includes("er-api")
+        ? Promise.reject(new TypeError("Failed to fetch"))
+        : Promise.resolve({ ok: true, status: 200,
+            json: async () => ({ base: "KRW", date: "2026-09-03", rates: { JPY: 0.11495 } }) }) });
+      ok("첫 출처가 죽으면 둘째 출처로 넘어간다", r.ok && r.rec.src === "frankfurter" && r.rec.v === 8.7,
+         JSON.stringify(r).slice(0, 100));
+    }
+    // ★★ CI 안전 — 이 절이 **진짜 fetch 를 안 부른다**. 전역을 폭탄으로 바꿔 증명한다.
+    {
+      const real = globalThis.fetch;
+      let touched = 0;
+      globalThis.fetch = () => { touched++; throw new Error("★ CI 에서 망을 탔다"); };
+      const r = await fetchFxRate({ fetchImpl: J(OKBODY), sources: one });
+      globalThis.fetch = real;
+      ok("★ fetchImpl 을 주면 전역 fetch 를 **한 번도 안 부른다** (CI 에 망이 없다)",
+         r.ok && touched === 0, `전역 호출 ${touched}회`);
+    }
+    // fetch 자체가 없는 환경에서도 안 죽는다
+    {
+      const real = globalThis.fetch;
+      delete globalThis.fetch;
+      const r = await fetchFxRate({});
+      if (real === undefined) delete globalThis.fetch; else globalThis.fetch = real;
+      ok("fetch 가 없는 환경에서도 예외를 안 던진다", !r.ok && !!r.why, r.why);
+    }
+
+    // ⓓ 밴드 — 상식 범위. **경고가 아니라 거부**다(기계가 준 수이므로)
+    ok(`밴드가 1엔 = ${fmtFx(FX_MIN)}~${fmtFx(FX_MAX)}원 이다 (KRW→JPY 0.08~0.15 의 역수)`,
+       Math.abs(FX_MIN - 1 / 0.15) < 1e-9 && Math.abs(FX_MAX - 1 / 0.08) < 1e-9);
+    // ⚠ 판정을 **세어서** 한 줄로 낸다. 종전처럼 루프 안에서 실패만 찍고 밖에서
+    //   `ok(…, true)` 로 닫으면, 밴드를 통째로 꺼도 그 줄은 초록으로 남는다.
+    const BANDS = [[8.69, true], [6.67, true], [12.5, true], [6.66, false], [12.51, false],
+                   [0, false], [-8.69, false], [NaN, false], [Infinity, false],
+                   [0.115, false], [100, false], ["8.69", true], ["abc", false], [null, false]];
+    const bandBad = BANDS.filter(([v, want]) => checkFx(v).ok !== want)
+                         .map(([v]) => `«${v}»`);
+    ok(`★ 밴드 판정 ${BANDS.length}건이 전부 기대대로다 (밴드를 끄면 이 줄이 빨개진다)`,
+       bandBad.length === 0, bandBad.join(" "));
+    ok("거부 이유가 **무엇을 하는지**까지 말한다 (이 값은 쓰지 않습니다)",
+       (checkFx(100).why || "").includes("쓰지 않습니다"), String(checkFx(100).why));
+
+    // ⓔ 저장 — 되읽을 때 **다시 검사한다**. 낡은 코드가 심어둔 값이 화면에 닿는 경로다.
+    {
+      const box = new Map();
+      const real = globalThis.localStorage;
+      globalThis.localStorage = { getItem: k => (box.has(k) ? box.get(k) : null),
+                                  setItem: (k, v) => box.set(k, String(v)) };
+      const rec = { v: 8.69, raw: 0.115068, asOf: "2026-09-04", at: 1788480151000,
+                    src: "erapi", srcLabel: "open.er-api.com" };
+      saveFx({ net: rec, manual: null });
+      ok("저장 왕복 — 환율·기준일·시각·출처가 그대로 돌아온다",
+         JSON.stringify(loadFx().net) === JSON.stringify(rec), JSON.stringify(loadFx().net));
+      box.set("cria-quote.fx.v1", "{깨진 JSON");
+      ok("깨진 저장값이 화면을 안 죽인다", loadFx().net === null && loadFx().manual === null);
+      box.set("cria-quote.fx.v1", JSON.stringify({ net: { ...rec, v: 87 }, manual: null }));
+      ok("★ 저장소에 **밴드 밖 값**이 있으면 버린다 (낡은 값보다 나쁘다)", loadFx().net === null);
+      box.set("cria-quote.fx.v1", JSON.stringify({ net: { ...rec, asOf: "어제", at: "x" }, manual: null }));
+      const dirty = loadFx().net;
+      ok("이상한 타입은 접힌다 (기준일 빈 문자열 · 시각 0)",
+         dirty && dirty.v === 8.69 && dirty.asOf === "" && dirty.at === 0, JSON.stringify(dirty));
+      globalThis.localStorage = { getItem() { throw new Error("사생활 보호 모드"); },
+                                  setItem() { throw new Error("사생활 보호 모드"); } };
+      ok("저장소가 던져도 안 죽는다",
+         loadFx().net === null && (saveFx({ net: rec, manual: null }), true));
+      if (real === undefined) delete globalThis.localStorage; else globalThis.localStorage = real;
+    }
+
+    // ⓕ 지금 쓸 값 하나 — 수동이 이기고, 낡으면 말하고, 신선하면 망을 안 탄다
+    {
+      const DAY = 86400000, now = Date.parse("2026-09-04T09:00:00Z");
+      const net = { v: 8.69, raw: 0.115068, asOf: "2026-09-04", at: now - 3600000,
+                    src: "erapi", srcLabel: "open.er-api.com" };
+      const manual = { v: 9.55, raw: null, asOf: "2026-09-04", at: now, src: "manual", srcLabel: "" };
+      ok("★ 수동이 망 값을 이긴다 (사내 환율로 맞춰 뒀는데 망이 뒤집으면 안 된다)",
+         fxViewOf({ net, manual }, now).v === 9.55 && fxViewOf({ net, manual }, now).from === "manual");
+      ok("수동이 켜져 있어도 망 값을 **나란히** 들고 있다 (관리자가 대조한다)",
+         fxViewOf({ net, manual }, now).net.v === 8.69);
+      ok("수동을 해제하면 망 값으로 돌아온다", fxViewOf({ net, manual: null }, now).v === 8.69);
+      ok("둘 다 없으면 값이 없다 («—»)",
+         fxViewOf({ net: null, manual: null }, now).v === null &&
+         fxViewOf({ net: null, manual: null }, now).text === "—");
+      ok("빈 인자에도 안 죽는다", fxViewOf(null).v === null && fxViewOf(undefined).v === null);
+      // 낡음 — ECB 는 영업일에만 내므로 3일까지는 정상이다
+      const aged = d => fxViewOf({ net: { ...net, asOf: new Date(now - d * DAY).toISOString().slice(0, 10) },
+                                   manual: null }, now);
+      ok(`낡음 한계가 ${FX_STALE_DAYS}일이다 (ECB 가 영업일에만 내므로 월요일의 금요일 값은 정상)`,
+         FX_STALE_DAYS === 3);
+      ok("3일 지난 값은 아직 낡지 않았다 (주말)", aged(3).stale === false && aged(3).ageDays === 3);
+      ok("★ 4일 지나면 화면이 낡았다고 말한다", aged(4).stale === true && aged(4).ageDays === 4);
+      ok("★ 낡음 문구가 며칠·기준일을 **둘 다** 말한다",
+         FX_ADMIN_T.stale(6, "2026-08-29").includes("6일") &&
+         FX_ADMIN_T.stale(6, "2026-08-29").includes("2026-08-29"));
+      // 진입 시 받을지 — 「하루에 몇 번」이면 충분하다(태블릿에서 새로고침이 즉시 끝난다)
+      ok(`캐시 신선도 한계가 ${FX_FRESH_MS / 3600000}시간이다`, FX_FRESH_MS === 6 * 3600000);
+      ok("★ 캐시가 신선하면 진입해도 망을 **안 탄다**", needFxFetch({ net }, now) === false);
+      ok("캐시가 7시간 지났으면 진입 시 받는다",
+         needFxFetch({ net: { ...net, at: now - 7 * 3600000 } }, now) === true);
+      ok("캐시가 아예 없으면 받는다",
+         needFxFetch({ net: null }, now) === true && needFxFetch(null, now) === true);
+    }
+
+    // ⓖ 수동 입력 — 부스에 망이 없거나 **사내 환율**이 있을 때
+    {
+      const now = Date.parse("2026-09-04T09:00:00Z");
+      ok("«8.70» 을 받는다", manualFxOf("8.70", now).ok && manualFxOf("8.70", now).rec.v === 8.7);
+      ok("전각 숫자·전각 소수점도 받는다 (일본 노트북 IME)",
+         manualFxOf("８．７０", now).ok && manualFxOf("８．７０", now).rec.v === 8.7);
+      ok("앞뒤 공백을 받는다", manualFxOf("  8.70  ", now).ok);
+      ok("수동 값의 기준일은 **입력한 날**이다 (그것이 참이다)",
+         manualFxOf("8.70", now).rec.asOf === "2026-09-04");
+      // ⚠ 유럽식 소수 쉼표 «8,70» 은 **거부**하고 그렇게 말한다. 쉼표를 지우면 870 이
+      //   되어 「상식 범위를 벗어납니다」라는 엉뚱한 이유가 뜬다(실측으로 걸렀다).
+      const BADM = [["", "비었다"], ["   ", "공백"], ["abc", "글자"], ["8.7.0", "점 둘"],
+                    ["8,70", "유럽식 쉼표"], ["0", "0"], ["-8.7", "음수"], ["100", "밴드 밖"],
+                    ["0.115", "방향이 뒤집힘"], ["8.7원", "단위를 같이 침"]];
+      const slipM = BADM.filter(([s]) => manualFxOf(s, now).ok);
+      ok(`수동 입력의 거부 ${BADM.length}부류가 전부 이유와 함께 막힌다`,
+         slipM.length === 0 && BADM.every(([s]) => (manualFxOf(s, now).why || "").length > 4),
+         slipM.map(([s]) => s).join(" "));
+      ok("«8,70» 은 **숫자로 못 읽는다**고 말한다 (밴드 이야기를 꺼내지 않는다)",
+         manualFxOf("8,70", now).why.includes("숫자로 읽을 수 없습니다"), manualFxOf("8,70", now).why);
+      ok("★ 수동에도 **같은 밴드**가 걸린다 — 손이 미끄러진 0.115 가 화면에 안 닿는다",
+         !manualFxOf("0.115", now).ok && manualFxOf("0.115", now).why.includes("상식 범위"));
+    }
+
+    // ⓗ ★★ 정직성 — 화면은 **환율을 실제로 쓴 경우에만** 환율을 말한다
+    //   `*1.7/10` 에 대고 「환율 8.69 (2026-09-04 기준)」이라고 적으면 그 10 은 환율이
+    //   아니므로 화면이 거짓말을 한다. 그리고 부스의 고객은 그 수로 검산한다.
+    {
+      const F = { v: 8.69, text: "8.69", asOf: "2026-09-04" };
+      const S = src => shownPriceOf({ perEA: 204, up: 4,
+        cfg: { cur: "JPY", KRW: "", JPY: src }, lang: "ja", fx: F });
+      ok("★ «*1.7/환율» 이면 고객 화면이 환율·기준일을 말한다",
+         S("*1.7/환율").fx?.rate === "8.69" && S("*1.7/환율").fx?.asOf === "2026-09-04",
+         JSON.stringify(S("*1.7/환율").fx));
+      ok("★ «*1.7/10» 이면 **말하지 않는다** (그 10 은 환율이 아니다)", S("*1.7/10").fx === null);
+      ok("거부된 수식은 환율도 안 말한다", S("*1.7/").fx === null && S("*0").fx === null);
+      ok("수식 미설정·가림 링크도 환율을 안 말한다",
+         shownPriceOf({ perEA: 204, up: 4, cfg: EMPTY_PRICE_CFG, lang: "ko", fx: F }).fx === null &&
+         shownPriceOf({ perEA: 204, up: 4, cfg: EMPTY_PRICE_CFG, lang: "ko", fx: F,
+                        hideCost: true }).fx === null);
+      ok("관리자는 수식이 환율을 쓰는지 안 쓰는지 **안다** (안 쓰면 붉게 알린다)",
+         adminViewOf({ perEA: 204, up: 4, cfg: { cur: "JPY", KRW: "", JPY: "*1.7/환율" },
+                       lang: "ja", fx: F }).usesFx === true &&
+         adminViewOf({ perEA: 204, up: 4, cfg: { cur: "JPY", KRW: "", JPY: "*1.7/10" },
+                       lang: "ja", fx: F }).usesFx === false);
+      ok("그 경고가 **고칠 방법**을 적는다 (부스에서 읽고 고칠 수 있어야 한다)",
+         FX_ADMIN_T.notUsed(8.69).includes("환율") && FX_ADMIN_T.notUsed(8.69).includes("*1.7/10"));
+      // ★ 원가 유출 — 환율 필드가 늘었어도 고객 몫에 원가가 없다(§M ④ 와 같은 검사)
+      ok("★ 환율 필드가 늘어도 고객 몫에 원가가 없다",
+         !JSON.stringify(S("*1.7/환율")).includes("204"), JSON.stringify(S("*1.7/환율")));
+      // 수량별 표에는 환율을 **칸마다 안 적는다**(같은 말 다섯 번)
+      const rows = shownRowsOf({ rows: [{ qty: 1000, up: 4, perEA: 531 }, { qty: 4000, up: 4, perEA: 204 }],
+        cfg: { cur: "JPY", KRW: "", JPY: "*1.7/환율" }, lang: "ja", fx: F });
+      ok("수량별 표 칸에는 환율이 안 실린다 (같은 말 다섯 번이 된다)",
+         rows.length === 2 && rows.every(r => !("fx" in r)), JSON.stringify(rows));
+    }
+
+    // ⓘ 소스 계약 — **갱신 시점이 둘뿐**이다. 타이머가 생기면 상담 중에 값이 바뀐다.
+    {
+      const p = readFileSync(new URL("../src/showroom/ShowroomPage.jsx", import.meta.url), "utf8");
+      ok("환율 받기가 **마운트 1회**다 (의존배열이 비어 있다)",
+         /if \(!needFxFetch\(fxStore, Date\.now\(\)\)\) return;[\s\S]{0,400}?\n  \}, \[\]\);/.test(p));
+      ok("★ 환율에 타이머·폴링이 없다 (setInterval 0건)", !/setInterval/.test(p));
+      ok("관리자에게 「지금 갱신」 문이 있다 (망이 돌아왔을 때 사람이 누른다)",
+         /data-act="fx-refresh"/.test(p) && /onClick=\{onFxRefresh\}/.test(p));
+      ok("수동 입력·해제 문이 있다 (부스에 망이 없거나 사내 환율이 있다)",
+         /data-act="fx-apply"/.test(p) && /data-act="fx-clear"/.test(p));
+      ok("환율 칸은 **관리자 패널 안**이다 (고객 화면에 출처·받은 시각이 안 나간다)",
+         /data-admin="1"[\s\S]*data-fxbox="1"/.test(p));
+      ok("고객 화면의 참고견적 줄은 shown.fx 로만 갈린다 (조건을 늘리면 거짓말이 샌다)",
+         /shown\.fx \? t\.refFxLive\(shown\.fx\.rate, shown\.fx\.asOf\) : t\.refFx/.test(p));
+      // ★ 실측으로 잡은 자리 — 환율 칸이 붙으며 패널이 850px 가 돼 1280×800 에서 위가 잘렸다
+      ok("★ 관리자 패널이 화면보다 커지면 스크롤한다 (1280×800 에서 위 66px 가 잘렸다 — 실측)",
+         /maxHeight: "calc\(100vh - 32px\)", overflowY: "auto", boxSizing: "border-box"/.test(p));
+      // 사전 — 고객이 읽는 말은 KO·JA 두 벌 다 있어야 한다
+      ok("환율 문구가 KO·JA 두 벌 다 있다",
+         typeof T("ko").refFxLive === "function" && typeof T("ja").refFxLive === "function");
+      ok("일본어 화면이 일본어로 말한다",
+         /為替レート/.test(T("ja").refFxLive("8.69", "2026-09-04")) &&
+         T("ja").refFxLive("8.69", "2026-09-04").includes("8.69"));
+      ok("기준일을 모르면 괄호 자체를 안 적는다 (모르는 것을 적지 않는다)",
+         !T("ko").refFxLive("8.69", "").includes("(") &&
+         T("ko").refFxLive("8.69", "2026-09-04").includes("(2026-09-04"));
+    }
   }
 }
 
@@ -1877,270 +2298,6 @@ console.log("\n── §N  고객과 같이 넣는 사양 + 수량별 개당단�
     ok("사전을 안 넘겨도 안 죽는다 (한국어로 떨어진다)",
        specSummaryOf(r.q?.lines).includes("인쇄 없음"));
   }
-}
-
-// ══════════════════════════════════════════════════════════════════
-//  §O  ★ 별색 팬톤 조회 (26-08-27)
-//
-//  사용자 요구 원문: 「우리꺼에 팬톤색상 검색하면 나올 수 있도록 그런 기능은 추가가안되나?」
-//
-//  이 기능의 위험은 **금액이 아니라 말**이다. 그래서 이 절이 재는 것도 넷 다 「말」이다:
-//   ① ★ **가격이 안 바뀐다** — 팬톤은 금액 경로에 닿으면 안 된다. 링크 전 구간을 태워서 잰다.
-//   ② ★ **정직성 문구가 화면에 있다** — 모니터로 색을 승인받으면 그게 그대로 분쟁이 된다.
-//      출처·라이선스·상표(Pantone LLC 무관)도 화면에 있어야 한다(이 앱은 공개 배포된다).
-//   ③ 검색이 **부스에서 치는 것**을 찾는다 — 번호 정확일치가 이름 부분일치보다 위다.
-//   ④ 색표를 **못 받았을 때 조용히 죽지 않는다** — 오프라인 부스·404 가 실제 경로다.
-// ══════════════════════════════════════════════════════════════════
-console.log("\n── §O  별색 팬톤 조회 ────────────────────────────────────────");
-{
-  // ── ① 데이터 파일 — 있는가 · 온전한가 · 고지가 붙어 있는가 ─────────
-  //  ⚠ 이 파일이 사라지거나 반쪽이 되면 부스에서 검색칸이 통째로 죽는다. CI 가 잡아야 한다.
-  const dataUrl = new URL("../public/pantone-approx.json", import.meta.url);
-  const j = JSON.parse(readFileSync(dataUrl, "utf8"));
-  ok(`색표가 public/ 에 있고 2,415건이다 (실측 ${j.colors?.length}건)`, j.colors?.length === 2415);
-  const HEXRE = /^#[0-9A-Fa-f]{6}$/;
-  const badHex = j.colors.filter(o => !HEXRE.test(String(o.hex))).length;
-  const badName = j.colors.filter(o => !/^Pantone .+ [CUM]$|^Pantone .+$/.test(String(o.name))).length;
-  const badCmyk = j.colors.filter(o => ["c", "m", "y", "k"]
-    .some(k => typeof o[k] !== "number" || o[k] < 0 || o[k] > 100)).length;
-  ok("hex 가 전부 «#RRGGBB» 다 (깨진 항목 0건)", badHex === 0, `${badHex}건`);
-  ok("이름 형식이 고르다 «Pantone …» (깨진 항목 0건)", badName === 0, `${badName}건`);
-  ok("CMYK 가 전부 0–100 이다 (깨진 항목 0건)", badCmyk === 0, `${badCmyk}건`);
-  //  ★ 고지 — **이 앱은 gh-pages 로 공개 배포된다.** 화면이 「팬톤 인증 색상」이라고
-  //    말하면 안 되고, 파일도 그렇게 말하면 안 된다.
-  const nt = JSON.stringify(j._notice || {});
-  ok("파일 머리에 **출처**가 있다 (mcp-print)", /mcp-print/.test(nt));
-  ok("파일 머리에 **라이선스**가 있고 «코드에 붙은 MIT» 라고 적혀 있다",
-     /MIT/.test(nt) && /코드/.test(nt));
-  ok("파일 머리가 **근사치**임을 말한다 (인증 색상이 아니다)",
-     /근사/.test(nt) && /인증 색상이 아니다/.test(nt));
-  ok("파일 머리에 **Pantone LLC 와 무관**하다고 적혀 있다",
-     /Pantone LLC/.test(nt) && /(무관|not affiliated)/.test(nt));
-  ok("파일 머리가 **수록 범위가 팬톤 전체가 아님**을 말한다 (2925 가 없다)",
-     /팬톤 전체가 아니다/.test(nt) && /2925/.test(nt));
-
-  // ── ② 로드 — fetch 를 세워 **실제 경로**를 태운다 ────────────────
-  const realFetch = globalThis.fetch;
-  const setFetch = f => { globalThis.fetch = f; _resetPantoneCache(); };
-  setFetch(async () => ({ ok: true, status: 200, json: async () => j }));
-  const loaded = await loadPantone();
-  ok(`색표를 받아 색인 ${loaded.list.length}건을 세운다`, loaded.ok && loaded.list.length === 2415);
-  const L = loaded.list;
-
-  // ── ③ ★ 검색 — 부스에서 실제로 치는 넷 ─────────────────────────
-  const hit = (q, n) => searchPantone(L, q, n);
-  ok("«185» → Pantone 185 C 가 **맨 위** (번호 정확일치가 1순위)",
-     hit("185").hits[0]?.name === "Pantone 185 C", hit("185").hits.map(o => o.name).join(" | "));
-  ok("«185» 는 C·U·M 세 벌만 나온다 (번호 정확일치)",
-     hit("185").total === 3, `${hit("185").total}건`);
-  ok("«185 C» · «185c» · «Pantone 185C» 가 **같은 한 건**이다 (대소문자·공백·접두 무시)",
-     ["185 C", "185c", "Pantone 185C", "pms 185-c"].every(
-       q => hit(q).total === 1 && hit(q).hits[0].name === "Pantone 185 C"));
-  ok("«reflex» → Reflex Blue (이름 부분일치)",
-     hit("reflex").hits[0]?.name === "Pantone Reflex Blue C" && hit("reflex").total === 3);
-  ok("«black» → Pantone Black C 가 맨 위 (이름 정확일치가 «Black 2» 보다 위)",
-     hit("black").hits[0]?.name === "Pantone Black C", hit("black").hits.map(o => o.name).join(" | "));
-  //  ★ 「없는 번호」다 — **없는 색이 아니다.** 이 색표는 100–699 · 7400–7549 · 이름색 55 뿐이다.
-  //    부스에서 운영자가 「그런 색 없습니다」라고 말해 버리면 하지 않은 확인을 한 셈이 된다.
-  //    화면 문구가 그 구별을 하는지는 아래 ⑥ 이 잰다.
-  ok("«2925» 는 **이 색표에 없다** (0건) — 화면이 「없는 번호」라고 말해야 한다",
-     hit("2925").total === 0);
-  ok("이빨: 그 0건이 검색 고장이 아니다 — 같은 자리 «292» 는 찾힌다",
-     hit("292").total > 0, hit("292").hits.map(o => o.name).join(" | "));
-  ok("결과는 몇 개만 — 24건 매칭이어도 6건까지만 준다 (total 은 24 로 남는다)",
-     hit("black", 6).hits.length === 6 && hit("black", 6).total === 24);
-  ok("빈 질의는 0건 (전체 2,415건을 쏟지 않는다)",
-     hit("").total === 0 && hit("   ").total === 0);
-  //  ★ 실측 — 2,415건 선형 스캔이 타이핑마다 돌아도 되는가. 최악 질의로 잰다.
-  {
-    const N = 200, t0 = Date.now();
-    for (let i = 0; i < N; i++) searchPantone(L, "1", 6);
-    const per = (Date.now() - t0) / N;
-    ok(`최악 질의 «1»(542건 매칭)이 60fps 예산 16.7ms 안에 든다 — ${per.toFixed(3)}ms/회`,
-       per < 2, `${per}ms`);
-  }
-
-  // ── ④ ★ 못 받았을 때 — 조용히 죽지 않는다 ───────────────────────
-  for (const [nm, f] of [
-    ["오프라인 (네트워크 없음)", async () => { throw new Error("offline"); }],
-    ["404 (배포 누락)", async () => ({ ok: false, status: 404, json: async () => ({}) })],
-    ["빈 파일", async () => ({ ok: true, status: 200, json: async () => ({ colors: [] }) })],
-    ["깨진 JSON", async () => ({ ok: true, status: 200, json: async () => { throw new Error("bad"); } })],
-  ]) {
-    setFetch(f);
-    const r = await loadPantone();
-    ok(`${nm} — 던지지 않고 «못 받았다»를 값으로 준다 (화면이 말할 수 있다)`,
-       r.ok === false && Array.isArray(r.list) && r.list.length === 0 && !!r.why, JSON.stringify(r).slice(0, 90));
-  }
-  // 캐시 — 두 번 부르면 요청은 한 번이다(타이핑마다 178KB 를 다시 받지 않는다)
-  {
-    let n = 0;
-    setFetch(async () => { n++; return { ok: true, status: 200, json: async () => j }; });
-    await loadPantone(); await loadPantone(); await loadPantone();
-    ok("색표는 **한 번만** 받는다 (모듈 캐시)", n === 1, `요청 ${n}회`);
-  }
-  setFetch(async () => ({ ok: true, status: 200, json: async () => j }));
-  await loadPantone();
-
-  // ── ⑤ ★★ 가격 불변 — 이 절의 본체 ──────────────────────────────
-  //  팬톤은 **금액을 한 원도 안 움직인다.** 움직이는 것은 별색 도수(fpSp/bpSp)다.
-  //  구조로 증명한다: ① 목록에 없다 ② 페이로드에 없다 ③ 링크 전 구간을 태워도 204 다.
-  {
-    const pmsish = k => /pms|pantone|팬톤|^pf$|^pb$/i.test(k);
-    ok("★ SPEC_KEYS 에 팬톤 키가 없다 (SPEC_KEYS 는 「금액을 움직이는 키」의 목록이다)",
-       !SPEC_KEYS.some(pmsish), SPEC_KEYS.filter(pmsish).join(","));
-    ok("★ 쇼룸 사양 칸(SHOWROOM_SPEC_KEYS)에도 없다 — quoteInputOf 로 안 흘러간다",
-       !SHOWROOM_SPEC_KEYS.some(pmsish), SHOWROOM_SPEC_KEYS.filter(pmsish).join(","));
-    const payload = encodeSpec({ ...SOSCO, fpSp: "2" });
-    ok("페이로드(q=)에 팬톤이 없다", !/pf~|pb~|antone/i.test(payload), payload.slice(0, 80));
-
-    // ★ 링크 전 구간 — 팬톤을 실은 주소를 견적서가 받아도 **204원 그대로**다.
-    const spotSpec = { ...SOSCO, fpSp: "2" };
-    const plain = specHash("showroom", spotSpec);
-    const withPms = specHash("showroom", spotSpec, { pf: "185 C", pb: "Reflex Blue C" });
-    const back = decodeSpec(payloadOfHash(withPms));
-    const a = quoteScreen(spotSpec).totals, b = quoteScreen(back).totals;
-    ok(`★★ 팬톤을 실은 링크가 **같은 금액**으로 돌아온다 — 개당 ${a.perEA}원 = ${b.perEA}원 · ` +
-       `공정합계 ${a.process.toLocaleString()}원 = ${b.process.toLocaleString()}원`,
-       a.perEA === b.perEA && a.process === b.process && a.perEA > 0,
-       `${a.perEA}/${b.perEA} · ${a.process}/${b.process}`);
-    ok("★ 팬톤이 붙어도 `q=` 페이로드는 **한 글자도 안 바뀐다**",
-       payloadOfHash(plain) === payloadOfHash(withPms));
-    ok("팬톤이 비면 주소가 **종전과 바이트 동일**하다 (기존 링크·왕복 게이트가 안 움직인다)",
-       specHash("showroom", spotSpec, { pf: "", pb: "" }) === plain &&
-       specHash("showroom", spotSpec, {}) === plain);
-    // 이빨 — 위 「금액이 같다」가 「아무것도 안 실렸으니 같다」가 아님을 보인다.
-    ok("이빨: 그래도 팬톤은 **주소에 실려 있다** (안 실리면 새로고침에 사라진다)",
-       /&pf=185(%20| )C/.test(withPms) && /&pb=Reflex(%20| )Blue(%20| )C/.test(withPms), withPms.slice(-40));
-    // 이빨 — 별색 **도수**는 금액을 실제로 움직인다(그래서 SPEC_KEYS 에 있다)
-    ok("이빨: 별색 도수는 금액을 움직인다 (204 ≠ 별색 2도)",
-       quoteScreen(SOSCO).totals.perEA !== a.perEA,
-       `원색4 ${quoteScreen(SOSCO).totals.perEA}원 / +별색2 ${a.perEA}원`);
-  }
-
-  // ── ⑥ 해시 왕복 — 부스에서 새로고침·주소 공유에 살아남는가 ────────
-  {
-    const h = specHash("showroom", SOSCO, { nc: true, pf: "185 C", pb: "Reflex Blue C" });
-    const got = pmsOfHash(h);
-    ok("팬톤이 해시 왕복에서 그대로다", got.f === "185 C" && got.b === "Reflex Blue C", JSON.stringify(got));
-    ok("가림 비트와 **같이** 실려도 서로 안 먹는다",
-       noCostOfHash(h) && pmsOfHash(h).f === "185 C" && payloadOfHash(h) === encodeSpec(SOSCO));
-    ok("팬톤이 없는 주소는 빈 값을 준다", JSON.stringify(pmsOfHash(specHash("showroom", SOSCO))) ===
-       JSON.stringify({ f: "", b: "" }));
-    //  ⚠ 해시는 **바깥에서 들어오는 값**이다 — 누가 링크를 고쳐 보낼 수 있다.
-    ok("깨진 %-쌍은 그 칸만 버린다 (링크 하나가 화면을 못 죽인다)",
-       pmsOfHash("#/showroom?q=x&pf=%E0%A4%A&pb=185%20C").b === "185 C");
-    ok("긴 문자열은 32자로 자른다 (주소 오염 방어)",
-       pmsOfHash(`#/showroom?q=x&pf=${"A".repeat(200)}`).f.length === 32);
-    //  ★★ 낯선 문자열로 **견본을 칠하지 않는다** — 출처를 못 대는 색을 고객에게
-    //     보여주는 것이 이 기능이 막으려는 바로 그 일이다.
-    ok("★ 색표에 없는 이름은 findPantone 이 null 이다 (견본을 못 그린다)",
-       findPantone(L, "<script>x</script>") === null &&
-       findPantone(L, "Pantone 2925 C") === null && findPantone(L, "") === null);
-    ok("이빨: 색표에 있는 이름은 찾는다 (검사가 공허하지 않다)",
-       findPantone(L, "185 C")?.hex === "#FF173D" && findPantone(L, "Pantone 185 C")?.name === "Pantone 185 C");
-    ok("주소에 실을 코드가 짧다 «185 C» (부스에서 주소창을 그대로 읽는다)",
-       pmsCodeOf(findPantone(L, "Pantone 185 C")) === "185 C");
-    ok("CMYK 는 출처 값 그대로 적는다 (우리가 환산하지 않는다)",
-       cmykTextOf(findPantone(L, "185 C")) === "C 0 · M 91 · Y 76 · K 0", cmykTextOf(findPantone(L, "185 C")));
-  }
-
-  // ── ⑦ 사양 줄 — 「별색 2도」로 끝나면 무슨 색인지가 화면에서 빠진다 ─
-  {
-    const r = showroomScreen(SOSCO, { spec: { ...specOf(baseOf(SOSCO)), fpSp: "2", bpSp: "1", bpColor: true } });
-    const plain = specSummaryOf(r.q?.lines, T("ko"));
-    const withP = specSummaryOf(r.q?.lines, T("ko"), { f: "Pantone 185 C", b: "Pantone Reflex Blue C" });
-    ok("사양 줄에 팬톤 이름이 남는다 (앞·뒤 각각)",
-       withP.includes("(Pantone 185 C)") && withP.includes("(Pantone Reflex Blue C)"), withP);
-    // ★ 자리 — **그 면의 인쇄 줄 안**이다. 맨 끝에 붙이면 어느 면 이야기인지 사라진다.
-    ok("★ 자리가 그 면의 인쇄 줄 **안**이다 (맨 끝이 아니다)",
-       /별색[^·]*\(Pantone 185 C\)/.test(withP) && !/\(Pantone 185 C\)\s*$/.test(withP), withP);
-    ok("일본어 화면에서도 같은 자리에 남는다",
-       /特色|별색/.test(specSummaryOf(r.q?.lines, T("ja"), { f: "Pantone 185 C" })) &&
-       specSummaryOf(r.q?.lines, T("ja"), { f: "Pantone 185 C" }).includes("(Pantone 185 C)"));
-    ok("★ 하위호환 — 팬톤을 안 넘기면 **종전과 같은 문자열**이다",
-       specSummaryOf(r.q?.lines, T("ko"), undefined) === plain &&
-       specSummaryOf(r.q?.lines, T("ko"), { f: "", b: "" }) === plain, plain);
-  }
-
-  // ── ⑧ ★ 화면이 정직성을 **말하는가** (소스 대조 · §M ⑪ 과 같은 규율) ──
-  //  이 기능의 절반이 이 문구다. 지우면 이 게이트가 빨개진다.
-  {
-    const p = readFileSync(new URL("../src/showroom/ShowroomPage.jsx", import.meta.url), "utf8");
-    const pm = readFileSync(new URL("../src/showroom/pantone.mjs", import.meta.url), "utf8");
-    ok("★ 견본 옆에 «화면 색은 참고» 가 있다 (모니터로 색을 승인받으면 분쟁이 된다)",
-       /data-pms-warn="screen"/.test(p) && /warnScreen/.test(p));
-    ok("★ 견본 옆에 «색을 골라도 금액은 안 바뀐다» 가 있다",
-       /data-pms-warn="price"/.test(p) && /warnPrice/.test(p));
-    // ⚠ 「가까이 있는가」를 **글자 수**로 재지 마라 — 주석 한 문단에 창이 넘친다(그렇게
-    //   깨졌다). 재는 것은 「이 섹션 **안**에 있는가」이므로 위치 순서로 잰다:
-    //   섹션 시작 < 출처 줄 < 다음 형제(코팅 줄).
-    ok("★ 검색 패널 안에 출처·상표 한 줄이 있다",
-       p.indexOf('data-pms-src="1"') > p.indexOf('data-pms="1"') &&
-       p.indexOf('data-pms-src="1"') < p.indexOf("{/* 코팅 앞/뒤"));
-    // ★★ 26-09-03 — 정직성 두 줄이 **견본보다 먼저** 나오는가.
-    //  종전에는 f/b 반복 블록 **아래**였고, 1280×800 부스 노트북에서 공유 링크로 들어온
-    //  초기 화면(scrollTop=0)에 견본은 보이는데 두 줄은 화면 밖이었다(실측 warnScreen
-    //  y=916 · 뷰포트 하단 808). 「DOM 에 있는 정직성 문구는 읽히지 않으면 없는 것과
-    //  같다」가 이 저장소의 원칙이라, **소스 순서**로 그 자리를 못박는다.
-    ok("★★ 정직성 두 줄이 견본(f/b 반복 블록)보다 **위**에 있다 — 링크 초기 화면에서 읽힌다",
-       p.indexOf('data-pms-warn="screen"') > 0 &&
-       p.indexOf('data-pms-warn="screen"') < p.indexOf('{["f", "b"].filter(sd => spotOf(sd) > 0)') &&
-       p.indexOf('data-pms-warn="price"') < p.indexOf('{["f", "b"].filter(sd => spotOf(sd) > 0)'));
-    ok("두 언어 다 있다 — 일본어는 1급이다 (고객이 읽는 쪽)",
-       ["warnScreen", "warnPrice", "src", "none", "offline", "unknown", "loading"]
-         .every(k => new RegExp(`\\b${k}:`).test(pm.split("const PMS_JA")[0]) &&
-                     new RegExp(`\\b${k}:`).test(pm.split("const PMS_JA")[1] || "")));
-    ok("일본어 문구가 실제로 일본어다 (한국어 사전을 복사해 두지 않았다)",
-       /実際の特色と大きく異なる/.test(pm) && /金額は変わりません/.test(pm) &&
-       /Pantone LLC とは無関係/.test(pm));
-    // ★★ 26-09-03 — 견본 색의 한계를 **원인과 크기로** 말하는가.
-    //  종전 문구는 「sRGB 모니터가 별색을 재현 못 한다」였는데 원인이 틀렸다: hex
-    //  2,374/2,415건이 같은 줄 CMYK 의 **단순 환산**과 정확히 일치하고(측정값이 아니다),
-    //  실제 팬톤 sRGB 와 표본 24건 중앙값 ΔE 32 · 최대 87 이다(Green C 실제 청록 →
-    //  화면 네온 초록). 「모니터 편차」로 적으면 고객은 그 정도로 읽고, 그 차이가 그대로
-    //  색 분쟁이 된다. U·M 이 C 에서 파생된 값(Δk=+3 고정)이라는 사실도 같이 적는다.
-    ok("★★ 견본 색의 한계를 원인(CMYK 단순환산)과 U·M 파생까지 적는다 — 모니터 탓으로 돌리지 않는다",
-       /CMYK 값을 단순 환산/.test(pm) && /CMYK 値を単純換算/.test(pm) &&
-       /U·M 견본은 C 에서 계산한 값/.test(pm) && /U・M の見本は C から計算した値/.test(pm));
-    // ★ 「없는 번호」와 「원래 화면으로 볼 수 없는 색」을 구별한다 — 실측: 871~877(금·은·동)
-    //   전건 0 건. 이 줄이 없으면 운영자가 「자료가 없다」로 말한다(금속색은 sRGB 견본이
-    //   원리적으로 무의미한 색이다 — 다른 말이다).
-    ok("★ 금속·형광은 「이 색표에 없다」가 아니라 「화면으로 볼 색이 아니다」로 적는다",
-       /금속색과 형광색은/.test(pm) && /화면으로 보여드릴 수 있는 색이 아닙니다/.test(pm) &&
-       /メタリックと蛍光色/.test(pm) && /画面ではお見せできない色です/.test(pm));
-    ok("한국어 문구가 «Pantone LLC 와 무관» 을 명시한다",
-       /Pantone LLC 와 무관/.test(pm) && /등록상표/.test(pm) && /근사값/.test(pm));
-    ok("★ 「없는 번호」와 「없는 색」을 구별해 말한다 (수록 범위를 적는다)",
-       /팬톤 전체가 아닙니다/.test(pm) && /100–699/.test(pm) &&
-       /パントン全体ではありません/.test(pm));
-    ok("★ 못 받으면 화면이 말한다 (조용히 안 죽는다)",
-       /data-pms-offline/.test(p) && /色表を読み込めませんでした/.test(pm) &&
-       /색표를 못 불러왔습니다/.test(pm));
-    // ★ **받는 중에는 검색칸을 안 잠근다** — 색표를 받기 시작하는 순간이 곧 운영자가
-    //   이 칸을 누르는 순간이다(별색 도수를 올린 직후). 전시장 Wi-Fi 에서 178KB 가
-    //   한두 초 걸리는데 그동안 잠겨 있으면 고객 앞에서 친 「185」가 통째로 사라진다.
-    ok("★ 받는 중(pmsData null)에는 검색칸이 안 잠긴다 — 잠그는 것은 못 받았을 때뿐이다",
-       /disabled=\{!!pmsData && !pmsData\.ok\}/.test(p) && !/disabled=\{!pmsData\?\.ok\}/.test(p));
-    // ★ 별색 0 이면 접힌다 — 안 쓰는 칸이 고객 앞 화면을 채우지 않는다.
-    ok("별색이 0 이면 팬톤 칸이 통째로 접힌다",
-       /const pmsNeeded = spotOf\("f"\) > 0 \|\| spotOf\("b"\) > 0;/.test(p) &&
-       /\{pmsNeeded && \(/.test(p) &&
-       /\["f", "b"\]\.filter\(sd => spotOf\(sd\) > 0\)/.test(p));
-    // ★ 팬톤은 `over`(= quoteInputOf 로 흘러가는 사양 한 벌)와 **다른 상태**다.
-    //   같은 훅에 끼우는 순간 팬톤이 금액 계산기의 입력이 된다.
-    ok("★ 팬톤이 `over` 가 아니라 **별개 상태**다 (금액 경로에 안 닿는다)",
-       /const \[pms, setPms\] = useState\(/.test(p) && !/put\("[fb]p[A-Za-z]*[Pp]ms/.test(p));
-    // ★ 견본은 **색표에서 찾은 항목**으로만 칠한다.
-    ok("★ 견본은 findPantone 이 찾은 항목(rec)으로만 칠한다 — 링크 문자열로 안 칠한다",
-       /background: rec\.hex/.test(p) && /rec \? \(<>/.test(p) && !/background: pms\[sd\]/.test(p));
-    // ★ 첫 화면을 무겁게 하지 않는다 — 178KB 는 fetch 로 미룬다(동적 import 는 금지다).
-    ok("색표를 번들에 안 넣는다 (fetch · import.meta.env.BASE_URL)",
-       /fetch\(urlOf\(\)\)/.test(pm) && /import\.meta\.env\?\.BASE_URL/.test(pm) &&
-       !/from "\.\..*pantone-approx/.test(pm));
-  }
-
-  globalThis.fetch = realFetch; _resetPantoneCache();
 }
 
 console.log(`\n${"=".repeat(78)}`);

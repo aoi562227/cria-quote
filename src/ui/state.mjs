@@ -356,48 +356,11 @@ export function decodeSpec(payload) {
 //    전부 클라이언트에 있는 한 원리적으로 그렇다(price-formula ⑥ 절에 그 논증이 있다).
 export const noCostOfHash = hash => /[?&]nc=1(?:&|$)/.test(String(hash || ""));
 
-// ── ★ 별색 팬톤 번호 (`pf=` · `pb=`) — 26-08-27 ───────────────────────
-//  쇼룸에서 고객이 부른 팬톤 번호를 고르면 그 **이름**을 앞/뒤 한 칸씩 나른다.
-//
-//  ★★ 왜 SPEC_KEYS 가 **아닌가** — 위 nc 비트와 **정확히 같은 이유**다.
-//   · `q`(SPEC_KEYS)는 「toQuoteInput 이 읽는 키」와 1:1 이어야 하고, verify-speclink §A 가
-//     Proxy 로 **양방향** 대조한다(빠진 키뿐 아니라 「안 읽히는 키」도 잡는다).
-//   · 그런데 팬톤 번호는 **금액을 한 원도 안 움직인다.** 금액을 움직이는 것은 별색
-//     **도수**(fpSp/bpSp)이고 그 두 칸은 이미 SPEC_KEYS 에 있다. 「어느 팬톤인가」는
-//     인쇄비·소부·지대 어디에도 안 들어간다.
-//   · §A 를 통과시키려고 toQuoteInput 이 이 키를 읽게 만들면, 금액 계산기의 입력에
-//     **계산기가 안 쓰는 칸**이 생긴다 = 도메인 입력이 거짓말을 한다. 읽고 버리는 줄을
-//     넣는 것은 게이트를 속이는 것이다. 둘 다 하지 않는다.
-//  ⟹ 형제 파라미터. 값이 없으면 문자열에 **한 글자도 안 붙는다** — 기존 링크·왕복
-//     게이트(§D·§H·§K)가 바이트 단위로 그대로다.
-//  ⚠ 이 값은 **바깥에서 들어온다**(누가 링크를 고쳐 보낼 수 있다). 32자로 자르고,
-//    화면은 이 문자열로 **견본을 칠하지 않는다** — 색표에서 같은 이름을 찾아낸 뒤에만
-//    칠한다(pantone.findPantone). 출처를 못 대는 색을 고객에게 보여주지 않는다.
-const sib = (k, v) => {
-  const s = String(v ?? "").trim().slice(0, 32);
-  return s ? `&${k}=${encodeURIComponent(s)}` : "";
-};
-
-/** 해시에서 앞/뒤 팬톤 코드를 꺼낸다. 깨진 %-쌍은 **그 칸만** 버린다. */
-export function pmsOfHash(hash) {
-  const h = String(hash || "");
-  const i = h.indexOf("?");
-  const out = { f: "", b: "" };
-  if (i < 0) return out;
-  for (const part of h.slice(i + 1).split("&")) {
-    const side = part.startsWith("pf=") ? "f" : part.startsWith("pb=") ? "b" : "";
-    if (!side) continue;
-    try { out[side] = decodeURIComponent(part.slice(3)).slice(0, 32); } catch { /* 그 칸만 버린다 */ }
-  }
-  return out;
-}
-
 /** 사양을 실은 해시. route 는 "" (견적서) 또는 "showroom".
  *  ⚠ App 의 라우터가 `/^#\/?showroom\b/` 이므로 `#/showroom?…` 이 그 정규식에 맞아야 한다.
  *  ⚠ opt 를 안 주면 **종전과 바이트 동일**하다 — 기존 링크·왕복 게이트가 안 움직인다. */
 export const specHash = (route, s, opt) =>
-  `#/${route}?q=${encodeSpec(s)}${opt?.nc ? "&nc=1" : ""}` +
-  `${sib("pf", opt?.pf)}${sib("pb", opt?.pb)}`;
+  `#/${route}?q=${encodeSpec(s)}${opt?.nc ? "&nc=1" : ""}`;
 
 /** 해시에서 페이로드만 뽑는다. `#/showroom?q=…` · `#showroom?q=…` 둘 다 받는다.
  *  페이로드에 `&` 는 원리적으로 없다 — encodeURIComponent 가 %26 으로 접는다. */
