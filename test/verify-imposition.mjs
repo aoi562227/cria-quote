@@ -15,6 +15,7 @@ import { calcNetSize, dielinePieces } from "../src/domain/dieline/index.mjs";
 import { solveImposition } from "../src/domain/imposition.mjs";
 import { BASE_SHEETS } from "../src/domain/data/sheets.mjs";
 import { readDieline } from "../src/domain/pdf-dieline.mjs";
+import { resolveOracle } from "./oracle-path.mjs";
 import { buildDieline } from "../src/domain/quote.mjs";
 import { findBestSheet } from "../src/domain/sheet-select.mjs";
 import { DEFAULT_PAPER } from "../src/domain/data/papers.mjs";
@@ -201,7 +202,7 @@ console.log(`
 
 // ══════════════════════════════════════════════════════════════════
 //  웨이크버니 삼면접착 2종 — 자동바닥 날개 테이퍼 실측 (2026-07-31)
-//  파일: 고객사_문의중/웨이크버니/디자인/웨이크버니삼면접착2종.pdf
+//  파일: 고객사_진행중단/웨이크버니/디자인/웨이크버니삼면접착2종.pdf
 //  견적서: 화장품2종 10,000ea · AB295라이트 국2(469×636) 220,653원/R · 6up
 // ══════════════════════════════════════════════════════════════════
 //  A 46×46×138  전개도 실측 198.3 × 234.0   몸통 y 35.0~173.0 (=138.0=H ✓)
@@ -248,7 +249,7 @@ console.log(`
 
 // ══════════════════════════════════════════════════════════════════
 //  소스코 삼면접착 140×43×130 — 3번째 실측 (2026-08-04)
-//  파일: 고객사_문의중/소스코/디자인/삼면접착140x43x130.pdf
+//  파일: 고객사_진행중단/소스코/디자인/삼면접착140x43x130.pdf
 // ══════════════════════════════════════════════════════════════════
 //  전개도 실측 380.3 × 223.5
 //    netW 공식 2(140+43)+14.3 = 380.3  → 오차 0.0mm (4번째 확인)
@@ -335,6 +336,8 @@ console.log(`
 const DR = process.env.PDF_ORACLE_DIR ?? "C:/이예찬_업무/연도별/2026";
 const PR = process.env.DIE_ORACLE_DIR ?? "C:/이예찬_업무/private/도면/견적용도면";
 const ALLOW_SKIP = process.env.PDF_ALLOW_SKIP === "1" || process.argv.includes("--allow-skip");
+// ★ 26-09-07 — 곀사 폴더가 움직여 생긴 「파일 없음」을 파일명으로 구한다. 조용하지 않다 — oracle-path.mjs 머리말 참조.
+const oracleAt = f => resolveOracle(f, [DR, PR]) ?? f;
 
 //  bbox = 그 PDF 에서 **채택할 후보를 특정**하는 열쇠다(1순위를 맹신하지 않는다).
 //    verify-pdf §A 가 같은 값으로 추출기를 채점하고 있으므로 두 스위트가 서로를 묶는다.
@@ -352,11 +355,11 @@ const ALLOW_SKIP = process.env.PDF_ALLOW_SKIP === "1" || process.argv.includes("
 //    0 으로 적으면 「날개가 없다」가 되어 모델이 뭘 그리든 잔차가 +가 되므로 조용히 통과한다.
 const ORACLE = [
   { n:"소스코",     id:"glue_3side", W:140, D:43,   H:130, top:[21.5,35.5,21.5,35.5], bot:[29,30,29,58],
-    pdf:`${DR}/고객사_문의중/소스코/디자인/C5AF4AD1-BB73-4581-A7B3-93697D2145DC.pdf`, page:0, bbox:[380.3,223.5], tabLeft:true },
+    pdf:`${DR}/고객사_진행중단/소스코/디자인/C5AF4AD1-BB73-4581-A7B3-93697D2145DC.pdf`, page:0, bbox:[380.3,223.5], tabLeft:true },
   { n:"웨이크A",    id:"glue_3side", W:46,  D:46,   H:138, top:[23,35,23,35],         bot:[23,61,23,0],
-    pdf:`${DR}/고객사_문의중/웨이크버니/디자인/웨이크버니삼면접착2종.pdf`, page:0, bbox:[198.3,234.0], tabLeft:true },
+    pdf:`${DR}/고객사_진행중단/웨이크버니/디자인/웨이크버니삼면접착2종.pdf`, page:0, bbox:[198.3,234.0], tabLeft:true },
   { n:"웨이크B",    id:"glue_3side", W:36,  D:36,   H:168, top:[18,28,18,28],         bot:[18,51,18,0],
-    pdf:`${DR}/고객사_문의중/웨이크버니/디자인/웨이크버니삼면접착2종.pdf`, page:1, bbox:[158.3,247.0], tabLeft:true },
+    pdf:`${DR}/고객사_진행중단/웨이크버니/디자인/웨이크버니삼면접착2종.pdf`, page:1, bbox:[158.3,247.0], tabLeft:true },
   { n:"도솔",       id:"glue_3side", W:50,  D:50,   H:150, top:[25,38,25,38],         bot:[24,65,24,0],
     pdf:`${DR}/고객사/제작완료/주식회사도솔메디/제작완료/디자인/260129_코리팩_크리아_디자인(13554)_경옥고3입_패키지.pdf`, page:0, bbox:[214.3,253.0], tabLeft:true },
   { n:"칼선-14",    id:"glue_3side", W:80,  D:44.5, H:30,  top:[34.5,34.5,34.5,34.5], bot:[30,0,30,60],
@@ -555,6 +558,8 @@ function buildMask(segs, step, dilate = 0) {
 const rot90Segs = (segs, h) => segs.map(([a, b]) => [[h - a[1], a[0]], [h - b[1], b[0]]]);
 const mapSegs = (segs, f) => segs.map(([a, b]) => [f(a), f(b)]);
 async function realFromPdf(o) {
+  // 낡은 경로를 파일명으로 구한다(알리면서). 곀사 폴더가 움직여 세 번 물렸다.
+  o.pdf = oracleAt(o.pdf);
   if (!fs.existsSync(o.pdf)) return { no: `PDF 없음 — ${o.pdf}` };
   let r;
   try { r = await readDieline(new Uint8Array(fs.readFileSync(o.pdf)), { source: o.n, page: o.page, maxCandidates: 20 }); }

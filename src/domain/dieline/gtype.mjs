@@ -16,7 +16,8 @@
  * 직사각 1조각으로 한다. 조용히 다른 구조의 폴리곤을 갖다 쓰면 G형이 망가진다.
  */
 export default {
-  id: "gtype", label: "G형 (톰슨조립)", tag: "G형", polygon: false, thomsonDefault: "g_std",
+  id: "gtype", label: "G형 (톰슨조립)", labelJa: "G型（打ち抜き組立）",
+  tag: "G형", polygon: false, thomsonDefault: "g_std",
 
   netSize(W, D, H, { hangTab = 0 } = {}) {
     const ratio = D / H;

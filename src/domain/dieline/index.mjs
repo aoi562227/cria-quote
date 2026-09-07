@@ -24,11 +24,25 @@ const BY_ID = Object.fromEntries(REGISTRY.map(s => [s.id, s]));
  *   tag      = 견적서 배너용 짧은 이름 (없으면 label 첫 낱말)
  *   verified = 검증 근거 문자열 (예 "칼선 4건") 또는 undefined.
  *              ⚠ !!verified 로 접지 마라 — UI 가 그대로 찍어서 「✓true」가 된다.
+ *   labelJa  = 일본 전시회 부스 화면(쇼룸)이 읽는다. 없으면 한국어로 떨어진다 —
+ *              papers.mjs · process-prices.mjs 의 labelJa 와 **같은 통로**다.
+ *
+ * ★ 26-09-03 — 구조 5종에 labelJa 를 붙였다. 상담 ②에서 반드시 여는 첫 드롭다운인데
+ *   일본 고객 화면에서 한국어로 떴다(선택된 값도 아무것도 안 눌러도 화면에 남는다).
+ *   ⚠ **일본 실무의 상품명을 새로 주장하지 않는다.** 지종 28개를 비워 둔 것과 같은 규율이다.
+ *     붙인 말은 전부 ⓐ 이 저장소가 이미 쓰는 일본어이거나 ⓑ 라벨 자체의 서술이다:
+ *       삼면접착 → 三面貼り        (process-prices GLUE_OPTS 의 「삼면」이 이미 三面貼り)
+ *       G형      → G型             (THOMSON_OPTS 의 「G형 표준」이 이미 G型 標準)
+ *       톰슨조립 → 打ち抜き組立    (쇼룸 JA 사전 fThom = 打ち抜き)
+ *       맞뚜껑(상하 텍 클로저) → 差込み蓋（上下）   · 십자조립(크로스바텀) → クロスボトム（組立式）
+ *     キャラメル箱·地獄底 같은 **일본 업계 상품명은 쓰지 않았다** — 우리 구조가 그 상품과
+ *     같다는 확인을 한 적이 없다. 근거가 생기면 여기 한 칸씩 고치면 화면은 따라온다.
  */
 export const structures = () =>
   REGISTRY.filter(s => !s.hidden)
-          .map(({ id, label, tag, verified }) =>
-                ({ id, label, tag: tag || label.split(" ")[0], verified: verified || null }));
+          .map(({ id, label, labelJa, tag, verified }) =>
+                ({ id, label, labelJa: labelJa || null,
+                   tag: tag || label.split(" ")[0], verified: verified || null }));
 
 export const getStructure = id => BY_ID[id] ?? null;
 

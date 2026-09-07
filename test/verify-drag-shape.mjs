@@ -125,14 +125,14 @@ const DIR = process.env.DRAG_PDF_DIR ?? new URL("../test-pdf", import.meta.url).
 const ORACLE = process.env.PDF_ORACLE_DIR ?? "C:/이예찬_업무/연도별/2026";
 const CASES = [
   { id: "t-sosco", page: 0, mode: "hull",   bbox: [380.3, 223.5],
-    alt: `${ORACLE}/고객사_문의중/소스코/디자인/삼면접착140x43x130.pdf`,
+    alt: `${ORACLE}/고객사_진행중단/소스코/디자인/삼면접착140x43x130.pdf`,
     why: "채택 후보의 윤곽이 불완전 — 열린 끝 최대 이격 130.30mm (nest-drag 래스터 절 주석)" },
   { id: "t-wake2", page: 0, mode: "raster", bbox: [198.3, 234.0],
-    alt: `${ORACLE}/고객사_문의중/웨이크버니/디자인/웨이크버니삼면접착2종.pdf` },
+    alt: `${ORACLE}/고객사_진행중단/웨이크버니/디자인/웨이크버니삼면접착2종.pdf` },
   { id: "t-wake2", page: 1, mode: "raster", bbox: [158.3, 247.0],
-    alt: `${ORACLE}/고객사_문의중/웨이크버니/디자인/웨이크버니삼면접착2종.pdf` },
+    alt: `${ORACLE}/고객사_진행중단/웨이크버니/디자인/웨이크버니삼면접착2종.pdf` },
   { id: "t-ishap", page: 0, mode: "raster", bbox: [557.1, 324.16],
-    alt: `${ORACLE}/고객사_문의중/iSHAP/디자인/무제-3.pdf` },
+    alt: `${ORACLE}/고객사_진행중단/iSHAP/디자인/무제-3.pdf` },
 ];
 
 /** BoxSpec.loadPdf 와 **같은 규칙**으로 기본 후보를 고른다 (pdfPickOf 가 읽을 pickIdx).

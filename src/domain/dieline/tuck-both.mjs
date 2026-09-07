@@ -137,7 +137,7 @@ import { GLUE_TAB, TIP_FULL } from "./geometry.mjs";
  *      종전 공식(224×258)으로는 4up 밖에 안 나왔다.
  */
 export default {
-  id: "tuck_both", label: "맞뚜껑 (상하 텍 클로저)", polygon: true,
+  id: "tuck_both", label: "맞뚜껑 (상하 텍 클로저)", labelJa: "差込み蓋（上下）", polygon: true,
 
   netSize(W, D, H, { hangTab = 0 } = {}) {
     // 혀 18.0 = 목형 5벌 실측 산포(11.0 / 15.0 / 16.5 / 16.5 / 17.0 / 18.0)의 **상한**.
