@@ -19,6 +19,7 @@
 //  §I  청구 up ↔ 그린 up 게이트 — 갈리면 잡히는가 (견적서판 §12-3)
 //  §J  거래처·품명 — 링크에 안 싣고 **초기값으로 접지도 않는다**
 //  §M  ★ 관리자 수식 → 고객 표시가 — 파서 · 원가 유출 · 거부 거동 · 하위호환 (26-08-25)
+//      ⑲ 마진을 수식에서 빼 **입력칸**으로 — 이김 규칙 · 상식 밴드 · 하위호환 (26-09-07)
 //  §N  ★ 고객과 같이 넣는 사양 칸 + 수량별 개당단가 — 왕복 불변식 · 원가 유출 (26-08-26)
 //
 //  ── 26-08-19: 이 스위트가 「장식」이던 자리 둘을 고쳤다 ─────────────
@@ -53,6 +54,9 @@ import {
   applyFormula, roundFor, shownPriceOf, shownRowsOf, adminViewOf,
   savePriceCfg, loadPriceCfg, EMPTY_PRICE_CFG, ADMIN_T,
   compileFormula, usesRate,
+  // §M ⑲ — 마진을 수식에서 빼 **입력칸**으로 (26-09-07)
+  marginOf, usesMargin, marginKeyOf, isPriceOn,
+  MARGIN_MIN, MARGIN_MAX, MARGIN_SRC, MARGIN_NOTE,
 } from "../src/showroom/price-formula.mjs";
 // §M ⑰⑱ — 환율을 망에서 받아 자동으로 반영 (26-09-04)
 //  ⚠ **CI 에는 망이 없다.** 이 스위트는 fetch 를 한 번도 안 부른다 —
@@ -1419,6 +1423,38 @@ console.log("\n── §M  관리자 수식 → 고객 표시가 ─────
       ok("이빨: 그 표면 검사가 표시가는 실제로 잡는다 (공허하지 않다)",
          shownCells.every(v => visible.includes(v)), shownCells.join(" "));
     }
+    // (c-3) ★★ 26-09-07 — **마진칸만 켠 화면**도 같은 보증을 받는가.
+    //   마진칸은 「수식이 하나도 없는데 가격을 가리는」 **새 상태**를 만들었다. 위 (c)
+    //   들은 전부 수식이 켜진 상태를 쟀으므로 이 상태를 한 번도 안 밟는다 — 그런데
+    //   부스에서 가장 흔할 상태가 이것이다(마진 한 칸만 치고 끝낸다). isPriceOn 이
+    //   마진칸을 안 봤다면 여기서 mode "cost" 로 접혀 **원화 원가**가 그려진다.
+    //   ⚠ store 목이 모든 키에 같은 JSON 을 돌려주므로, 환율 수동값을 같은 객체에
+    //     실어 준다(loadFx 는 net·manual 을 읽고 loadPriceCfg 는 cur·KRW·JPY·m* 를 읽는다).
+    {
+      const mLive = await render({ mutate: seed, hash: "#/showroom?q=x",
+        store: { cur: "JPY", KRW: "", JPY: "", mKRW: "", mJPY: "1.7",
+                 manual: { v: 8.63, raw: null, asOf: "2026-09-07", at: Date.now(), src: "manual" } } });
+      const mShown2 = /data-shown="([^"]*)"/.exec(mLive);
+      const mCost2 = /data-perea="([^"]*)"/.exec(mLive);
+      ok(`(c-3) 준비: 마진칸만으로 실제 화면에 금액이 떴다 — «${mShown2?.[1]}»`,
+         /^¥[\d,]+$/.test(mShown2?.[1] || ""),
+         mLive.slice(mLive.indexOf("data-result"), mLive.indexOf("data-result") + 160));
+      ok("★ 마진칸만 켠 화면 렌더에도 data-perea 가 **비어 있다** (DOM 에 원가가 없다)",
+         mCost2?.[1] === "", mCost2?.[1]);
+      const mCells = [...mLive.matchAll(/data-qty-shown="([^"]*)"/g)].map(m => m[1]);
+      ok(`★ 마진칸만 켜도 수량별 표 ${mCells.length}칸이 전부 표시가다 (원가가 한 칸도 없다)`,
+         mCells.length >= 4 && mCells.every(v => /^¥[\d,]+$/.test(v)), mCells.join(" "));
+      // ★ 마진율 **그 수 자체**가 고객 화면 표면에 없어야 한다 — 우리 원가 구조다.
+      const mVisible = mLive
+        .replace(/<[^>]*>/g, tag => ` ${(tag.match(/data-[a-z-]+="[^"]*"/g) || []).join(" ")} `);
+      ok("★★ 고객 화면 표면에 마진율 «1.7» 이 없다 (수식을 안 싣는 것과 같은 이유 — §16)",
+         !/(?<![\d,.])1\.7(?![\d,.])/.test(mVisible),
+         mVisible.replace(/\s+/g, " ").trim().slice(0, 150));
+      ok("★ 관리자 표면(원가·마진 라벨)도 여전히 한 조각도 없다",
+         ADMIN_MARKS.filter(m => mLive.includes(m)).length === 0 &&
+         !mLive.includes(ADMIN_T.mgnKRW) && !mLive.includes(ADMIN_T.mgnHint));
+    }
+
     // (d) ★ 가림 비트를 달고 온 주소 — 수식이 없어도 원가로 접히지 않는다(브라우저 경로).
     const asCust = await render({ hash: "#/showroom?q=x&nc=1", store: null });
     ok("★ nc=1 주소를 수식 없는 브라우저에서 렌더하면 금액이 «—» 다",
@@ -1453,13 +1489,21 @@ console.log("\n── §M  관리자 수식 → 고객 표시가 ─────
       "*-0", "*0*-1", "x*-0", "*(0*-1)", "＊1.7/10", "*１.７/１０", "＊１．７／１０",
       "*1.7ー4", "*1.7¥10", "*1.7​/10",
     ];
-    // 이 표에 환율 토큰이 섞여 있으면 게이트 자체가 틀린다 — 먼저 그것을 못박는다.
-    const leaked = CORPUS.filter(s => { const c = compileFormula(s); return c.ok && usesRate(c.node); });
-    ok(`하위호환 표 ${CORPUS.length}건에 환율 토큰이 **하나도 없다** (표가 오염되면 게이트가 거짓말한다)`,
+    // 이 표에 환율·**마진** 토큰이 섞여 있으면 게이트 자체가 틀린다 — 먼저 그것을 못박는다.
+    const leaked = CORPUS.filter(s => {
+      const c = compileFormula(s);
+      return c.ok && (usesRate(c.node) || usesMargin(c.node));
+    });
+    ok(`하위호환 표 ${CORPUS.length}건에 환율·마진 토큰이 **하나도 없다** (표가 오염되면 게이트가 거짓말한다)`,
        leaked.length === 0, leaked.join(" "));
     ok(`하위호환 표본이 ${CORPUS.length}건 이상이다 (요구 60건)`, CORPUS.length >= 60);
 
-    // ⓐ 평가기 — 3번째 인자(환율)를 무엇으로 줘도 **2인자 호출과 같은 객체**여야 한다
+    // ⓐ 평가기 — 3·4번째 인자(환율·**마진**)를 무엇으로 줘도 **2인자 호출과 같은 객체**여야 한다.
+    //  ★ 26-09-07 — 마진 축을 이 스윕에 **끼워 넣었다**(새 표를 만들지 않았다). 마진칸이
+    //    생기면서 evalFormula 에 인자가 하나 더 늘었고, 「마진칸에 무엇을 적어도 기존
+    //    수식이 안 바뀐다」는 것이 이 변경의 하위호환 그 자체다. 표를 베끼면 둘이 늙어
+    //    갈리고, 그때 이 게이트는 「옛 표에 대해서만」 보증하게 된다.
+    const MGNS = [undefined, null, 0, -1, NaN, Infinity, 1.7, 1e9];
     const diffs = [];
     for (const src of CORPUS) {
       for (const cost of [204, 223, 1, 0, null]) {
@@ -1467,11 +1511,15 @@ console.log("\n── §M  관리자 수식 → 고객 표시가 ─────
         for (const rate of RATES) {
           const after = JSON.stringify(applyFormula(src, cost, rate));
           if (after !== before) diffs.push(`«${src}» 원가${cost} 환율${rate}: ${before} → ${after}`);
+          for (const mgn of MGNS) {
+            const am = JSON.stringify(applyFormula(src, cost, rate, mgn));
+            if (am !== before) diffs.push(`«${src}» 원가${cost} 환율${rate} 마진${mgn}: ${before} → ${am}`);
+          }
         }
       }
     }
-    ok(`★ 수식 ${CORPUS.length}건 × 원가 5벌 × 환율 ${RATES.length}벌 = ` +
-       `${CORPUS.length * 5 * RATES.length}건이 **전부 바이트 동일**하다`,
+    ok(`★ 수식 ${CORPUS.length}건 × 원가 5벌 × 환율 ${RATES.length}벌 × 마진 ${MGNS.length}벌 = ` +
+       `${CORPUS.length * 5 * RATES.length * (MGNS.length + 1)}건이 **전부 바이트 동일**하다`,
        diffs.length === 0, diffs.slice(0, 4).join("\n     "));
 
     // ⓑ 화면 — shownPriceOf·shownRowsOf·adminViewOf 도 fx 를 줘도 안 움직인다
@@ -1497,13 +1545,47 @@ console.log("\n── §M  관리자 수식 → 고객 표시가 ─────
     }
     ok("★ 화면 3문(고객·표·관리자)도 환율을 줘도 **바이트 동일**하다 (숫자 수식일 때)",
        sDiffs.length === 0, sDiffs.slice(0, 4).join(" / "));
+    // ⓑ-2 ★★ 26-09-07 — **마진칸에 무엇을 적어도** 수식이 있는 통화의 화면이 안 움직인다.
+    //   부스 노트북에 이미 `*1.7/10` 이 저장돼 있는 상태에서 마진칸을 만지는 것이
+    //   가장 흔한 첫 조작이다. 거기서 금액이 튀면 이 기능이 사고를 만든 것이다.
+    //   ⚠ 빈 수식(`""`)은 **일부러 뺐다** — 그때는 마진칸이 이겨서 금액이 생기는 것이
+    //     맞고(⑲ ⓑ), 여기 넣으면 이 단언이 스스로 틀린 것을 재게 된다.
+    const MBOX = ["", "1.7", "1", "10", "0", "-1", "17", "1000", "abc", "×1.7", " "];
+    const mDiffs = [];
+    for (const src of ["*1.7/10", "*1.35", "*1.7/환율", "*1.7/", "*0", "y*2", "+500"]) {
+      for (const [cur, lang] of [["JPY", "ja"], ["KRW", "ko"]]) {
+        const mk = marginKeyOf(cur);
+        const cfg0 = { cur, KRW: cur === "KRW" ? src : "", JPY: cur === "JPY" ? src : "" };
+        const fxr = { v: 8.63, text: "8.63", asOf: "2026-09-07" };
+        const a0 = JSON.stringify(shownPriceOf({ perEA: 204, up: 4, cfg: cfg0, lang, fx: fxr }));
+        const r0 = JSON.stringify(shownRowsOf({ rows: rowsIn, cfg: cfg0, lang, fx: fxr }));
+        for (const mv of MBOX) {
+          const cfg = { ...cfg0, [mk]: mv };
+          if (JSON.stringify(shownPriceOf({ perEA: 204, up: 4, cfg, lang, fx: fxr })) !== a0)
+            mDiffs.push(`shown «${src}» ${cur} 마진«${mv}»`);
+          if (JSON.stringify(shownRowsOf({ rows: rowsIn, cfg, lang, fx: fxr })) !== r0)
+            mDiffs.push(`rows «${src}» ${cur} 마진«${mv}»`);
+          // 관리자 몫은 마진칸 자체를 실어야 하므로 객체가 달라진다 — **금액만** 잰다.
+          const av = adminViewOf({ perEA: 204, up: 4, cfg, lang, fx: fxr });
+          if (av.main !== JSON.parse(a0).main) mDiffs.push(`admin.main «${src}» ${cur} 마진«${mv}»`);
+        }
+      }
+    }
+    ok(`★★ 수식이 있으면 마진칸 ${MBOX.length}벌(정상·0·음수·밴드밖·오타)에 화면이 ` +
+       "**한 글자도 안 움직인다**", mDiffs.length === 0, mDiffs.slice(0, 4).join(" / "));
+    // 미설정 + 마진칸도 미입력 = 종전 동작. 「마진 미입력 = 종전과 동일」의 기준점이다.
+    ok("★ 마진칸이 빈 문자열이면 미설정(mode cost)이 그대로 유지된다",
+       shownPriceOf({ perEA: 204, up: 4, lang: "ko",
+         cfg: { cur: "auto", KRW: "", JPY: "", mKRW: "", mJPY: "" } }).mode === "cost" &&
+       !isPriceOn({ cur: "auto", KRW: "", JPY: "", mKRW: "", mJPY: "" }));
     // 미설정(종전 동작)도 환율에 안 흔들린다
     ok("★ 수식 미설정(mode cost)은 환율이 있어도 종전대로 원가 원화다",
        JSON.stringify(shownPriceOf({ perEA: 204, up: 4, cfg: EMPTY_PRICE_CFG, lang: "ko",
          fx: { v: 8.69, text: "8.69", asOf: "2026-09-04" } })) ===
        JSON.stringify(shownPriceOf({ perEA: 204, up: 4, cfg: EMPTY_PRICE_CFG, lang: "ko" })));
 
-    // ⓒ ★ 저장소에 **옛 모양** 그대로 남아 있어도 산다 (환율 키가 없던 시절의 설정)
+    // ⓒ ★ 저장소에 **옛 모양** 그대로 남아 있어도 산다
+    //    (환율 키가 없던 시절 = **마진 키도 없던 시절**의 설정. 부스 노트북에 이것이 있다.)
     {
       const box = new Map([["cria-quote.showprice.v1",
         JSON.stringify({ cur: "JPY", KRW: "*1.35", JPY: "*1.7/10" })]]);
@@ -1511,11 +1593,23 @@ console.log("\n── §M  관리자 수식 → 고객 표시가 ─────
       globalThis.localStorage = { getItem: k => (box.has(k) ? box.get(k) : null),
                                   setItem: (k, v) => box.set(k, String(v)) };
       const old = loadPriceCfg();
-      ok("★ 옛 localStorage 설정(환율 키 없음)이 그대로 되읽힌다",
+      ok("★ 옛 localStorage 설정(환율·마진 키 없음)이 그대로 되읽힌다",
          old.cur === "JPY" && old.KRW === "*1.35" && old.JPY === "*1.7/10", JSON.stringify(old));
+      // ★★ 26-09-07 — **마진칸이 「미입력」으로 채워져야** 한다. 여기서 1 이나 다른
+      //   기본값이 들어가면 옛 설정의 금액이 조용히 달라진다(이 변경의 최악 실패).
+      ok("★ 옛 설정의 마진칸이 «»(미입력)다 — 기본값을 심지 않는다",
+         old.mKRW === "" && old.mJPY === "", `mKRW=«${old.mKRW}» mJPY=«${old.mJPY}»`);
       ok("★ 그 설정이 부스에서 **같은 금액**을 낸다 (204원 → ¥35)",
          shownPriceOf({ perEA: 204, up: 4, cfg: old, lang: "ja",
                         fx: { v: 8.69, text: "8.69", asOf: "2026-09-04" } }).main === "¥35");
+      // ★ 「마진칸이 없던 시절의 객체」를 **그대로** 넣어도 같은 값이어야 한다 —
+      //   loadPriceCfg 를 안 거치는 경로(링크·직접 호출)까지 덮는다.
+      ok("★ m* 키가 아예 없는 cfg 객체도 같은 금액이다 (키 부재 = 미입력)",
+         JSON.stringify(shownPriceOf({ perEA: 204, up: 4, lang: "ja",
+           cfg: { cur: "JPY", KRW: "*1.35", JPY: "*1.7/10" },
+           fx: { v: 8.69, text: "8.69", asOf: "2026-09-04" } })) ===
+         JSON.stringify(shownPriceOf({ perEA: 204, up: 4, lang: "ja", cfg: old,
+           fx: { v: 8.69, text: "8.69", asOf: "2026-09-04" } })));
       ok("환율 저장 키가 없어도 loadFx 가 안 죽는다 (미설정으로 접는다)",
          loadFx().net === null && loadFx().manual === null);
       if (real === undefined) delete globalThis.localStorage; else globalThis.localStorage = real;
@@ -1845,6 +1939,273 @@ console.log("\n── §M  관리자 수식 → 고객 표시가 ─────
       ok("기준일을 모르면 괄호 자체를 안 적는다 (모르는 것을 적지 않는다)",
          !T("ko").refFxLive("8.69", "").includes("(") &&
          T("ko").refFxLive("8.69", "2026-09-04").includes("(2026-09-04"));
+    }
+  }
+
+  // ── ⑲ ★★ 마진을 수식에서 빼 **입력칸**으로 (26-09-07) ──────────────
+  //  왜 — 마진을 바꾸려면 `*1.7/환율` 이라는 **문자열을 고쳐야** 했다. 부스에서 고객을
+  //  앞에 두고 곱셈식을 타이핑하는 것은 위험하다: `/환율` 을 흘리면 10배 가격이 되고
+  //  ¥379 는 진짜처럼 보인다(⑬ BAND 가 재는 그 사고다). 마진은 **수 한 칸**이어야 한다.
+  //
+  //  이 절이 재는 것은 넷이고, 넷 다 이 변경이 만들 수 있는 사고다:
+  //   ① **하위호환** — 마진칸이 없던 설정·수식이 한 글자도 안 바뀌는가 (⑰ 이 본체를 잰다.
+  //      여기서는 그 표가 마진 축까지 덮는지와, 「마진 미입력 = 종전」의 경계를 잰다.)
+  //   ② **이김 규칙** — 수식과 마진이 같이 있을 때 무엇이 이기는지가 코드와 화면에서
+  //      같은가. 곱해지면(2.89배) 화면이 조용히 틀린 값을 그린다.
+  //   ③ **상식 밴드** — 0·음수·17·1000 이 입력에서 막히는가. 그리고 그 거부가 **이유와
+  //      함께**인가 (조용한 거부는 부스에서 못 고친다).
+  //   ④ **유출** — 마진은 우리 원가 구조다. 링크에도 고객 화면에도 한 조각도 없어야 한다.
+  console.log("\n── §M ⑲  마진 입력칸 ────────────────────────────────────────");
+  {
+    const FX = (v, asOf = "2026-09-07") => ({ v, text: v.toFixed(2), asOf });
+    const R = 8.63;                       // 2026-09-07 실측 (1엔 = 8.63원)
+    const M = (cur, mgn, src = "") => ({ cur, KRW: cur === "KRW" ? src : "",
+      JPY: cur === "JPY" ? src : "", [marginKeyOf(cur)]: mgn });
+    const show = (cost, cfg, lang, fx = FX(R)) => shownPriceOf({ perEA: cost, up: 4, cfg, lang, fx });
+    const adm = (cost, cfg, lang, fx = FX(R)) => adminViewOf({ perEA: cost, up: 4, cfg, lang, fx });
+
+    // ── ⓐ ★ 손계산 대조 — 마진칸만으로 값이 나오는가 ─────────────────
+    //  숫자를 손으로 적지 않는다. §B 와 **같은 경로**로 원가를 만들어 넣는다.
+    const cost204 = quoteScreen(SOSCO).totals.perEA;
+    ok(`기준 케이스 원가가 ★204원이다 (마진칸은 원가를 안 건드린다)`, cost204 === 204, `${cost204}원`);
+    {
+      // 204 × 1.7 ÷ 8.63 = 40.18 → ¥40
+      const s = show(cost204, M("JPY", "1.7"), "ja");
+      ok(`★ 마진 1.7 + 환율 ${R} → 원가 ${cost204} → «¥40» (손계산 40.18)`,
+         s.main === "¥40" && s.mode === "value" && s.cur === "JPY", JSON.stringify(s));
+      // ★ 사용자가 지정한 대조: 원가 223 → ¥44 (223 × 1.7 ÷ 8.63 = 43.93)
+      const s2 = show(223, M("JPY", "1.7"), "ja");
+      ok(`★ 마진 1.7 + 환율 ${R} → 원가 223 → «¥44» (손계산 43.93 · 부스 실측 대조값)`,
+         s2.main === "¥44", JSON.stringify(s2));
+      // 원화는 환율을 안 탄다 — 204 × 1.35 = 275.4 → 275
+      const k = show(cost204, M("KRW", "1.35"), "ko");
+      ok("★ 원화 마진칸은 환율을 안 나눈다 — 204 × 1.35 = «275원»",
+         k.main === "275" && k.unitKey === "won", JSON.stringify(k));
+      ok("★ 원화 마진칸은 환율이 아예 없어도 값을 낸다 (환율을 안 쓰니까)",
+         show(cost204, M("KRW", "1.35"), "ko", null).main === "275");
+      // 엔화 마진칸은 환율을 **쓴다** — 없으면 거부다(원가로 안 돌아간다)
+      const noFx = show(cost204, M("JPY", "1.7"), "ja", null);
+      ok("★ 엔화 마진칸은 환율이 없으면 **거부**다 — 원가로 안 돌아간다",
+         noFx.mode === "blocked" && noFx.main === "—" &&
+         !JSON.stringify(noFx).includes(String(cost204)), JSON.stringify(noFx));
+      ok("그 거부에 이유가 붙는다 (관리자에게만)",
+         /환율/.test(adm(cost204, M("JPY", "1.7"), "ja", null).why));
+      // 기본 계산을 **화면이 글로 적는다** — 「이 ¥44 가 어떻게 나온 수인지」
+      const a = adm(223, M("JPY", "1.7"), "ja");
+      ok(`★ 화면이 기본 계산을 글로 적는다 — «${a.baseNote}»`,
+         a.baseNote === MARGIN_NOTE.JPY && a.baseNote.includes("환율") && a.baseNote.includes("마진"),
+         a.baseNote);
+      ok("★ 검산 한 줄의 네 수가 전부 관리자 몫에 있다 (원가·마진·환율·결과)",
+         a.cost === 223 && a.mgn === 1.7 && a.usesFx === true && a.main === "¥44",
+         `${a.cost} ${a.mgn} ${a.usesFx} ${a.main}`);
+      ok("마진칸만 쓰면 고객 화면도 환율·기준일을 말한다 (실제로 나눴으니까)",
+         show(223, M("JPY", "1.7"), "ja").fx?.rate === "8.63");
+    }
+
+    // ── ⓑ ★★ 이김 규칙 — **수식이 마진칸을 이긴다. 곱하지 않는다.** ────
+    //  곱하는 안이 왜 위험한가: 부스 노트북에 `*1.7/환율` 이 저장돼 있는데 마진칸에
+    //  1.7 을 넣으면 2.89 배가 되고, 화면은 조용히 그 값을 그린다. 이 절이 그것을 막는다.
+    {
+      const withM = { cur: "JPY", KRW: "", JPY: "*1.7/환율", mJPY: "1.7" };
+      const noM = { ...withM, mJPY: "" };
+      ok("★★ 수식 + 마진칸 = **수식 그대로**다 (곱하지 않는다 — 2.89배가 되지 않는다)",
+         JSON.stringify(show(cost204, withM, "ja")) === JSON.stringify(show(cost204, noM, "ja")),
+         `${show(cost204, withM, "ja").main} vs ${show(cost204, noM, "ja").main}`);
+      const a = adm(cost204, withM, "ja");
+      ok("★ 관리자 몫이 「지금 수식이 이겼다」를 말한다 (from · mgnUsed)",
+         a.from === "formula" && a.mgnUsed === false && a.mgn === 1.7,
+         `${a.from} ${a.mgnUsed} ${a.mgn}`);
+      ok("★ 그 문구가 **고칠 방법**까지 적는다 (마진칸을 쓰려면 수식에 «마진»)",
+         ADMIN_T.calcFormula("*1.7/환율", 1.7).includes("이깁니다") &&
+         ADMIN_T.calcFormula("*1.7/환율", 1.7).includes("마진"),
+         ADMIN_T.calcFormula("*1.7/환율", 1.7));
+      // 마진 토큰 — 둘이 만나는 **유일한 자리**. `+500` 같은 고정비를 수식이 흡수한다.
+      const tok = { cur: "JPY", KRW: "", JPY: "*마진/환율+500", mJPY: "1.7" };
+      const at = m => show(cost204, { ...tok, mJPY: m }, "ja").main;
+      ok(`★ «*마진/환율+500» 이 마진칸을 따라 움직인다 (1.7 → ${at("1.7")} · 2 → ${at("2")})`,
+         at("1.7") === "¥540" && at("2") === "¥547" && at("1.7") !== at("2"),
+         `${at("1.7")} ${at("2")}`);
+      ok("별칭 «margin» 이 «마진» 과 같은 값을 낸다",
+         at("1.7") === show(cost204, { ...tok, JPY: "*margin/환율+500" }, "ja").main);
+      ok("★ 마진 토큰을 쓰는 수식은 그 사실을 관리자에게 말한다 (mgnUsed)",
+         adm(cost204, tok, "ja").mgnUsed === true &&
+         adm(cost204, tok, "ja").from === "formula");
+      // ★ 수식칸이 비면 마진칸이 이긴다 — 그 경계가 「한 글자」다
+      ok("★ 수식칸이 공백뿐이면 마진칸이 이긴다 (trim 경계)",
+         adm(cost204, { cur: "JPY", KRW: "", JPY: "   ", mJPY: "1.7" }, "ja").from === "margin");
+      ok("★ 수식칸에 한 글자라도 있으면 수식이 이긴다 (그것이 오타여도 — 조용히 마진으로 안 넘어간다)",
+         adm(cost204, { cur: "JPY", KRW: "", JPY: "*1.7/", mJPY: "1.7" }, "ja").from === "formula" &&
+         show(cost204, { cur: "JPY", KRW: "", JPY: "*1.7/", mJPY: "1.7" }, "ja").mode === "blocked");
+      ok("★ 합성 수식이 **같은 컴파일러**를 탄다 (새 계산 경로를 만들지 않았다)",
+         MARGIN_SRC.JPY === "원가*마진/환율" && MARGIN_SRC.KRW === "원가*마진" &&
+         compileFormula(MARGIN_SRC.JPY).ok && usesMargin(compileFormula(MARGIN_SRC.JPY).node) &&
+         usesRate(compileFormula(MARGIN_SRC.JPY).node) &&
+         !usesRate(compileFormula(MARGIN_SRC.KRW).node));
+      // 0 게이트가 합성 경로에도 산다 — 마진칸은 0 을 막지만, 원가가 작으면 반올림 0 이 된다
+      ok("★ 합성 경로도 ZERO GATE 를 탄다 (원가 1원 · 마진 1 · 환율 8.63 → 0.12 → 거부)",
+         show(1, M("JPY", "1"), "ja").mode === "blocked" &&
+         show(1, M("JPY", "1"), "ja").main === "—");
+    }
+
+    // ── ⓒ ★ 상식 밴드 — 0·음수·터무니없는 값은 **거부**하고 이유를 말한다 ──
+    //  범위 [1, 10] 의 근거는 price-formula ③-2 MARGIN_MIN 주석에 있다. 여기서는
+    //  **막으려던 사고 두 개가 실제로 막히는지**만 잰다: 17(소수점 실종) · 0.17(소수점 밀림).
+    {
+      const GOODM = [["1.7", 1.7], ["1", 1], ["10", 10], ["1.35", 1.35], ["2", 2],
+                     ["×1.7", 1.7], ["*1.7", 1.7], ["１.７", 1.7], [" 1.7 ", 1.7], ["1.70", 1.7]];
+      let gm = 0;
+      for (const [s, want] of GOODM) {
+        const r = marginOf(s);
+        if (r.ok && r.v === want) gm++;
+        else ok(`정상 마진 «${s}» → ${want}`, false, JSON.stringify(r));
+      }
+      ok(`정상 마진 ${GOODM.length}건이 전부 기대값을 낸다 (전각·곱셈표·공백 포함)`,
+         gm === GOODM.length, `${gm}/${GOODM.length}`);
+      const BADM = [["0", "0 은 고객 화면에 0"], ["-1", "음수"], ["-0.5", "음수"],
+                    ["1000", "밴드 밖(터무니없음)"], ["17", "소수점 실종 — 10배 가격"],
+                    ["0.17", "소수점 밀림 — 1/10 가격"], ["10.01", "밴드 상한 바로 밖"],
+                    ["0.99", "밴드 하한 바로 밖 (원가 이하)"],
+                    ["abc", "숫자가 아님"], ["1,7", "유럽식 소수 쉼표"], ["1.7배", "단위가 붙음"],
+                    ["1.2.3", "소수점 둘"], ["9".repeat(20), "길이 상한"], ["*", "곱셈표만"]];
+      let bm = 0;
+      for (const [s, why] of BADM) {
+        const r = marginOf(s);
+        const good = !r.ok && !r.empty && typeof r.why === "string" && r.why.length > 0;
+        if (good) bm++;
+        else ok(`거부 마진 «${s}» (${why})`, false, JSON.stringify(r));
+      }
+      ok(`★ 거부 ${BADM.length}건이 전부 **이유와 함께** 거부된다 (조용한 거부는 부스에서 못 고친다)`,
+         bm === BADM.length, `${bm}/${BADM.length}`);
+      // ★ 세 부류가 **각자 다른 말**이어야 한다 — 뭉개면 0 을 왜 막는지 모른다
+      ok("0 · 음수 · 밴드밖이 서로 다른 이유를 말한다",
+         new Set([marginOf("0").why, marginOf("-1").why, marginOf("17").why]).size === 3,
+         `${marginOf("0").why} / ${marginOf("-1").why} / ${marginOf("17").why}`);
+      ok("0 의 이유가 「고객 화면에 0」을 말한다 (ZERO GATE 까지 안 가고 입력에서 막는다)",
+         marginOf("0").why.includes("0 원"), marginOf("0").why);
+      ok("밴드 이유가 **소수점**을 지목하고 탈출구(수식칸)를 적는다",
+         marginOf("17").why.includes("소수점") && marginOf("17").why.includes("수식칸") &&
+         marginOf("0.17").why.includes("소수점"), marginOf("17").why);
+      ok(`밴드가 BAND.KRW 와 같은 수다 (입력 게이트와 결과 게이트가 같은 말을 한다) — ${MARGIN_MIN}~${MARGIN_MAX}`,
+         MARGIN_MIN === 1 && MARGIN_MAX === 10);
+      // ★ **미입력은 오류가 아니다** — 종전 상태다. 이것을 붉게 말하면 없는 고장을 찾는다.
+      ok("★ 미입력(«» · 공백)은 오류가 아니라 «empty» 다",
+         marginOf("").empty === true && marginOf("   ").empty === true &&
+         marginOf("").why === "" && marginOf(undefined).empty === true &&
+         marginOf(null).empty === true);
+      // ★ 거부된 마진이 **쓰일 때만** 화면을 막는다
+      const badUsed = { cur: "JPY", KRW: "", JPY: "", mJPY: "0" };
+      ok("★ 마진칸이 틀렸고 그것이 유일한 계산이면 → «—» (원가로 안 돌아간다)",
+         show(cost204, badUsed, "ja").mode === "blocked" &&
+         show(cost204, badUsed, "ja").main === "—" &&
+         !JSON.stringify(show(cost204, badUsed, "ja")).includes(String(cost204)));
+      ok("그 거부 이유가 관리자 몫에 **마진칸의 말 그대로** 들어간다",
+         adm(cost204, badUsed, "ja").why === marginOf("0").why, adm(cost204, badUsed, "ja").why);
+      // ★★ 실측 위험 — 안 쓰는 입력이 화면을 죽이면 안 된다
+      const badIdle = { cur: "JPY", KRW: "", JPY: "*1.7/환율", mJPY: "17" };
+      ok("★★ 마진칸 오타가 **안 쓰이는 수식**의 금액을 죽이지 않는다 (설명 못 할 고장이 된다)",
+         show(cost204, badIdle, "ja").mode === "value" &&
+         show(cost204, badIdle, "ja").main === show(cost204, { ...badIdle, mJPY: "" }, "ja").main,
+         JSON.stringify(show(cost204, badIdle, "ja")));
+      ok("그래도 관리자 패널에는 그 오타가 뜬다 (mgnWhy) · 금액은 그대로라고 같이 적는다",
+         !!adm(cost204, badIdle, "ja").mgnWhy && adm(cost204, badIdle, "ja").mgnUsed === false &&
+         ADMIN_T.mgnIdle("x").includes("영향은 없습니다"), ADMIN_T.mgnIdle("x"));
+    }
+
+    // ── ⓓ ★★ 유출 — 마진은 **우리 원가 구조**다. 링크에도 고객 화면에도 없다 ──
+    {
+      const payload = encodeSpec({ ...SOSCO, mKRW: "1.35", mJPY: "1.7", KRW: "*1.35", JPY: "*1.7/환율" });
+      ok("마진칸이 해시 페이로드에 **없다** (수식을 안 싣는 것과 같은 판단 — §16)",
+         !payload.includes("1.7") && !payload.includes("1.35") &&
+         !/(^|;)(mKRW|mJPY|margin|마진)~/.test(payload), payload.slice(0, 90));
+      const priceKeys = SPEC_KEYS.filter(k => /^(cur|m?KRW|m?JPY|fx|margin|마진)/i.test(k));
+      ok("SPEC_KEYS 에 마진 키가 없다 (실으려면 여기 한 줄이고, 그건 마진율 유출이다)",
+         priceKeys.length === 0, priceKeys.join(","));
+      // ★ 고객 몫 객체 — 마진칸이 켜진 모든 상태에서 원가·마진·수식이 없어야 한다
+      for (const [nm, cfg, lang] of [
+        ["엔화 마진만 1.7", M("JPY", "1.7"), "ja"],
+        ["원화 마진만 1.35", M("KRW", "1.35"), "ko"],
+        ["마진 + 마진토큰 수식", { cur: "JPY", KRW: "", JPY: "*마진/환율+500", mJPY: "1.7" }, "ja"],
+        ["마진이 거부됨", M("JPY", "0"), "ja"],
+        ["마진 + 수식(마진은 안 쓰임)", { cur: "JPY", KRW: "", JPY: "*1.7/환율", mJPY: "1.7" }, "ja"],
+      ]) {
+        const seen = JSON.stringify(show(cost204, cfg, lang));
+        const leak = [String(cost204), "1.7", "1.35", "마진", "margin", "원가"].filter(x => seen.includes(x));
+        ok(`⑀ 유출 없음 — ${nm}: 고객 몫에 원가·마진·수식이 없다`, leak.length === 0,
+           `${leak.join(" ")} · ${seen}`);
+      }
+      // ★ 이빨 — 같은 입력에서 **관리자 몫**에는 마진이 반드시 있다(없으면 즉석 검산을 못 한다)
+      const admin = JSON.stringify(adm(cost204, M("JPY", "1.7"), "ja"));
+      ok("이빨: 같은 입력에서 관리자 몫에는 원가·마진이 있다 (검사가 공허하지 않다)",
+         admin.includes(String(cost204)) && admin.includes("1.7") && admin.includes("마진"), admin);
+      // ★ 수량별 표 — 마진칸만 켰을 때도 다섯 칸 전부가 표시가여야 한다
+      const rows = shownRowsOf({ rows: [{ qty: 1000, up: 4, perEA: 531 }, { qty: 4000, up: 4, perEA: 204 }],
+        cfg: M("JPY", "1.7"), lang: "ja", fx: FX(R) });
+      ok("★ 마진칸만 켜도 수량별 표가 **표시가**로 그려진다 (원가가 한 칸도 없다)",
+         rows.length === 2 && rows.every(r => /^¥[\d,]+$/.test(r.main)) &&
+         !JSON.stringify(rows).includes("531") && !JSON.stringify(rows).includes("204"),
+         JSON.stringify(rows));
+    }
+
+    // ── ⓔ ★ 켜짐·통화 고르기 — 마진칸만으로도 「가리는 중」이어야 한다 ──
+    {
+      ok("★ 마진칸만 채워도 isPriceOn 이 참이다 (거짓이면 고객 화면에 원화 원가가 뜬다)",
+         isPriceOn({ cur: "JPY", KRW: "", JPY: "", mJPY: "1.7" }) === true &&
+         isPriceOn({ cur: "auto", KRW: "", JPY: "", mKRW: "1.35" }) === true);
+      ok("빈 설정은 여전히 거짓이다 (종전 동작의 기준점)",
+         isPriceOn(EMPTY_PRICE_CFG) === false && isPriceOn({}) === false);
+      // 「자동」의 넘김도 마진칸을 본다 — 안 보면 일본어 화면에 원화 금액이 뜬다
+      ok("★ 「자동」이 마진칸만 있는 통화로도 넘어간다 (일본어 + 원화 마진만)",
+         show(cost204, { cur: "auto", KRW: "", JPY: "", mKRW: "1.35" }, "ja").cur === "KRW");
+      ok("★ 마진칸이 있는 통화로는 안 넘어간다 (엔화 마진만 · 일본어)",
+         show(cost204, { cur: "auto", KRW: "*1.35", JPY: "", mJPY: "1.7" }, "ja").cur === "JPY");
+      // 둘 다 비면 거부이고, 그 이유가 **마진칸도** 가리켜야 한다
+      const none = adm(cost204, { cur: "JPY", KRW: "*1.35", JPY: "", mJPY: "" }, "ja");
+      ok("★ 통화를 고정했는데 그 통화에 마진도 수식도 없으면 거부하고, 이유가 **둘 다** 가리킨다",
+         none.mode === "blocked" && none.why.includes("마진") && none.why.includes("수식"), none.why);
+    }
+
+    // ── ⓕ 저장 — 마진칸이 수식과 **같은 키·같은 수명**으로 산다 ────────
+    {
+      const box = new Map();
+      const real = globalThis.localStorage;
+      globalThis.localStorage = { getItem: k => (box.has(k) ? box.get(k) : null),
+                                  setItem: (k, v) => box.set(k, String(v)) };
+      savePriceCfg({ cur: "JPY", KRW: "", JPY: "", mKRW: "1.35", mJPY: "1.7" });
+      const back = loadPriceCfg();
+      ok("저장 왕복 — 마진칸이 그대로 돌아온다",
+         back.mKRW === "1.35" && back.mJPY === "1.7", JSON.stringify(back));
+      ok("★ 저장 키가 하나다 (수식과 마진이 갈려 저장되면 「한쪽만 살아남은」 상태가 생긴다)",
+         box.size === 1 && box.has("cria-quote.showprice.v1"), [...box.keys()].join(","));
+      box.set("cria-quote.showprice.v1", JSON.stringify({ cur: "JPY", mKRW: 1.35, mJPY: null }));
+      const co = loadPriceCfg();
+      ok("이상한 타입은 접힌다 (수 → 문자열 · null → 미입력)",
+         co.mKRW === "1.35" && co.mJPY === "", JSON.stringify(co));
+      globalThis.localStorage = { getItem() { throw new Error("사생활 보호 모드"); },
+                                  setItem() { throw new Error("사생활 보호 모드"); } };
+      ok("저장소가 던져도 안 죽는다 — 미입력(= 종전 동작)으로 간다",
+         loadPriceCfg().mJPY === "" && (savePriceCfg({ mJPY: "1.7" }), true));
+      if (real === undefined) delete globalThis.localStorage; else globalThis.localStorage = real;
+    }
+
+    // ── ⓖ 소스 계약 — 화면이 마진을 **관리자 패널 안에서만** 그리는가 ──
+    //  ⑯ 렌더 게이트가 마크업을 훑고, 여기서는 소스가 그 계약을 갖고 있는지를 본다
+    //  (⑪ 과 같은 방식 — 둘이 서로를 못 대신한다).
+    {
+      const p = readFileSync(new URL("../src/showroom/ShowroomPage.jsx", import.meta.url), "utf8");
+      ok("마진 입력칸이 두 통화에 각각 있다 (통화별 — price-formula ③-2)",
+         /\{mgnIn\("KRW", a\.mgnKRW\)\}/.test(p) && /\{mgnIn\("JPY", a\.mgnJPY\)\}/.test(p));
+      ok("★ 마진칸이 **관리자 패널 안**이다 (고객 화면에 마진율이 안 나간다)",
+         /data-admin="1"[\s\S]*mgnIn\("KRW"/.test(p));
+      ok("★ 「지금 무엇으로 계산했나」 줄이 있다 (마진칸이 안 쓰이는 상태를 화면이 말한다)",
+         /data-admin-calc=\{v\.from\}/.test(p) && /a\.calcFormula\(v\.src, v\.mgn\)/.test(p));
+      ok("★ 검산 한 줄이 원가·마진·환율·결과를 **같은 줄**에 놓는다",
+         /data-admin-strip=/.test(p) &&
+         /data-admin-cost[\s\S]{0,600}data-admin-mgn[\s\S]{0,600}data-admin-fx[\s\S]{0,600}data-admin-out/.test(p));
+      ok("★ 마진·환율 칸은 **실제로 쓰일 때만** 그 줄에 낀다 (안 쓰는 수를 나란히 적으면 거짓말이다)",
+         /\{v\.mgnUsed && calcCell/.test(p) && /\{v\.usesFx && calcCell/.test(p));
+      ok("고객 화면 금액 칸은 여전히 shown.main 뿐이다 (마진칸이 새 경로를 안 만들었다)",
+         /<Big value=\{shown\.main\}/.test(p) && !/<Big value=\{perEA/.test(p) &&
+         !/data-shown=\{[^}]*mgn/i.test(p));
     }
   }
 }

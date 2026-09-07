@@ -55,7 +55,7 @@ import {
 // 저장·「거부되면 원가로 안 돌아간다」까지 전부. 이 파일은 그 결과만 그린다.
 import {
   shownPriceOf, shownRowsOf, adminViewOf, loadPriceCfg, savePriceCfg, isPriceOn,
-  CUR_CHOICES, ADMIN_T,
+  CUR_CHOICES, ADMIN_T, marginKeyOf,
 } from "./price-formula.mjs";
 // 환율은 **fx-rate 가 소유한다** — 어디서 받고·언제 받았고·쓸 수 있는 값인지까지.
 // 이 파일이 하는 일은 「언제 받을지」를 통제하는 것 하나뿐이다(진입 1회 + 관리자 버튼).
@@ -922,7 +922,21 @@ export default function ShowroomPage({ carried = null }) {
       <main data-pane="wrap" style={{ flex: 1, display: "flex", minHeight: 0 }}>
 
         {/* ══ 왼쪽 — 입력 ══════════════════════════════════════════ */}
-        <aside data-pane="aside" style={{ width: 292, flexShrink: 0, background: C.panel, borderRight: `1px solid ${C.line}`,
+        {/* ★★ 26-09-07 — 폭을 **고정에서 유동으로.** 사용자 지시 「모든 태블릿에서
+            반응하는 반응형」의 절반이 이 한 줄이다.
+            종전 `width:292` 고정이 만든 실측 고장: 폭이 좁아질수록 좌패널이 화면에서
+            차지하는 **비율만 커지고** 판이 그만큼 좁아졌다 —
+              1366 → 좌 24% · 판 970px  /  1280 → 26% · 884px  (부스)
+               1024 → 32% · 판 628px  /  912 → 36% · 516px  /  861 → 38% · **465px**
+            즉 태블릿으로 갈수록 「도면을 보는 화면」에서 도면이 제일 작았다.
+            clamp 하한 232 의 근거: 안쪽 내용 196px = W·D·H 세 칸(터치 44px 하한 3개
+            + gap 6×2 = 144)에 여유. 상한 292 는 **오늘 부스 값 그대로**다 —
+            26vw 가 292 에 닿는 폭이 1123px 이므로 1280·1366 은 산술적으로 292 에
+            고정된다(실측으로 확인: 전·후 모두 329px 바깥폭). 부스 화면은 안 움직인다.
+            ⚠ clamp 는 인라인으로 쓸 수 있다 — 그래서 아래 <style> 조각이 아니라
+              **여기**다(이 파일의 「스타일은 인라인」 규율). */}
+        <aside data-pane="aside" style={{ width: "clamp(232px, 26vw, 292px)", flexShrink: 0,
+                        background: C.panel, borderRight: `1px solid ${C.line}`,
                         padding: 18, overflowY: "auto", display: "flex", flexDirection: "column", gap: 18 }}>
 
           {/* 도면 */}
@@ -1038,8 +1052,16 @@ export default function ShowroomPage({ carried = null }) {
                 켜고 끄기만 하고, 실제 도수·소부 판수는 사양 줄(specSummaryOf)이 말한다. */}
             <Row label={t.fPrint}>
               <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                {/* ★ 26-09-07 flexWrap — 좌패널 폭이 유동이 되면서 이 줄이 **가장 먼저
+                    넘치는 줄**이 됐다. 실측 768×1024(좌패널 안쪽 232): 안쪽 칸 170px 에
+                    내용이 203px — 알약 셋은 줄어들며 버텼지만 별색 숫자칸(width:34,
+                    flexShrink 없음)이 **1px 삐져나가 좌패널에 가로 스크롤**이 생겼다.
+                    터치(pointer:coarse)에서는 알약이 44px 하한을 받아 237px 이 되므로
+                    같은 자리가 크게 벌어진다 — 그때는 이 wrap 이 별색칸을 둘째 줄로
+                    내린다. 알약을 좁히거나 숫자칸을 줄이는 쪽이 아닌 이유: 둘 다
+                    44px 터치 하한에 걸려 있어 되돌려 깎으면 손가락 쪽이 깨진다. */}
                 {[["f", t.sideF], ["b", t.sideB]].map(([sd, sl]) => (
-                  <div key={sd} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  <div key={sd} style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
                     <span style={{ fontSize: 11, color: C.faint, width: 15, flexShrink: 0 }}>{sl}</span>
                     <Pill on={!!over[`${sd}pColor`]} data-fx-print={`${sd}Color`}
                       onClick={() => put(`${sd}pColor`, !over[`${sd}pColor`])}>{t.oCmyk}</Pill>
@@ -1097,7 +1119,15 @@ export default function ShowroomPage({ carried = null }) {
         </aside>
 
         {/* ══ 오른쪽 — 판 · 결과 ═══════════════════════════════════ */}
-        <section style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", padding: 18, gap: 12 }}>
+        {/* ★ 26-09-07 overflowY — 위 판 최소 높이(240)의 안전판이다. 높이가 모자란
+            화면(1024×600 등)에서 판이 240 을 지키면 그만큼이 아래로 밀리는데, 뿌리가
+            overflow:hidden 이라 받아 줄 곳이 없으면 **결과 상자가 못 닿는 곳으로 간다**
+            (26-09-04 에 좁은 화면에서 실제로 그랬던 그 고장이다).
+            ⚠ 부스 1280×800 에서는 넘치는 것이 0 이므로 `auto` 는 스크롤바를 안 낸다 —
+              냈다면 판 폭이 884 → 869 로 줄어 부스 화면이 바뀐다. 실측으로 확인했다
+              (전·후 모두 판 884×406 · scrollHeight == clientHeight). */}
+        <section data-pane="main" style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column",
+                          padding: 18, gap: 12, overflowY: "auto" }}>
 
           {/* 버튼 줄 */}
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -1141,7 +1171,21 @@ export default function ShowroomPage({ carried = null }) {
           </div>
 
           {/* 판 */}
-          <div style={{ flex: 1, minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          {/* ★★ 26-09-07 판 최소 높이 — **태블릿 가로는 높이가 낮다**는 것을 재고 넣었다.
+              실측 1024×600(가로로 든 태블릿 + 브라우저 UI): 이 칸이 flex:1·minHeight:0
+              이라 위아래 고정 높이(버튼줄 39 + 범례 + 안내 18 + 결과 상자 217)를 다 빼고
+              **판이 654×145px** 로 남았다. 폭은 넉넉한데 높이만 없어서, 도면이 세로로
+              눌린 띠가 된다 — 「도면을 같이 보는 화면」이 도면을 못 보여준다.
+              (같은 폭에 높이만 768 이면 313px 다. 즉 이건 폭이 아니라 **높이** 문제라
+               폭 breakpoint 로는 원리적으로 안 잡힌다.)
+              240 의 근거: 판이 가로로 길어(990×720 급) 세로 240 이면 폭 330 짜리
+              최악 조합에서도 전개도가 형태로 읽힌다. 그리고 **부스 노트북 406px 보다
+              한참 낮다** — 1280×800 에서는 이 값에 닿지 않으므로 산술적으로 무효다
+              (실측: 전·후 모두 884×406).
+              ⚠ 아래 section 의 overflowY:auto 와 **한 벌**이다. 최소 높이만 주면 넘친
+                만큼이 뿌리의 overflow:hidden 에 잘려 결과 상자가 못 닿는 곳으로 간다. */}
+          <div data-sheetbox="1"
+            style={{ flex: 1, minHeight: 240, display: "flex", alignItems: "center", justifyContent: "center" }}>
             {frame ? (
               <Sheet
                 innerRef={svgRef} frame={frame} part={part}
@@ -1349,34 +1393,58 @@ export default function ShowroomPage({ carried = null }) {
         // ★ 26-08-27 좁은 화면 — 사용자 신고 「모바일에서는 수정이 안된다 관리자화면」.
         //   index.html 에 뷰포트 메타를 넣자 비로소 375px 로 그려지는데, 그러면 이번엔
         //   좌패널 292px 고정 때문에 가로 스크롤이 생긴다. 둘은 한 벌로 고쳐야 한다.
-        //   860px 에서 가른 이유: 좌패널 292 + 판이 읽히는 최소 폭(~520) + 여백.
         //   ⚠ 부스 기기는 노트북(1280×800)이고 그 폭은 이 규칙에 **안 걸린다** —
         //     전시회 화면을 건드리지 않는 것이 이 breakpoint 의 첫 조건이다.
-        "@media (max-width:860px){" +
+        //
+        // ★★ 26-09-07 문턱을 860 → 640 으로 내린다. 사용자 지시 「태블릿 기종은 모든
+        //   태블릿에서 반응하는 반응형으로」. 종전 860 이 **틀린 자리**였던 실측 근거:
+        //     · 세로 태블릿은 전부 860 아래다(768 · 820 · 그리고 860 자신). 그 폭에서
+        //       이 규칙이 좌패널을 위로 눕히면 화면이 header 52 + 좌패널 569 + 판 485
+        //       + 범례·안내 + 결과 217 = **1,451px** 가 되고 세로는 1,024 뿐이다.
+        //       실측: 결과 상자가 y=1,276 · 보이는 바닥 1,032 → **가격이 첫 화면에
+        //       한 번도 안 뜬다.** 부스에서 가격을 보여주려고 만든 화면이다.
+        //       (820×1180 은 y=1,394 / 바닥 1,188 · 860×1024 는 y=1,341 / 1,032 —
+        //        세로 태블릿 전 기종 동일. 폭이 넓어질수록 좌패널이 커져 **더** 나빠졌다.)
+        //     · 860↔861 **한 픽셀**에 배치가 통째로 뒤집혔다: 860 은 좌패널 814px
+        //       가로 눕힘 + 가격 y=1,341(밖), 861 은 232px 세로 기둥 + 가격 y=746(보임).
+        //       사용자가 「한 지점만 있다」고 한 것이 이 절벽이다.
+        //   640 의 근거는 **내용 최소치의 합**이다(기종이 아니다):
+        //     좌패널 바깥 269(안쪽 232 + padding 18×2 + 테두리 1) + 오른쪽 padding 36
+        //     + 판이 읽히는 최소 폭 330 = 635 → 640.
+        //   즉 640 이상이면 2열이 **들어간다** — 세로 태블릿도 2열로 가고 거기서
+        //   가격은 이미 첫 화면에 있다(실측 후 표 참조). 640 아래는 폰이고, 폰에서는
+        //   스크롤이 불가피하다(내용이 화면보다 길다) — 대신 wrap 이 스스로 스크롤한다.
+        //   ⚠ 축을 뒤집는 것은 **원리적으로 불연속**이다(열은 있거나 없다). 연속으로
+        //     만든 것은 그 위 구간이다 — 좌패널 폭 clamp 가 640~1123 을 연속으로 잇고
+        //     1123 이상은 292 로 고정된다. 문턱을 더 늘리지 마라.
+        "@media (max-width:640px){" +
           // ⚠ **!important 가 필요하다.** 이 화면은 스타일이 전부 인라인이고
           //   인라인 선언은 스타일시트 규칙을 이긴다(명시도와 무관). 실측: 없이 두면
           //   패널 width:336·left:16 이 그대로 살아 right 382 > 화면 375 로 삐져나갔고
           //   좌패널도 292 고정이 유지됐다. 위 @media print 규칙이 이미 같은 이유로 붙여 뒀다.
           "[data-pane=wrap]{flex-direction:column}" +
-          // ★★ 26-09-04 — **금액이 화면 밖이었다.** 태블릿 세로(768×1024) 실측:
-          //   결과 상자가 y=1292 인데 뿌리 div 가 height:100vh·overflow:hidden 이라
-          //   scrollHeight 1464 / clientHeight 1024 = **440px 이 잘려 못 닿는다.**
-          //   잘려 나간 것이 개당가·수량별 표·「참고 가격입니다 — 세금·운송비 별도」다.
-          //   즉 세로로 든 태블릿에서는 이 화면이 **가격을 한 번도 안 보여준다.**
-          //   (위 세로 눕히기 규칙이 26-08-27 에 들어올 때부터 그랬다 — 그때는 375px
-          //    한 폭만 봤고, 375 는 좌패널이 짧아 우연히 안 걸렸다.)
+          // ★★ 26-09-04 — **금액이 화면 밖이었다.** 뿌리 div 가 height:100vh·
+          //   overflow:hidden 이라, 눕힌 내용이 화면보다 길면 그 초과분은 스크롤도
+          //   안 되고 **통째로 못 닿는다.** 잘려 나간 것이 개당가·수량별 표·
+          //   「참고 가격입니다 — 세금·운송비 별도」였다.
           //   ⚠ 고치는 자리가 여기인 이유: 자르는 것은 뿌리의 overflow:hidden 인데
           //     그건 부스 노트북에서 **판을 고정 높이로 잡아 주는 장치**라 못 건드린다.
           //     대신 이 폭에서만 wrap 이 스스로 스크롤하게 한다 — 뿌리는 그대로다.
-          //   ⚠ 좌패널 max-height(52vh) 는 **남긴다.** 그게 없으면 좌패널 895px 가
-          //     판을 통째로 아래로 밀어, 스크롤은 되지만 첫 화면에 도면이 안 보인다.
+          //   ⚠ 26-09-07 — 이 규칙이 **가격을 첫 화면에 올려 주지는 않는다.** 닿게만
+          //     해 준다. 세로 태블릿에서 가격을 첫 화면에 올린 것은 문턱을 640 으로
+          //     내려 2열로 보낸 쪽이다(위 주석). 640 아래(폰)에서는 내용이 화면보다
+          //     길어 스크롤이 남는다 — 실측 375×812: 가격 y=970 · 보이는 바닥 820.
+          //     여기를 억지로 맞추려 좌패널 상한을 33vh 까지 깎아 봤지만 375×812
+          //     **한 기종에서만** 겨우 들어갔고 320×568 에서는 그래도 안 됐다.
+          //     그것이 바로 사용자가 하지 말라고 한 「기종 맞추기」다 — 안 한다.
           "[data-pane=wrap]{overflow-y:auto}" +
-          // 좌패널을 위로 눕히고 폭을 풀어 준다. 높이를 반으로 제한해 판이 늘 보인다.
+          // 좌패널을 위로 눕히고 폭을 풀어 준다(!important 로 위 clamp 를 덮는다 —
+          // 인라인 선언은 명시도와 무관하게 스타일시트를 이긴다).
+          // 높이를 반으로 제한해 판이 늘 보인다 — 없으면 좌패널이 판을 통째로 밀어낸다.
           "[data-pane=aside]{width:auto!important;max-height:52vh;border-right:none;border-bottom:1px solid " + C.line + "}" +
-          // 관리자 패널 — 화면 폭을 넘지 않게. 세로로 길면 스스로 스크롤한다.
-          "[data-admin]{width:auto!important;left:8px!important;right:8px!important;bottom:8px!important;max-height:80vh;overflow-y:auto}" +
-          // 손가락으로 닫을 수 있어야 한다. Esc 는 키보드가 있어야 눌린다.
-          "[data-act=admin-close]{padding:8px 12px;margin:-8px -12px}" +
+          // 관리자 패널 — 폭은 이제 인라인 min() 이 스스로 맞춘다(AdminPanel 주석).
+          // 여기서는 바닥 여백만 좁힌다: 폰에서는 16px 도 아깝다.
+          "[data-admin]{bottom:8px!important}" +
         "}" +
 
         // ★★ 26-09-04 태블릿(터치) — 사용자 지시 「태블릿에서도 빨리 가능하도록」.
@@ -1390,10 +1458,13 @@ export default function ShowroomPage({ carried = null }) {
         //     · 부스 노트북(1280×800·마우스)은 pointer:fine 이라 **원리적으로 안 걸린다.**
         //       폭으로 갈랐다면 1280 규칙을 건드리지 않는다는 보장이 「1280 > 문턱」이라는
         //       산술에 기대게 되고, 창을 줄이면 깨진다. 여기서는 입력장치가 다르다.
-        //     · 반대로 **태블릿 가로(1024)도 걸린다.** 위 860px 규칙은 세로(768)만 잡고
+        //     · 반대로 **태블릿 가로(1024)도 걸린다.** 위 폭 규칙은 좁은 쪽만 잡고
         //       가로는 놓치는데, 가로에서도 손가락은 그대로다. 폭 규칙과 터치 규칙은
         //       **다른 것을 묻는 질문**이라 문턱을 공유하면 안 된다.
-        //   ⚠ 인라인 스타일을 이기려면 !important 가 필요하다(위 860px 주석과 같은 이유).
+        //       ★ 26-09-07 이 갈림이 실제로 값을 했다: 폭 문턱이 860→640 으로 내려가
+        //         768·820·860 세로 태블릿이 폭 규칙에서 빠졌는데, 터치 규칙은
+        //         입력장치로 묻기 때문에 **그대로 걸린다**(실측: 768 에서 미달 0개).
+        //   ⚠ 인라인 스타일을 이기려면 !important 가 필요하다(위 폭 규칙과 같은 이유).
         "@media (pointer:coarse){" +
           // ① 탭 지연·더블탭 확대를 끈다. 뷰포트 메타에 user-scalable 제한이 없어서
           //    브라우저가 「두 번째 탭이 올까」를 기다리는 구간이 살아 있다 — 그 대기가
@@ -1411,9 +1482,18 @@ export default function ShowroomPage({ carried = null }) {
           //    사용자 신고 「모바일에서는 수정이 안된다 관리자화면」이 가리킨 자리이고,
           //    이번 지시(「태블릿에서도 빨리 가능하도록」)의 운영자 쪽 절반이다.
           //  ⚠ 패널이 그만큼 세로로 자라지만 **삐져나가지 않는다** — 인라인
-          //    maxHeight:calc(100vh-32px)+overflowY:auto 와 860px 규칙의 max-height:80vh
-          //    가 이미 스스로 스크롤하게 해 뒀다(실측으로 확인).
+          //    maxHeight:calc(100vh-32px)+overflowY:auto 가 이미 스스로 스크롤하게
+          //    해 뒀다(실측으로 확인).
           "[data-admin] select,[data-admin] input{min-height:44px!important}" +
+          // ②-c ★★ 26-09-07 관리자 **닫기**. 종전에 이 규칙이 폭 문턱(860) **안에**
+          //    있어서, 태블릿 가로(1024·1180·1366)에서는 안 걸리고 33×44 로 남았다 —
+          //    폭은 넓지만 손가락은 같은 그 화면이다. 실측: 그 세 폭에서 44px 미달로
+          //    남은 **유일한** 탭 대상이 이것이었다(다른 자리는 ②·③ 이 이미 잡았다).
+          //    닫을 길이 Esc 뿐이면 키보드 없는 태블릿에서는 패널이 안 닫힌다.
+          //    ⚠ min-width 가 아니라 padding 이다 — 이 버튼은 글자만 있는 텍스트
+          //      버튼이라 min-width 는 글자를 가운데로 밀 뿐 히트영역을 안 넓힌다.
+          //      음수 margin 이 같이 있어야 제목 줄의 높이가 안 변한다.
+          "[data-act=admin-close]{padding:8px 12px!important;margin:-8px -12px!important}" +
           // ③ 좁은 것도 손가락보다 넓어야 한다. UV 33px·별색 34px 이 여기 걸린다.
           "[data-pane=aside] button,[data-pane=aside] input{min-width:44px!important}" +
           // ④ 알약은 가운데 정렬이 필요하다 — min-height 만 주면 글자가 위로 붙는다.
@@ -1684,6 +1764,24 @@ const Big = ({ value, unit, pre, sub }) => (
 const chip = (fg, bg) => ({ fontSize: 11.5, color: fg, background: bg, borderRadius: 999,
                             padding: "4px 11px", fontWeight: 600 });
 
+// ── 관리자 검산 줄의 조각 (26-09-07) ────────────────────────────────
+//  「원가 223 × 마진 1.7 ÷ 환율 8.63 = ¥44」를 한 줄에 세우는 칸과 부호.
+//  ⚠ 값을 `data-*` 로도 싣는다 — 브라우저 실측이 「화면 글자와 DOM 이 같은 말을
+//    하는가」를 이 속성으로 잰다(고객 화면 쪽 data-shown 과 같은 규율).
+//  ⚠ 관리자 패널 **안에서만** 쓴다. 여기 나오는 것은 원가·마진이고, 고객 화면에
+//    한 조각이라도 새면 이 기능이 통째로 무의미하다(verify-speclink §M ⑯).
+const calcCell = (label, text, { attr, val, bad = false } = {}) => (
+  <div style={{ minWidth: 0 }}>
+    <div style={{ fontSize: 10.5, color: C.faint, whiteSpace: "nowrap" }}>{label}</div>
+    <div {...(attr ? { [attr]: val } : {})}
+         style={{ fontSize: 17, fontWeight: 700, whiteSpace: "nowrap",
+                  color: bad ? C.bad : C.ink, fontVariantNumeric: "tabular-nums" }}>{text}</div>
+  </div>
+);
+const calcOp = s => (
+  <div style={{ fontSize: 13, color: C.sub, paddingBottom: 2, flexShrink: 0 }}>{s}</div>
+);
+
 // ══════════════════════════════════════════════════════════════════
 //  관리자 패널 — **고객은 원리적으로 볼 수 없다** (Ctrl+Alt+M 으로만 열린다)
 // ══════════════════════════════════════════════════════════════════
@@ -1699,22 +1797,66 @@ const AdminPanel = ({ a, v, cfg, set, hiding, f, fx, fxBusy, fxErr,
   // 수동 입력은 **누를 때까지 적용되지 않는다.** 타이핑 도중의 「8」이 곧바로 환율이
   // 되면 상담 중에 금액이 두세 번 튄다 — 그것이 이 기능이 막으려는 사고다.
   const [manualDraft, setManualDraft] = useState("");
-  // ⚠ 이름이 `fxIn` 이다 — `fx` 는 이제 **환율 상태**의 이름이다(위 prop). 종전 이름을
-  //   그대로 뒀으면 수식 칸이 환율을 가려 조용히 엉뚱한 것을 그렸을 자리다.
-  const fxIn = (key, label) => (
+  // ── ★ 「무엇이 무엇을 이기나」를 **한 눈에** (26-09-07) ──────────────
+  //  글로만 적으면 부스에서 안 읽힌다. 지금 쓰는 통화의 **이기는 칸**은 강조하고
+  //  **지는 칸**은 흐리게 + 「안 씀」이라고 붙인다. 다른 통화는 둘 다 보통이다 —
+  //  거기서 강조하면 「지금 쓰는 통화」가 어느 쪽인지가 오히려 안 보인다.
+  //  ⚠ 흐리게만 하지 말고 **글자로도** 적는다(opacity 는 색약·햇빛 아래서 안 읽힌다).
+  const winner = v.from;                       // "formula" | "margin" | null
+  const tone = (curKey, kind) => {
+    if (curKey !== v.cur || !winner) return { on: false, off: false };
+    return { on: winner === kind, off: winner !== kind && kind === "margin" && !v.mgnUsed };
+  };
+  const boxIn = ({ key, label, ph, prefix, bad, t: tn, mono = true }) => (
     <div style={row}>
-      <div style={lab}>{label}</div>
-      <input value={cfg[key]} placeholder={a.ph} spellCheck={false}
+      <div style={{ ...lab, color: tn.on ? C.acc : C.faint, fontWeight: tn.on ? 700 : 400 }}>
+        {label}
+      </div>
+      {prefix && <span style={{ fontSize: 13, color: C.sub, marginRight: -4 }}>{prefix}</span>}
+      <input value={cfg[key] ?? ""} placeholder={ph} spellCheck={false}
+        maxLength={key[0] === "m" ? 12 : undefined}
+        inputMode={key[0] === "m" ? "decimal" : undefined}
         data-fx={key} onChange={e => set(c => ({ ...c, [key]: e.target.value }))}
         style={{ flex: 1, minWidth: 0, boxSizing: "border-box", padding: "6px 8px",
-                 borderRadius: 6, border: `1px solid ${v.cur === key && v.mode === "blocked" ? C.bad : C.line}`,
-                 background: "#fff", color: C.ink, font: `13px ${FONT}`,
-                 fontVariantNumeric: "tabular-nums" }}/>
+                 borderRadius: 6, border: `1px solid ${bad ? C.bad : tn.on ? C.acc : C.line}`,
+                 background: "#fff", color: C.ink, font: `13px ${FONT}`, opacity: tn.off ? 0.5 : 1,
+                 fontVariantNumeric: mono ? "tabular-nums" : "normal" }}/>
+      {tn.off && <span style={{ fontSize: 10.5, color: C.warn, whiteSpace: "nowrap" }}>{a.unused}</span>}
     </div>
   );
+  /** ★ 마진칸 — 부스에서 가장 자주 바뀌는 수 하나. 통화별인 근거는 price-formula ③-2. */
+  const mgnIn = (cur, label) => boxIn({
+    key: marginKeyOf(cur), label, ph: a.mgnPh, prefix: "×",
+    // 붉게 하는 조건이 **쓰일 때만**이 아니다: 안 쓰이는 오타도 칸 자체는 틀렸다.
+    // 다만 그때 금액은 그대로이고, 그 사실은 아래 mgnIdle 줄이 말한다.
+    bad: cur === v.cur && (!!v.mgnWhy || (v.mode === "blocked" && !v.from)),
+    t: tone(cur, "margin"),
+  });
+  // ⚠ 이름이 `fxIn` 이다 — `fx` 는 이제 **환율 상태**의 이름이다(위 prop). 종전 이름을
+  //   그대로 뒀으면 수식 칸이 환율을 가려 조용히 엉뚱한 것을 그렸을 자리다.
+  const fxIn = (key, label) => boxIn({
+    key, label, ph: a.ph,
+    bad: v.cur === key && v.mode === "blocked" && v.from !== "margin",
+    t: tone(key, "formula"),
+  });
   return (
     <div data-admin="1" style={{
-      position: "fixed", left: 16, bottom: 16, width: 336, zIndex: 60,
+      // ⚠ position:"fixed" 는 이 자리를 지킨다 — verify-speclink 「관리자 패널이
+      //   레이아웃을 안 민다」가 data-admin 뒤 400자 안에서 이 선언을 찾는다.
+      //   아래 폭 주석을 이 줄 **위로** 올리면 그 계약이 거짓 실패한다(실제로 겪었다).
+      position: "fixed", left: 16, bottom: 16, zIndex: 60,
+      // ★★ 26-09-07 폭 — 고정 336 에서 **화면에 맞춰 줄어드는** 값으로.
+      //   왜: 종전에는 336 고정이라 375px 폰에서 right 382 > 375 로 삐져나갔고,
+      //   그걸 폭 규칙(당시 860px)이 `width:auto;left:8;right:8` 로 덮어 고쳤다.
+      //   그 덮기가 만든 실측 부작용 — **태블릿에서 패널이 화면 전폭으로 늘어났다:**
+      //     768×1024 → 패널 737px · 마진칸 624px · 수식칸 637px
+      //     860×1024 → 패널 829px · 마진칸 716px · 수식칸 729px
+      //   「1.7」 넉 자를 치는 칸이 729px 이다. 치기 어려운 것이 아니라 **어디를
+      //   치는 칸인지 안 읽힌다** — 라벨과 값이 화면 양 끝으로 벌어진다.
+      //   min() 은 두 경우를 한 값으로 답한다: 좁으면 화면에 맞고, 넓으면 336 이다.
+      //   ⚠ 부스 노트북(1280×800)은 min(336, 1248) = **336 그대로**다(실측 확인).
+      //   ⚠ 32 = left 16 + 오른쪽 여백 16. 폰에서 바닥 여백만 폭 규칙이 8 로 줄인다.
+      width: "min(336px, calc(100vw - 32px))",
       // ★ 26-09-04 — **화면보다 커지면 스크롤한다.** 환율 칸이 붙으며 패널이 850px 가
       //   됐고 부스 노트북(1280×800)에서 **위쪽 66px 가 화면 밖으로 잘렸다**(실측) —
       //   잘린 자리가 하필 제목·통화·원화 수식이라 거기 손이 닿지 않았다.
@@ -1741,8 +1883,91 @@ const AdminPanel = ({ a, v, cfg, set, hiding, f, fx, fxBusy, fxErr,
           <Select value={cfg.cur} onChange={c => set(p => ({ ...p, cur: c }))} options={CUR_CHOICES}/>
         </div>
       </div>
+      {/* ══ ★ 마진칸 + 수식칸 — 통화별로 **붙여서** 놓는다 (26-09-07) ═════════
+          왜 통화별로 묶어 두는가 — 「원화 마진 / 원화 수식」이 떨어져 있으면 어느
+          마진이 어느 수식과 겨루는지가 안 보인다. 그 물음의 답이 고객에게 부르는
+          금액이므로, 짝이 눈에 붙어 있어야 한다.
+          ⚠ 마진이 **위**다. 흔한 경우(마진만 고침)를 먼저 만지게 되고, 아래 수식칸이
+            비어 있는 것이 곧 「마진칸이 이긴다」는 그림이 된다. */}
+      {mgnIn("KRW", a.mgnKRW)}
       {fxIn("KRW", a.fxKRW)}
+      {mgnIn("JPY", a.mgnJPY)}
       {fxIn("JPY", a.fxJPY)}
+
+      {/* ★★ **지금 무엇으로 계산했나** — 이 한 줄이 이 패널에서 가장 중요한 문장이다.
+          마진칸에 1.7 이 적혀 있는데 금액은 옛 수식대로인 상태가 **가장 값싼 사고**다
+          (환율에서 FX_ADMIN_T.notUsed 가 막은 것과 같은 종류). 말하지 않으면 운영자는
+          반영됐다고 믿고 그 값을 부른다. */}
+      {v.mode !== "cost" && !!v.from && (
+        <div data-admin-calc={v.from} style={{ fontSize: 11, lineHeight: 1.65,
+              color: v.from === "margin" || v.mgnUsed ? C.acc : C.warn }}>
+          {v.from === "margin" ? a.calcMargin(v.baseNote)
+           : v.mgnUsed ? a.calcFormulaWith(v.src)
+           : a.calcFormula(v.src, v.mgn)}
+        </div>
+      )}
+      {/* 마진칸이 틀렸는데 **안 쓰이는** 경우 — 금액은 그대로라는 사실을 같이 적는다.
+          안 적으면 운영자가 화면이 죽은 줄 알고 잘 돌던 수식을 지운다(실제 위험). */}
+      {!!v.mgnWhy && !v.mgnUsed && v.from === "formula" && (
+        <div data-admin-mgn-idle="1" style={{ fontSize: 11, color: C.warn, lineHeight: 1.65 }}>
+          {a.mgnIdle(v.mgnWhy)}
+        </div>
+      )}
+      {/* ══ ★ 원가 · 마진 · 환율 · 결과 — **한 줄로 나란히** (26-09-07) ═══════
+          이 줄이 이 패널의 본체다. 부스에서 「223 × 1.7 ÷ 8.63 = ¥44 가 맞나」를 눈으로
+          즉석 검산한다 — 그러려면 네 수가 **같은 줄에** 있어야 한다. 종전에는 원가와
+          결과 둘뿐이어서 그 사이에 무엇이 곱해지고 나뉘었는지 화면에 없었다.
+          ★★ **자리가 여기다 — 입력칸 바로 밑.** 종전 원가↔결과 상자는 환율 상자 **아래**에
+            있었는데, 마진칸이 붙어 패널 내용이 1,119px 이 되면서 1280×800 에서 이 줄의
+            **아래 6px 가 스크롤 밖으로 잘렸다**(실측 stripBottom 790 vs 패널 바닥 784).
+            즉석 검산하라고 만든 줄이 스크롤해야 보이면 만든 이유가 없어진다. 환율 상자는
+            **도구**이고 이 줄은 **답**이다 — 답이 입력 옆에 있어야 한다.
+          ★ 마진·환율 칸은 **실제로 그 계산에 들어갈 때만** 낀다(v.mgnUsed · v.usesFx).
+            안 쓰는 수를 나란히 적으면 화면이 「이것으로 계산했다」고 거짓말을 한다 —
+            `*1.7/10` 옆에 환율 8.63 을 적는 것이 정확히 그 사고다(FX_ADMIN_T.notUsed).
+            둘 다 안 쓰면 이 줄은 **종전 모양(원가 → 결과)** 그대로 접힌다.
+          ⚠ 연산 부호(× ÷ =)는 **마진칸 경로에서만** 쓴다. 그때는 계산이 정말 그
+            모양이기 때문이다(price-formula MARGIN_NOTE). 수식 경로에서 ×÷ 를 그리면
+            `x*마진/환율+500` 을 「원가 × 마진 ÷ 환율」이라고 잘못 요약하게 된다. */}
+      <div data-admin-strip={v.from ?? ""}
+           style={{ display: "flex", alignItems: "flex-end", gap: 7, flexWrap: "wrap",
+                    background: C.soft, borderRadius: 8, padding: "9px 11px" }}>
+        {calcCell(a.cost, v.cost != null ? `${v.cost.toLocaleString()}원` : a.none,
+                  { attr: "data-admin-cost", val: v.cost ?? "" })}
+        {v.mgnUsed && calcOp(v.from === "margin" ? "×" : "·")}
+        {/* ⚠ 값에 «×» 를 붙이지 마라 — 왼쪽 부호가 이미 × 다. 실측: 「223원 × ×1.7」로
+            보였다. 배율이라는 사실은 입력칸 앞의 × 와 이 라벨이 말한다. */}
+        {v.mgnUsed && calcCell(a.mgnLab, v.mgn != null ? String(v.mgn) : a.none,
+                  { attr: "data-admin-mgn", val: v.mgn ?? "", bad: v.mgn == null })}
+        {v.usesFx && calcOp(v.from === "margin" ? "÷" : "·")}
+        {v.usesFx && calcCell(a.fxLab, fx.text,
+                  { attr: "data-admin-fx", val: fx.v ?? "", bad: fx.v == null })}
+        {calcOp(v.from === "margin" ? "=" : "→")}
+        {calcCell(`${a.out} · ${v.cur}`, v.main,
+                  { attr: "data-admin-out", val: v.main, bad: v.mode === "blocked" })}
+      </div>
+
+      {/* 거부 사유 — **여기에만** 뜬다. mode "hidden"(가림 표시를 달고 온 링크인데
+          이 브라우저에 마진·수식이 없다)도 이유를 말해야 한다 — 안 그러면 운영자가
+          「왜 —만 뜨지」에서 멈춘다.
+          ⚠ 검산 줄 **바로 밑**을 지킨다. 「—」가 뜬 이유가 다른 상자 아래로 밀려나면
+            운영자가 그 둘을 연결해 읽지 못한다. */}
+      {(v.mode === "blocked" || v.mode === "hidden") && (
+        <div data-admin-why="1" style={{ fontSize: 11.5,
+              color: v.mode === "blocked" ? C.bad : C.warn, lineHeight: 1.6 }}>{v.why}</div>
+      )}
+      {/* ★ 상식 밴드 밖 — **거부가 아니라 경고**다(price-formula BAND).
+          ¥0 은 누가 봐도 틀렸지만 `/10` 이 빠진 ¥379 는 진짜처럼 보인다. 그래서 붉게. */}
+      {!!v.warn && (
+        <div data-admin-warn="1" style={{ fontSize: 11.5, color: C.bad, lineHeight: 1.6 }}>{v.warn}</div>
+      )}
+      {/* 「자동」이 통화를 넘겼으면 그 사실을 말한다 — 조용히 넘기면 화면의 ¥ 가 어디서
+          왔는지 아무도 모른다 (price-formula pickCur). */}
+      {!!v.fell && (
+        <div data-admin-fell={v.cur} style={{ fontSize: 10.5, color: C.warn, lineHeight: 1.65 }}>
+          {a.fell(v.cur)}
+        </div>
+      )}
 
       {/* ══ ★ 환율 — 받은 값·시각·출처를 **여기서만** 말한다 (26-09-04) ═══════
           고객 화면에는 환산에 실제로 쓴 환율과 기준일만 나간다(참고견적 줄). 출처·
@@ -1814,44 +2039,6 @@ const AdminPanel = ({ a, v, cfg, set, hiding, f, fx, fxBusy, fxErr,
         <div style={{ fontSize: 10.5, color: C.faint, lineHeight: 1.6 }}>{f.hint}</div>
       </div>
 
-      {/* 원가 ↔ 적용 결과 — 나란히. 이 줄이 이 패널의 본체다. */}
-      <div style={{ display: "flex", gap: 10, background: C.soft, borderRadius: 8, padding: "9px 11px" }}>
-        <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 10.5, color: C.faint }}>{a.cost}</div>
-          <div data-admin-cost={v.cost ?? ""} style={{ fontSize: 17, fontWeight: 700,
-                fontVariantNumeric: "tabular-nums" }}>
-            {v.cost != null ? `${v.cost.toLocaleString()}원` : a.none}
-          </div>
-        </div>
-        <div style={{ width: 1, background: C.line }}/>
-        <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 10.5, color: C.faint }}>{a.out} · {v.cur}</div>
-          <div data-admin-out={v.main} style={{ fontSize: 17, fontWeight: 700,
-                color: v.mode === "blocked" ? C.bad : C.ink, fontVariantNumeric: "tabular-nums" }}>
-            {v.main}
-          </div>
-        </div>
-      </div>
-
-      {/* 거부 사유 — **여기에만** 뜬다. mode "hidden"(가림 표시를 달고 온 링크인데
-          이 브라우저에 수식이 없다)도 이유를 말해야 한다 — 안 그러면 운영자가
-          「왜 —만 뜨지」에서 멈춘다. */}
-      {(v.mode === "blocked" || v.mode === "hidden") && (
-        <div data-admin-why="1" style={{ fontSize: 11.5,
-              color: v.mode === "blocked" ? C.bad : C.warn, lineHeight: 1.6 }}>{v.why}</div>
-      )}
-      {/* ★ 상식 밴드 밖 — **거부가 아니라 경고**다(price-formula BAND).
-          ¥0 은 누가 봐도 틀렸지만 `/10` 이 빠진 ¥379 는 진짜처럼 보인다. 그래서 붉게. */}
-      {!!v.warn && (
-        <div data-admin-warn="1" style={{ fontSize: 11.5, color: C.bad, lineHeight: 1.6 }}>{v.warn}</div>
-      )}
-      {/* 「자동」이 통화를 넘겼으면 그 사실을 말한다 — 조용히 넘기면 화면의 ¥ 가 어디서
-          왔는지 아무도 모른다 (price-formula pickCur). */}
-      {!!v.fell && (
-        <div data-admin-fell={v.cur} style={{ fontSize: 10.5, color: C.warn, lineHeight: 1.65 }}>
-          {a.fell(v.cur)}
-        </div>
-      )}
       {/* 반올림 규칙을 글로 — 숨은 반올림은 부스에서 「왜 계산이 안 맞죠」가 된다 */}
       <div style={{ fontSize: 10.5, color: C.sub, lineHeight: 1.65 }}>
         {v.roundNote}
@@ -1860,6 +2047,10 @@ const AdminPanel = ({ a, v, cfg, set, hiding, f, fx, fxBusy, fxErr,
         )}
       </div>
       <div style={{ fontSize: 10.5, color: C.sub, lineHeight: 1.65 }}>{a.hint}</div>
+      {/* 분업 — 마진칸은 흔한 경우, 수식은 드문 경우. 왜 수식이 아직 있는지를 말한다.
+          ⚠ 자리가 **수식 문법 안내 바로 뒤**다. 둘 다 「어떻게 쓰나」를 설명하는 참고
+            문장이고, 입력칸 사이에 끼우면 답(검산 줄)을 세 줄만큼 아래로 밀어낸다. */}
+      <div style={{ fontSize: 10.5, color: C.sub, lineHeight: 1.6 }}>{a.mgnHint}</div>
       <div style={{ fontSize: 10.5, color: C.sub, lineHeight: 1.65 }}>
         {v.mode === "cost" ? a.off : v.mode === "hidden" ? a.hidden : a.on}
       </div>

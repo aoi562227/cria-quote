@@ -15,6 +15,7 @@ import { calcNetSize, dielinePieces } from "../src/domain/dieline/index.mjs";
 import { solveImposition } from "../src/domain/imposition.mjs";
 import { BASE_SHEETS } from "../src/domain/data/sheets.mjs";
 import { readDieline } from "../src/domain/pdf-dieline.mjs";
+import { resolveOracle } from "./oracle-path.mjs";
 import { buildDieline } from "../src/domain/quote.mjs";
 import { findBestSheet } from "../src/domain/sheet-select.mjs";
 import { DEFAULT_PAPER } from "../src/domain/data/papers.mjs";
@@ -335,6 +336,8 @@ console.log(`
 const DR = process.env.PDF_ORACLE_DIR ?? "C:/이예찬_업무/연도별/2026";
 const PR = process.env.DIE_ORACLE_DIR ?? "C:/이예찬_업무/private/도면/견적용도면";
 const ALLOW_SKIP = process.env.PDF_ALLOW_SKIP === "1" || process.argv.includes("--allow-skip");
+// ★ 26-09-07 — 곀사 폴더가 움직여 생긴 「파일 없음」을 파일명으로 구한다. 조용하지 않다 — oracle-path.mjs 머리말 참조.
+const oracleAt = f => resolveOracle(f, [DR, PR]) ?? f;
 
 //  bbox = 그 PDF 에서 **채택할 후보를 특정**하는 열쇠다(1순위를 맹신하지 않는다).
 //    verify-pdf §A 가 같은 값으로 추출기를 채점하고 있으므로 두 스위트가 서로를 묶는다.
@@ -555,6 +558,8 @@ function buildMask(segs, step, dilate = 0) {
 const rot90Segs = (segs, h) => segs.map(([a, b]) => [[h - a[1], a[0]], [h - b[1], b[0]]]);
 const mapSegs = (segs, f) => segs.map(([a, b]) => [f(a), f(b)]);
 async function realFromPdf(o) {
+  // 낡은 경로를 파일명으로 구한다(알리면서). 곀사 폴더가 움직여 세 번 물렸다.
+  o.pdf = oracleAt(o.pdf);
   if (!fs.existsSync(o.pdf)) return { no: `PDF 없음 — ${o.pdf}` };
   let r;
   try { r = await readDieline(new Uint8Array(fs.readFileSync(o.pdf)), { source: o.n, page: o.page, maxCandidates: 20 }); }
