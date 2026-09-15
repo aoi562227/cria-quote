@@ -5,7 +5,7 @@
 //  되읽는다 — 화면이 자기 식으로 세면 배지 도수와 청구 도수가 갈린다.
 // ══════════════════════════════════════════════════════════════════
 import {
-  PRINT_UNIT_DEFAULT, SPOT_RPR_PLAIN, SPOT_RPR_BEDA, printUnitFor, sideColors,
+  PRINT_UNIT_DEFAULT, SPOT_RPR_PLAIN, SPOT_RPR_BEDA, printUnitFor, sidePlates,
 } from "../../domain/data/print-prices.mjs";
 import { Section, Field, Row2, Input, Select, Toggle } from "../primitives.jsx";
 
@@ -18,7 +18,9 @@ export default function PrintPanel({ s, u, sheetInfo, result }) {
         const sp = parseInt(s[kSp])||0, isColor = !!s[kCol];
         // 도수 세는 법은 도메인 것을 쓴다 — 여기 따로 적으면 "원색+별색 병행" 을
         // 고칠 때 화면과 청구가 갈린다 (실제로 갈렸던 이력이 있다)
-        const doN = sideColors({ color:isColor, spot:sp, black:!!s[kBk] });
+        // 26-09-15: sideColors → sidePlates. UV 만 켠 면도 판은 태운다(최소 1판) —
+        // 종전에는 여기서 0 판이 떠서 화면이 「UV별도」라고 거짓말을 했다.
+        const doN = sidePlates({ color:isColor, spot:sp, black:!!s[kBk], uv:!!s[kUv] });
         return (
           <div key={side} style={{background:"#080e1c",border:"1px solid #1a3050",borderRadius:4,padding:"10px",marginBottom:8}}>
             <div style={{fontSize:9,color:isF?"#4aaeff":"#88aacc",fontWeight:700,marginBottom:8,letterSpacing:".08em"}}>
@@ -38,7 +40,7 @@ export default function PrintPanel({ s, u, sheetInfo, result }) {
             {(doN>0 || s[kUv]) && (
               <div style={{fontSize:9,color:isF?"#44cc88":"#88aacc",padding:"3px 6px",background:isF?"#0a2a10":"#0a1828",borderRadius:3}}>
                 {isF?"전면":"후면"} {[s[kUv]?"UV":"", isColor?"원색4도":"", sp>0?`별색${sp}도`:"", s[kBk]?"먹1도":""].filter(Boolean).join("+")}
-                &nbsp;— 소부 {doN}판{s[kUv] && <span style={{color:"#88ccff"}}> (UV별도)</span>}
+                &nbsp;— 소부 {doN}판{s[kUv] && <span style={{color:"#88ccff"}}> (UV 인쇄비는 수량 정액 별도)</span>}
               </div>
             )}
           </div>
@@ -98,7 +100,7 @@ export default function PrintPanel({ s, u, sheetInfo, result }) {
         return sb && (
           <div style={{fontSize:10,color:"#ffcc44",padding:"4px 8px",background:"#111d33",borderRadius:3,textAlign:"right"}}>
             소부 {sb.qty}도 × {sb.unitPrice.toLocaleString()}원 = {sb.amount.toLocaleString()}원
-            {(s.fpUv||s.bpUv) && <span style={{color:"#88aacc",marginLeft:6,fontSize:9}}>UV인쇄 별도</span>}
+            {(s.fpUv||s.bpUv) && <span style={{color:"#88aacc",marginLeft:6,fontSize:9}}>UV 인쇄비 별도 (판은 이 줄에 포함)</span>}
           </div>
         );
       })()}

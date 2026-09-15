@@ -16,7 +16,7 @@ import {
 } from "./data/sheets.mjs";
 import { PAPERS, DEFAULT_PAPER } from "./data/papers.mjs";
 import {
-  printUnitFor, SPOT_RPR_BEDA, SPOT_RPR_PLAIN, sideColors,
+  printUnitFor, SPOT_RPR_BEDA, SPOT_RPR_PLAIN, sideColors, sidePlates,
 } from "./data/print-prices.mjs";
 import { coatById, glueById, thomsonById } from "./data/process-prices.mjs";
 import { calcR, calcProcessR, estimateLoss, lossOptionsOf } from "./reams.mjs";
@@ -198,6 +198,9 @@ export function buildContext(input) {
   const fColors = sideColors(front), bColors = sideColors(back);
   const fHasInk = fColors > 0 || front.uv;
   const bHasInk = bColors > 0 || back.uv;
+  // 소부는 **도수가 아니라 판수**로 센다 — UV 만 적힌 면도 판은 태운다.
+  // 근거는 print-prices.mjs sidePlates 주석(코퍼스 UV 18건 전부가 소부 줄을 갖는다).
+  const platesTotal = sidePlates(front) + sidePlates(back);
 
   const ctx = {
     input, ov, qty, dieline, netSize, sheet, layout, tier,
@@ -230,6 +233,7 @@ export function buildContext(input) {
       spotRpr: ov.spotRpr || (beda ? SPOT_RPR_BEDA : SPOT_RPR_PLAIN),
       printUnit: ov.printUnit ?? printUnitFor(tier),
       fColors, bColors, totalColors: fColors + bColors,
+      platesTotal,                                        // 소부가 쓰는 수 (UV 면 최소 1판)
       fHasInk, bHasInk, bothSides: fHasInk && bHasInk,   // 양면인쇄 → 여분 +100장
     },
     opts: {
