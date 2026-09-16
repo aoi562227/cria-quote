@@ -125,7 +125,12 @@ const FAM_ALIAS = [
 
 const PAPER_BY_FAM_W = {
   "ab":       { 270: "AB270", 300: "AB300", 350: "AB350", 400: "AB400" },
-  "ab라이트": { 250: "AB250L", 295: "AB295L", 325: "ABL325" },
+  // ★ 26-09-16 「ab라이트」에 **270 을 더했다.** 선주 확인 — 「ab라이트 270g」과
+  //   「a라이트 270」은 **같은 물건**이다(papers.mjs ABL270 주석에 근거·건수).
+  //   종전에는 FAM_ALIAS 가 긴 것부터라 'ab라이트' 가 먼저 걸렸는데 이 표에 270 칸이 없어서
+  //   **자사 PDF 8건이 통째로 「지종표에 없다」로 떨어졌다** — 표에 칸이 있는데도 못 붙는
+  //   상태였다. 두 별칭이 같은 id 로 간다.
+  "ab라이트": { 250: "AB250L", 270: "ABL270", 295: "AB295L", 325: "ABL325" },
   "a라이트":  { 270: "ABL270" },
   "아코팩":   { 300: "ACPK300", 350: "ACPK350" },
   "뉴티락":   { 300: "NTR300" }, "뉴티팩": { 350: "NTP350" },
@@ -152,6 +157,35 @@ function paperIdOf(rec) {
   if (!w) { const m = t.match(/(\d{3})(?!\d)/); if (m) w = Number(m[1]); }
   if (!w) { const m = t.match(/(\d{2,4})/); if (m) w = Number(m[1]); }
   return PAPER_BY_FAM_W[fam]?.[w] || null;
+}
+
+// ─────────────────────────────────────────────────────────────────
+//  1-b. 범위 밖 — **골판지**  (★ 26-09-16 선주 지시)
+//     「sc240은 골판지라서 그냥 없애줘 골판지는 나중에 만들거야」
+//
+//  ⚠ 「지종표에 없다」(결측)와 **절대 같이 세지 마라.**
+//     결측은 papers.mjs 를 늘릴 자리이고, 범위밖은 **늘릴 자리가 아니다.**
+//     섞으면 「지종표를 늘려라」라는 잘못된 결론이 나오고 적중률의 분모도 거짓말이 된다.
+//     종전에 SC240 40건(sc240g 37 + 회sc240g 3)이 바로 그렇게 섞여 있었다.
+//
+//  · 라이너/골 코드 — BA · KLB · KLS · SK. · WT. · BB · S.S.S · 「골」
+//  · sc240  — 선주가 **골판지라고 직접 지정**했다. 코퍼스 58건 전부 자사 PDF 이고
+//    지대단가 0건 · 판형 0건이라 어차피 캘 값도 없다(합성표기 「ab300g+sc240g」류 포함).
+//
+//  ⚠ 이 정규식이 **놓치는 골판지 후보**가 코퍼스에 아직 12건 남아 있다(26-09-16 실측).
+//    지금은 일부러 안 잡는다 — 「골」도 라이너 코드도 없어서 규칙으로 못 가르고, 손으로
+//    명단을 박으면 다음 채굴에 바로 늙는다. **나중에 골판지 앱을 만들 때 쓸 목록이다:**
+//        e/s.wk 5 · e/wk.s 4 · b/s.k 1 (자사 PDF)  ·  e-보드350g 1 (협력사 PNG) · 보드350g 1
+//    (지우지 마라. 이것들은 지금 「지종표에 없다」로 세어지고 있고, 그게 지금은 맞다 —
+//     골판지라고 단정할 근거가 표기 관례뿐이라 확인 전에는 결측이 더 정직하다.)
+const CORRUGATED = /골|klb|kls|sk\.|wt\.|\bbb\b|s\.s\.s|sc240/;
+/** 범위밖으로 세어진 지종 표기 — 아래 출력에서 결측 목록과 **따로** 찍는다. */
+const outOfScope = new Map();
+function isCorrugated(rec) {
+  const t = norm(rec["지종정규"] || rec["지종"]);
+  if (!t || !CORRUGATED.test(t)) return false;
+  outOfScope.set(rec["지종정규"] || rec["지종"], (outOfScope.get(rec["지종정규"] || rec["지종"]) || 0) + 1);
+  return true;
 }
 
 const SHEET_BY_CODE = {
@@ -379,6 +413,10 @@ for (const rec of PNG) {
     bump("A: 판형코드를 우리 판형에 못 붙인다");
     unmappedSheet.set(code, (unmappedSheet.get(code) || 0) + 1); continue;
   }
+  // ★ 26-09-16 범위밖(골판지)을 **지종 매핑보다 먼저** 가른다 — 결측과 섞이면 안 된다.
+  //   (실측: A 트랙 PNG 209건에 골판지는 0건이다. 그래도 둔다 — B 와 같은 규칙을 쓰지 않으면
+  //    협력사 견적서에 골판지가 한 장 들어오는 날 조용히 결측으로 섞인다.)
+  if (isCorrugated(rec)) { bump("A: 범위 밖 — 골판지(선주 26-09-16)"); continue; }
   const paperId = paperIdOf(rec);
   if (!paperId) {
     bump("A: 지종을 우리 지종표에 못 붙인다");
@@ -412,9 +450,11 @@ for (const rec of PNG) {
     print: { front: pr ? pr.front : {}, back: pr ? pr.back : {},
              beda: !!(pr && pr.beda), spotMode: "weight" },
     finish: { coatFrontId: co.front, coatBackId: co.back,
-              // 복잡도 라벨은 견적서에 **안 찍힌다**. 그래서 앱 기본값(일반형)을 쓴다 —
+              // 복잡도 라벨은 견적서에 **안 찍힌다**. 그래서 앱 기본값을 쓴다 —
               // 사용자가 실제로 받는 값이 이것이다(ui/state.mjs INITIAL_STATE.thomId).
-              thomsonId: "n", glueId: gl.id, ...ex },
+              // ★ 26-09-16 "n"(일반형) → "s"(단순형). 앱 기본값이 내려갔으므로 여기도 같이
+              //   내린다 — 갈리면 이 검수대가 **사용자가 받지 않는 물건**을 재게 된다.
+              thomsonId: "s", glueId: gl.id, ...ex },
     // ★ 주입하는 것은 up **하나**다. 단가·여분·R 은 한 개도 넣지 않는다.
     overrides: { up },
   };
@@ -534,10 +574,11 @@ for (const rec of PDF) {
   //     750원으로 찍혀 있었다 — B 트랙 최악 1위(−86.8%)가 **우리 오류가 아니었다.**
   if (!isNum(sale) || sale <= cost) { bump("B: 원가개당을 판매개당으로 교차검산할 수 없다"); continue; }
 
-  // ⚠ 골판지(BA/KLB/SK 코드·E골·B골)는 **우리 물건이 아니다.** 지종표 구멍과
-  //   섞어서 세면 「지종표를 늘려라」라는 잘못된 결론이 나온다 — 따로 센다.
-  const rawPaper = norm(rec["지종정규"] || rec["지종"]);
-  if (/골|klb|kls|sk\.|wt\.|\bbb\b|s\.s\.s/.test(rawPaper)) { bump("B: 골판지 — 우리 물건이 아니다"); continue; }
+  // ⚠ 골판지(BA/KLB/SK 코드·E골·B골 **및 SC240**)는 **이 앱의 물건이 아니다.**
+  //   지종표 구멍과 섞어서 세면 「지종표를 늘려라」라는 잘못된 결론이 나온다 — 따로 센다.
+  //   ★ 26-09-16 SC240 을 여기로 옮겼다(선주 지시). 종전에는 아래 paperIdOf 가 null 을
+  //     내서 40건이 「지종표에 없다」 117건 속에 섞여 있었다. 규칙은 위 CORRUGATED 하나다.
+  if (isCorrugated(rec)) { bump("B: 범위 밖 — 골판지(선주 26-09-16)"); continue; }
   const paperId = paperIdOf(rec);
   if (!paperId) {
     bump("B: 지종을 우리 지종표에 못 붙인다");
@@ -576,7 +617,12 @@ for (const rec of PDF) {
     qty, box: { mode: "box", W: dim[0], D: dim[1], H: dim[2], structure, hangTab: 0 },
     paper: { paperId, sheetId: "auto", custom: null },
     print: { front, back: {}, beda: false, spotMode: "weight" },
-    finish: { coatFrontId: coatId, coatBackId: "none", thomsonId: "n", glueId },
+    // ★ 26-09-16 "n"(일반형) → "s"(단순형). A 트랙(:457)과 **같은 취지**다 —
+    //   앱 기본값이 s 로 내려갔으므로(ui/state.mjs INITIAL_STATE.thomId) 여기도 같이 내린다.
+    //   갈리면 이 검수대가 **사용자가 받지 않는 물건**을 재게 되고, 그 적중률로 판단하면
+    //   화면에서 일어난 일과 표가 어긋난다. 두 트랙이 갈리는 것은 더 나쁘다 — 같은 앱을
+    //   두 기준으로 재는 표가 한 화면에 나란히 찍힌다.
+    finish: { coatFrontId: coatId, coatBackId: "none", thomsonId: "s", glueId },
     overrides: {},           // ★ 아무것도 주입하지 않는다
   };
   const q = buildQuote(input);
@@ -665,8 +711,18 @@ for (const [k, v] of cs) console.log("  " + lpad(v, 5) + "  " + k);
 console.log("");
 
 if (unmappedPaper.size) {
-  console.log("  ▸ 우리 지종표에 없는 지종 (papers.mjs 를 늘릴 자리):");
+  console.log("  ▸ 우리 지종표에 없는 지종 = **결측** (papers.mjs 를 늘릴 자리):");
   [...unmappedPaper.entries()].sort((a, b) => b[1] - a[1]).slice(0, 15)
+    .forEach(([k, v]) => console.log("      " + lpad(v, 4) + "  " + k));
+  console.log("");
+}
+// ★ 26-09-16 — **결측 바로 다음에, 그러나 따로** 찍는다. 붙여 두는 이유는 두 목록이
+//   한눈에 비교돼야 「늘릴 자리」와 「늘리면 안 되는 자리」가 안 헷갈리기 때문이다.
+if (outOfScope.size) {
+  const tot = [...outOfScope.values()].reduce((a, b) => a + b, 0);
+  console.log(`  ▸ 범위 밖 = **골판지** ${tot}건 — papers.mjs 를 늘릴 자리가 **아니다**`);
+  console.log("     (이 앱은 단상자(판지)용. 골판지는 나중에 따로 만든다 — 선주 26-09-16)");
+  [...outOfScope.entries()].sort((a, b) => b[1] - a[1]).slice(0, 15)
     .forEach(([k, v]) => console.log("      " + lpad(v, 4) + "  " + k));
   console.log("");
 }

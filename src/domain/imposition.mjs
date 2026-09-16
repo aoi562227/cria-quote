@@ -5,7 +5,7 @@
 //  다른 곳에서 solveLayout / solveFree 를 직접 import 하면 아래 3대 정책
 //  (인쇄기 클램프·발자국 상한·행거탭)이 적용되지 않은 up 이 견적에 들어간다.
 // ══════════════════════════════════════════════════════════════════
-import { effectiveSheet, FIT_TOL, MAX_FOOT_PCT } from "./data/sheets.mjs";
+import { effectiveSheet, FIT_TOL, MAX_FOOT_PCT, GRIP_MM } from "./data/sheets.mjs";
 import { solveLayout, itemW, itemH } from "../nest.mjs";
 import { solveFree } from "../nest-free.mjs";
 
@@ -91,13 +91,31 @@ const FREE_MAX_UP = 200;
  *   분기로 남아 있지 않다. 그래도 **캐시 키에는 custom 이 들어 있다**(solveImposition ck)
  *   — 언젠가 갈래가 갈리는 순간 같은 w×h 의 표준/주문생산이 서로의 배치를 돌려받는
  *   사고를 막는 예방선이다. 지우지 마라.
+ *
+ * ── ⑤ 구아이(물림선) 사방 1.5mm — 선주 지시 26-09-16 ──────────────────
+ * 위 ①~④ 는 **BITE_SHORT/BITE_LONG(30/20)** 에 대한 반증이고 그대로 살아 있다.
+ * 여기서 빼는 것은 그 30/20 이 아니라 GRIP_MM(1.5) 이다 — 축당 3.0mm 로 10분의 1이라
+ * ② 의 붕괴(verify-net 7/10→3/10 · 지대오차 14.4%→36.3%)가 일어나지 않는다.
+ * 같은 계측을 다시 돌려 확인했다: up·지대오차·금액재현·절대선 **전부 불변**이다
+ * (수는 sheets.mjs GRIP_MM 주석의 표). 근거 없이 30/20 으로 키우지 마라.
+ *
+ * ⚠ ④ 의 규칙은 그대로다 — long/short 는 **안 줄인다.** footPct·utilPct 의 분모이고
+ *   MAX_FOOT_PCT=92 가 그 분모로 교정된 값이다. 여백은 printW/printH 에만 걸린다.
+ *
+ * ⚠ 빼기를 FIT_TOL **앞**에 둔 이유: FIT_TOL 은 전개도 공식의 ±5mm 오차를 흡수하려고
+ *   판을 부풀리는 값이라, 부풀릴 대상은 「여백을 뺀 실제 인쇄면」이다. 뒤에 두면
+ *   (es.long*(1+FIT_TOL) − 3.0) 이 되어 0.015mm 넓어진다 — 견적이 그만큼 싸지는 쪽이라
+ *   반반이면 비싼 쪽 규율과도 어긋난다.
  */
 export function printableArea(sheet) {
   const es = effectiveSheet(sheet.w, sheet.h);
+  // 사방 GRIP_MM → 축당 2배를 뺀다. 대칭이므로 배치 원점도 GRIP_MM 만큼 안으로 들어간다.
+  // 음수 가드: 주문생산에 3mm 미만을 넣어도 아래 solve* 의 `> 0` 분기가 정상 동작하게 0 에서 끊는다.
+  const grip = GRIP_MM * 2;
   return {
     long: es.long, short: es.short, capped: es.capped,
-    printW: es.long  * (1 + FIT_TOL),
-    printH: es.short * (1 + FIT_TOL),
+    printW: Math.max(0, es.long  - grip) * (1 + FIT_TOL),
+    printH: Math.max(0, es.short - grip) * (1 + FIT_TOL),
   };
 }
 

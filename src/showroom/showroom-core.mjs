@@ -407,7 +407,9 @@ export const STD = {
   fpColor: true, fpSp: "0", fpBk: false, fpUv: false,   // 앞면 원색 4도
   bpColor: false, bpSp: "0", bpBk: false, bpUv: false,  // 뒷면 없음
   beda: false, fcId: "ir", bcId: "none",                // IR 코팅 (앞면)
-  glueId: "dan", thomId: "n",                           // 단면접착 · 일반 톰슨
+  glueId: "dan", thomId: "s",                           // 단면접착 · 단순형 톰슨
+  //  ⚠ thomId 는 **INITIAL_STATE.thomId 와 같은 값**을 유지해라 — 다르면 쇼룸 단독 진입만
+  //    다른 기본값으로 돈다(26-09-16 에 "n" → "s" 로 같이 내렸다 · ui/state.mjs 주석 참조).
   hang: false, mR: false, mPrice: false, lossSheets: "",
 };
 

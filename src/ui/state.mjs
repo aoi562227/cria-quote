@@ -69,7 +69,26 @@ export const INITIAL_STATE = {
   sobooU: String(SOBOO_UNIT_DEFAULT),
   fcId: "ir", bcId: "none",
   puv: false, puvS: "1",
-  thomId: "n", glueId: "dan",
+  // ★ 26-09-16 톰슨 기본 n(일반형) → **s(단순형)**. 왜: 코퍼스가 s 를 가리킨다 —
+  //   접착 단상자 · 톰슨 1줄(파지 톰슨 제외) · 26-04 이후를 협상 1표로 세면
+  //   4절 45,000×6 : 50,000×4 (최빈 45,000 = s행) · 2절 45,000×2 : 50,000×3 : 55,000×3
+  //   (최빈 동수 → R3 의 중앙값 갈래로 50,000 = s행). 두 티어가 같은 행을 가리킨다.
+  //   ⚠ 이 값은 **표(THOMSON_OPTS)가 아니라 기본 복잡도**다 — 표 값은 실측과 맞고
+  //     (process-prices.mjs 톰슨 주석), 틀린 자리는 「기본이 n」이라는 가정 하나였다.
+  //   ⚠ 싸지는 방향이다(4절·2절 −5,000/R). 그래서 26-09-13 판은 안 내렸다. 내린 근거는
+  //     선주 지시(26-09-16)로 앵커를 실제 견적서 금액 817,969 로 옮겨 셋을 같이 고칠 수
+  //     있게 된 것이다 — 소스코 견적서의 톰슨 줄이 실제로 50,000(2절 s행)이다.
+  //   ★ **얼마나 싸지는가**(선주 지시: 수로 보고하라). 1,440조합 스윕
+  //     (박스6 × 지종3 × 판형10 × 수량10 · scratchpad/SWEEP_cheaper.mjs) 공정합계 기준:
+  //       톰슨 n→s 단독      중앙 −0.83%  (평균 −0.82 · p10 −1.09% · p90 −0.48% · 최대낙폭 −1.35%)
+  //       인쇄 14,500→14,000 중앙 −0.33%  (전지급은 PRINT_UNIT_LARGE 15,000 이라 변화 0)
+  //       둘 합쳐 실제 배포   중앙 −1.15%  (p10 −1.53% · 최대낙폭 −1.89%) · 개당 중앙 −1.17%
+  //     ✓ 26-09-16 확정 단계가 이 스윕을 **다시 돌려 위 수를 재확인**했다(1,440건 · 금액 불변 0건).
+  //       앞 판이 적은 −0.82 / −1.14 / −1.15 는 각각 중앙 대신 평균을 옮겨 적은 것이라 정정했다.
+  //     절대액으로는 톰슨이 −5,000 ~ −125,000(공정R 에 비례하므로 큰 건일수록 크다).
+  //     ⚠ 절대선(소스코)만은 **거꾸로 +3,000 비싸진다** — 관리비 실측 130,000 이
+  //       인쇄 −2,000 · 톰슨 −5,000 을 덮기 때문이다(814,969 → 817,969 · 개당 204 그대로).
+  thomId: "s", glueId: "dan",
   admin: "100000", adminManual: false,
   newDie: true, dieQ: "1", dieP: "140000", filmC: "",
   emb: false, embRpr: String(EMB_RPR_DEFAULT), embDevP: "90000", embFilmP: "28000",
@@ -87,8 +106,10 @@ export const INITIAL_STATE = {
 const THOM_DEFAULTS = new Set(
   structures().map(st => getStructure(st.id)?.thomsonDefault).filter(Boolean));
 
+// ⚠ 복귀값은 **INITIAL_STATE.thomId 와 같은 값**이어야 한다 — 다르면 G형에 들렀다 나온
+//   사용자만 다른 기본값을 받는다(26-09-16 에 "n" → "s" 로 같이 내렸다).
 export const nextThomId = (boxType, cur) =>
-  getStructure(boxType)?.thomsonDefault ?? (THOM_DEFAULTS.has(cur) ? "n" : cur);
+  getStructure(boxType)?.thomsonDefault ?? (THOM_DEFAULTS.has(cur) ? INITIAL_STATE.thomId : cur);
 
 /**
  * 칼선 PDF 에서 **지금 고른 후보 한 개**를 푼다 — `{ bbox:{w,h,x0,y0}, polygons }`.
