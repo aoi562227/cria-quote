@@ -69,6 +69,7 @@ export default function PaperPanel({ s, u, sheetInfo, autoPriceInfo, result }) {
         const badge = pi.basis === "obs"   ? "✓ 확인"
                     : pi.basis === "fam"   ? "≡ 계열"
                     : pi.basis === "ratio" ? "⚠ 환산"
+                    : pi.basis === "gsm"   ? "⚠ 평량"
                     : pi.confirmed         ? "✓ 확인" : "⚠ 추정";
         return (
           <div style={{background:"#050f1c",border:`1px solid ${pi.noData?"#aa2200":pi.confirmed?"#1a3a50":"#4a2a10"}`,borderRadius:4,padding:"7px 10px",fontSize:10,color:"#66aadd",marginBottom:8}}>
@@ -89,10 +90,14 @@ export default function PaperPanel({ s, u, sheetInfo, autoPriceInfo, result }) {
                        N3 로 자격을 잃은 칸에서 둘이 갈린다. process/paper.mjs markOf 참조):
                         ✓ 확인 : 이 칸에 견적서가 있고 값도 그대로다
                         ≡ 계열 : 같은 원지계열에 견적서가 있다 (1R = 원지 500장 항등식)
-                        ⚠ 환산 : 그 계열엔 없어 원지 면적비로 뻗은 값이다 */}
+                        ⚠ 환산 : 그 계열엔 없어 원지 면적비로 뻗은 값이다
+                      ★ 26-09-17 — **4단**이 됐다(평량 정합 N5~N8):
+                        ⚠ 평량 : 그 **지종**에 견적서가 0장이라 같은 계열의 다른 평량에서
+                                 뻗었다. ⚠환산보다 한 단 더 먼 값이라 색을 더 붉게 준다 —
+                                 같은 주황으로 찍으면 사용자가 둘을 같은 급으로 읽는다. */}
                   <span style={{fontSize:8,marginLeft:4,padding:"1px 5px",borderRadius:2,
-                    background:badge==="✓ 확인"?"#0a3020":badge==="≡ 계열"?"#0a2838":"#3a2000",
-                    color:badge==="✓ 확인"?"#44cc88":badge==="≡ 계열"?"#55bbdd":"#ffaa44"}}>
+                    background:badge==="✓ 확인"?"#0a3020":badge==="≡ 계열"?"#0a2838":badge==="⚠ 평량"?"#3a1000":"#3a2000",
+                    color:badge==="✓ 확인"?"#44cc88":badge==="≡ 계열"?"#55bbdd":badge==="⚠ 평량"?"#ff8866":"#ffaa44"}}>
                     {badge}
                   </span>
                 </span>
@@ -113,6 +118,14 @@ export default function PaperPanel({ s, u, sheetInfo, autoPriceInfo, result }) {
                   ? `${nameOf(pi.famSheet)} 견적서 실측가로 정합 · 같은 ${sheetInfo.family} 원지`
                     + ` (1R = 원지 500장이라 절수가 달라도 원/R 은 같다)`
                     + (pi.raw > 0 ? ` · 이 칸 견적서값 ${pi.raw.toLocaleString()} → ${pi.price.toLocaleString()}` : "")
+                  : pi.basis === "gsm" && pi.gsm
+                  /* ⚠평량 — 그 지종의 견적서가 **0장**이다. 어느 지종의 몇 g 두 점에서
+                     어떻게 왔는지를 **수까지** 적는다. 「추정입니다」만 적으면 사용자가
+                     되짚을 수가 없고, 되짚을 수 없는 추정은 고객 앞에서 그냥 주장이다. */
+                  ? `⚠ 견적서 없는 지종 — 같은 계열의 ${pi.gsm.from.map(f => `${f.gsm}g ${f.v.toLocaleString()}`).join(" · ")}`
+                    + ` (${nameOf(pi.gsm.sheet)}) 를 평량으로 ${pi.gsm.via}해 ${pi.gsm.v.toLocaleString()} 원/R`
+                    + (pi.gsm.fam === sheetInfo.family ? ""
+                       : ` · 다시 ${pi.gsm.fam}→${sheetInfo.family} 원지 면적비로 환산`)
                   : pi.basis === "ratio"
                   ? `⚠ ${nameOf(pi.anchorSheet)} 값을 ${pi.anchorFam}→${sheetInfo.family}`
                     + ` 원지 면적비로 환산 (이 계열엔 견적서가 없다)`

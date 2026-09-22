@@ -3,7 +3,7 @@
 // ══════════════════════════════════════════════════════════════════
 import { PAPERS } from "./data/papers.mjs";
 import { PRICE_TABLE } from "./data/paper-prices.mjs";
-import { lookup as coherentLookup } from "./data/paper-coherence.mjs";
+import { lookup as coherentLookup, GSM_ROW } from "./data/paper-coherence.mjs";
 import { BASE_SHEETS, sheetsPerR, resolveSheet, findSheetBase } from "./data/sheets.mjs";
 
 /**
@@ -63,6 +63,9 @@ export function getPaperPriceInfo(paperId, sheetId, mPriceVal, customSheet) {
     confirmed: hit.raw > 0,
     basis: hit.basis, raw: hit.raw,
     anchorFam: hit.anchorFam, anchorSheet: hit.anchorSheet, famSheet: hit.famSheet,
+    // 평량 파생(N5~N8)이면 근거 뭉치를 그대로 넘긴다 — 화면이 「무엇에서 어떻게 왔는지」
+    // 를 적어야 한다(⚠평량 배지). 없는 칸에는 undefined 라 종전 경로는 안 움직인다.
+    ...(hit.gsm ? { gsm: hit.gsm } : {}),
     // 화면이 「무엇에서 뻗어 왔는지」를 적을 수 있게 종전 필드명을 그대로 채운다.
     ...(hit.raw > 0 ? {} : { estimateFrom: hit.anchorSheet }),
   };
@@ -81,7 +84,12 @@ export function getPaperPriceInfo(paperId, sheetId, mPriceVal, customSheet) {
   const targetArea = sheet.w * sheet.h;
   const targetPerR = sheetsPerR(sheet);
 
-  const refs = Object.entries(PRICE_TABLE[paperId] || {}).map(([refId, refPrice]) => {
+  // ⚠ 26-09-17 — `|| GSM_ROW[paperId]` 한 조각. 평량 파생(N5~N8)으로 들어온 지종은
+  //   PRICE_TABLE 에 줄이 **통째로 없어서** 여기서 refs 가 비고 주문생산(custom)이
+  //   noData 로 떨어진다(정합층은 원지계열이 있는 칸만 덮는데 custom 은 원지계열이 없다).
+  //   GSM_ROW 는 그 지종의 「평량을 잰 칸 한 줄」이라 종전 면적환산 식이 그대로 돈다.
+  //   ⚠ 순서가 중요하다 — PRICE_TABLE 이 **먼저**다. 관측이 있으면 추정은 안 본다(N8④).
+  const refs = Object.entries(PRICE_TABLE[paperId] || GSM_ROW[paperId] || {}).map(([refId, refPrice]) => {
     const rs = BASE_SHEETS.find(s => s.id === refId);
     if (!rs || refId === "custom") return null;
     return { id: refId, perSheet: refPrice / sheetsPerR(rs), area: rs.w * rs.h };

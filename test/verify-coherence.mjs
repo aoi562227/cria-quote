@@ -243,6 +243,95 @@ console.log("\n═══ §10  근거 출처가 화면에서 거짓말하지 않
      diff.length > 0);
 }
 
+console.log("\n═══ §11  평량 정합 N5~N8 — 관측을 못 덮고, 지어내지 않는가 ══════════════");
+// 26-09-17 신설. 이 절이 없으면 N5~N8 은 무방비다 — 위 §1~§10 은 전부
+// PRICE_TABLE 의 키만 돌아서(PAPERS_) **평량 파생 지종을 한 칸도 안 본다.**
+{
+  const { PAPERS } = await import("../src/domain/data/papers.mjs");
+  const { GSM_DERIVED, GSM_ROW, gsmDerive, seriesOf, gsmOf, GSM_TOL }
+    = await import("../src/domain/data/paper-coherence.mjs");
+  const { markOf } = await import("../src/domain/process/paper.mjs");
+
+  // ① 계열 규약 — id 에서 숫자를 뺀 것이 계열이다. 라이트 4종이 한 계열로 모여야 한다.
+  ok(`계열 규약 — 라이트 4종이 "ABL" 로 모인다 (AB270 은 "AB")`,
+     ["AB250L", "ABL270", "AB295L", "ABL325"].every(i => seriesOf(i) === "ABL")
+     && seriesOf("AB270") === "AB" && gsmOf("AB250L") === 250 && gsmOf("DSDM308") === 308);
+
+  // ② ★ N8④ — 추정이 **관측을 덮지 않는다.** 이게 이 규칙의 안전장치다.
+  const covered = Object.keys(GSM_DERIVED).filter(id => PRICE_TABLE[id]);
+  ok(`★ N8④ 평량 파생이 관측 있는 지종을 한 칸도 안 덮는다 (덮은 지종 ${covered.length})`,
+     covered.length === 0, covered.join(" "));
+  // 이빨: 규칙 자체는 관측 지종에도 답을 낸다 — 막는 것이 N8④ 라는 걸 실물로 보인다.
+  const d270 = gsmDerive("ALK270");
+  ok(`이빨: ALK270 은 규칙상 ${d270?.v?.toLocaleString()} 이 나오지만 관측 ` +
+     `${PRICE_TABLE.ALK270.guk2.toLocaleString()} 이 이긴다`,
+     d270 != null && d270.v > PRICE_TABLE.ALK270.guk2
+     && EFFECTIVE.ALK270.guk2.v === PRICE_TABLE.ALK270.guk2);
+
+  // ③ N8① 외삽 금지 — 관측 평량 밖으로는 안 뻗는다(AB270 이 왜 −20.6% 인지가 근거).
+  const extrap = Object.entries(GSM_DERIVED).filter(([id, d]) => {
+    const g = gsmOf(id), gs = d.from.map(f => f.gsm);
+    return g < Math.min(...gs) || g > Math.max(...gs);
+  });
+  ok(`★ N8① 외삽 0건 — 전부 관측 평량 **사이**에 있다 (밖 ${extrap.length})`,
+     extrap.length === 0, extrap.map(([i]) => i).join(" "));
+
+  // ④ N5 — 평량을 잰 두 점이 **같은 판형 칸**이어야 한다(판형 환산이 안 섞였다).
+  const mixed = Object.entries(GSM_DERIVED)
+    .filter(([, d]) => new Set(d.from.map(f => f.sid)).size !== 1);
+  ok(`★ N5 평량은 같은 칸에서만 쟀다 (칸이 섞인 지종 ${mixed.length})`,
+     mixed.length === 0, mixed.map(([i]) => i).join(" "));
+
+  // ⑤ N6/N7 판정이 게이트와 맞는가 — 비례라 적었으면 산포가 ±2% 안이어야 한다.
+  const badVia = Object.entries(GSM_DERIVED)
+    .filter(([, d]) => (d.via === "비례") !== (d.spread <= GSM_TOL));
+  ok(`N6/N7 판정이 ±${(GSM_TOL * 100).toFixed(0)}% 게이트와 일치 (어긋난 지종 ${badVia.length})`,
+     badVia.length === 0, badVia.map(([i, d]) => `${i} ${d.via} ${(d.spread * 100).toFixed(2)}%`).join(" "));
+
+  // ⑥ ★ 단조 — 계열 안에서 평량이 오르면 원/R 도 올라야 한다. 파생값이 섞인 뒤에도.
+  //    「400g 이 450g 보다 비싸다」가 화면에 나오는 것을 막는 절이다.
+  const monoBad = [];
+  const bySer = {};
+  for (const p of PAPERS) (bySer[seriesOf(p.id)] ||= []).push(p.id);
+  for (const [ser, ids] of Object.entries(bySer)) {
+    if (!ids.some(i => GSM_DERIVED[i])) continue;       // 파생이 낀 계열만 본다
+    ids.sort((a, b) => gsmOf(a) - gsmOf(b));
+    for (const s of SHEETS) for (let i = 1; i < ids.length; i++)
+      if (EFFECTIVE[ids[i]][s].v <= EFFECTIVE[ids[i - 1]][s].v)
+        monoBad.push(`${ser}/${s} ${ids[i - 1]}→${ids[i]}`);
+  }
+  ok(`★ 파생이 낀 계열의 단조 — 평량↑ ⟹ 원/R↑ (깨진 칸 ${monoBad.length})`,
+     monoBad.length === 0, monoBad.slice(0, 8).join(" "));
+
+  // ⑦ 화면 — 4단째 배지가 실제로 나오고, confirmed 는 **거짓말을 안 한다**.
+  const marks = new Set(), liar = [];
+  for (const id of Object.keys(GSM_DERIVED)) for (const s of SHEETS) {
+    const i = getPaperPriceInfo(id, s, "", null);
+    marks.add(markOf(i));
+    if (i.confirmed || paperSheetConfirmed(id, s) || i.noData || !(i.price > 0))
+      liar.push(`${id}.${s}`);
+  }
+  ok(`★ 평량 파생 칸은 confirmed=false · 드롭다운 회색 · 값은 양수 (어긋난 칸 ${liar.length})`,
+     liar.length === 0, liar.slice(0, 8).join(" "));
+  ok(`표시 4종이 전부 나온다 — «⚠평량» 포함 (${[...marks].map(m => `«${m.trim()}»`).join(" ")})`,
+     marks.size === 1 && marks.has(" ⚠평량"));
+
+  // ⑧ ★ 전 조합 — 지종이 늘어도 NaN · noData · 예외가 0 이어야 한다(custom 포함).
+  const holes = [];
+  for (const p of PAPERS) for (const sh of BASE_SHEETS) {
+    let i; try { i = getPaperPriceInfo(p.id, sh.id, "", { w: 890, h: 670, cut: 2 }); }
+    catch (e) { holes.push(`${p.id}.${sh.id} 예외`); continue; }
+    if (i.noData || !Number.isFinite(i.price) || i.price <= 0) holes.push(`${p.id}.${sh.id}`);
+  }
+  ok(`★ 지종 ${PAPERS.length} × 판형 ${BASE_SHEETS.length} = ${PAPERS.length * BASE_SHEETS.length}칸 — ` +
+     `NaN·noData·예외 ${holes.length}`, holes.length === 0, holes.slice(0, 8).join(" "));
+
+  // ⑨ GSM_ROW 는 주문생산 잔여 경로가 쓰는 대용 한 줄이다 — 파생 지종마다 있어야 한다.
+  const noRow = Object.keys(GSM_DERIVED).filter(id => !GSM_ROW[id]);
+  ok(`GSM_ROW 가 파생 지종 ${Object.keys(GSM_DERIVED).length}종을 전부 덮는다 (빠진 ${noRow.length})`,
+     noRow.length === 0, noRow.join(" "));
+}
+
 console.log("\n" + "=".repeat(78));
-console.log(`원지 정합 N1~N4: ${pass}/${pass + fail}`);
+console.log(`원지 정합 N1~N4 · 평량 정합 N5~N8: ${pass}/${pass + fail}`);
 if (fail) process.exitCode = 1;
