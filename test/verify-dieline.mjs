@@ -341,3 +341,56 @@ import { buildQuote } from "../src/domain/quote.mjs";
   for (const f of rFail) console.log(`  ✗ ${f}`);
   if (rFail.length) process.exitCode = 1;
 }
+
+// ══════════════════════════════════════════════════════════════════
+//  G형 벽 두께 두 계열 — 실물 칼선 3장 (26-10-02)
+//
+//  사용자: 「(유니다 도면은) 골판지용이거나 옆벽을 두껍게 하면 저런 식으로 끼울 수 있게 만든다 — 그 부분 감안하고 봐라」.
+//  접는선으로 재 보니 G형의 뼈대(긴 축 2D+3H · 짧은 축 W+4H)는 하나이고 **여유분이 벽 두께로 갈린다**:
+//
+//    두꺼운 옆벽(끼움형·골판지)  (W + 4H + 44) × (2D + 3H + 14.5)     ← 유니다 · 아이엠 2장이 **0.0mm** 로 맞는다
+//       옆벽 한쪽 = 바깥벽 H+7.5 · 꼭대기 띠 8 · 안벽 H+6.5 (= 2H+22) · 뚜껑 폭 = W−14(양쪽 벽 두께만큼 좁다) · 뚜껑 길이 D+3
+//         유니다 240809   W 94 · D 100 · H 75.5   → 440 × 441
+//         아이엠 240807   W 394 · D 130 · H 45.5  → 620 × 411
+//    얇은 옆벽(판지 단상자)      (W + 4H + 8)  × (2D + 3H + 0.5)      ← 모자 칼선 1장(트렌드스페이스 220×210×110 → 658 × 770.5)
+//
+//  gtype_tray 식 (W+4H+44.5)×(2D+3H+19.5) 은 **두꺼운 벽 계열**이다 — 두 칼선에 짧은 축 +0.5 · 긴 축 +5.0(식이 크다 = 안전측).
+//  ⚠ 그래서 판지 견적 둘(마스크 재단 990×590 · 모자 재단 800×700)은 tray 식의 짧은 축(594.5 · 704.5)이 재단을 넘는다 —
+//    그 둘은 얇은 벽이다. up·지대R 은 46전지 1up 이라 안 갈렸을 뿐이다.
+//  ⚠ gtype-tray.mjs 가 아이엠을 「단벽 620×411 · 이 공식으로 재현되지 않는다(738.5×425)」고 적어 뒀는데 **틀린 기록**이었다 —
+//    W·D·H 를 모른 채 넣은 값이고, 접는선으로 읽은 394×130×45.5 를 넣으면 620.5×416 으로 재현된다.
+// ══════════════════════════════════════════════════════════════════
+{
+  console.log("\n═══ G형 벽 두께 두 계열 — 실물 칼선 3장 ═══════════════════════════════════════");
+  let wOk = 0; const wFail = [];
+  const wt = (label, cond, note = "") => { if (cond) wOk++; else wFail.push(label + (note ? " — " + note : "")); };
+  const THICK = (W, D, H) => [W + 4 * H + 44, 2 * D + 3 * H + 14.5];
+  const THIN  = (W, D, H) => [W + 4 * H + 8,  2 * D + 3 * H + 0.5];
+  const DIES = [
+    { name: "유니다 240809", fam: "두꺼운 벽", f: THICK, dims: [94, 100, 75.5],  bbox: [440, 441],
+      file: "C:/이예찬_업무/private/도면/견적용도면/240809_유니다/240809_유니다.pdf", order: "wh" },
+    { name: "아이엠 240807", fam: "두꺼운 벽", f: THICK, dims: [394, 130, 45.5], bbox: [620, 411],
+      file: "C:/이예찬_업무/private/도면/견적용도면/240807_아이엠/G형.pdf", order: "wh" },
+    // 모자 칼선은 뚜껑이 220 쪽으로 덮인다 — 짧은 축 바닥 변 210 을 W 로, 긴 축 변 220 을 D 로 넣는다.
+    { name: "트렌드스페이스 모자", fam: "얇은 벽", f: THIN, dims: [210, 220, 110], bbox: [658, 770.5], file: null },
+  ];
+  for (const d of DIES) {
+    const [W, D, H] = d.dims, [fw, fh] = d.f(W, D, H);
+    wt(`${d.name} 계열식 = 실측`, Math.abs(fw - d.bbox[0]) <= 0.05 && Math.abs(fh - d.bbox[1]) <= 0.05, `식 ${fw}×${fh} vs ${d.bbox.join("×")}`);
+    const tray = calcNetSize(W, D, H, "gtype_tray"), spec = calcNetSize(W, D, H, "gtype_spec");
+    // 반대 계열 식은 **안 맞아야** 한다(이빨) — 짧은 축이 36 벌어진다.
+    const other = d.f === THICK ? THIN(W, D, H) : THICK(W, D, H);
+    wt(`${d.name} 반대 계열 식은 불일치(짧은 축 ±36)`, Math.abs(Math.abs(other[0] - d.bbox[0]) - 36) < 0.05);
+    console.log(`  ✓ ${d.name.padEnd(12)} ${d.fam}  W${W}·D${D}·H${H} → 실측 ${d.bbox.join("×")} · 계열식 ${fw}×${fh} · tray식 ${tray.netW}×${tray.netH} (Δ ${(tray.netW - d.bbox[0]).toFixed(1)}/${(tray.netH - d.bbox[1]).toFixed(1)}) · spec식 ${spec.netW}×${spec.netH} (Δ ${(spec.netW - d.bbox[0]).toFixed(1)}/${(spec.netH - d.bbox[1]).toFixed(1)})`);
+    if (d.fam === "두꺼운 벽") wt(`${d.name} gtype_tray 식이 실측 이상(안전측) · 짧은 축 +0.5 · 긴 축 +5`, Math.abs(tray.netW - d.bbox[0] - 0.5) < 0.05 && Math.abs(tray.netH - d.bbox[1] - 5) < 0.05, `${tray.netW}×${tray.netH}`);
+    if (d.file) {
+      if (existsSync(d.file)) {
+        const r = await readDieline(readFileSync(d.file), { source: d.name });
+        wt(`[칼선] ${d.name} 파서 bbox = 박아 둔 실측`, Math.abs(r.bbox.w - d.bbox[0]) < 0.2 && Math.abs(r.bbox.h - d.bbox[1]) < 0.2, `${r.bbox.w}×${r.bbox.h}`);
+      } else console.log(`  ⏭ ${d.name} 칼선 PDF 가 없다(회사 폴더) — **칼선은 읽지 않았다.** 박아 둔 실측값 대조만 돌았다.`);
+    }
+  }
+  console.log(`G형 벽 두께 계열 대조 ${wOk}/${wOk + wFail.length} 통과`);
+  for (const f of wFail) console.log(`  ✗ ${f}`);
+  if (wFail.length) process.exitCode = 1;
+}
