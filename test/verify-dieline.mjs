@@ -273,3 +273,54 @@ import { buildQuote } from "../src/domain/quote.mjs";
   for (const f of rFail) console.log(`  ✗ ${f}`);
   if (rFail.length) process.exitCode = 1;
 }
+
+// ══════════════════════════════════════════════════════════════════
+//  실물 견적서 + 실물 칼선 대조 — G형 220×210×110 (26-07-06 크리아 · 모자 패키지 · BW350 · 4*6전 · 재단 800×700) — 26-10-02
+//
+//  G형의 **첫 실물 칼선**이다(트렌드스페이스 `G형220x210x110.pdf` — 저장소 밖 회사 폴더). 접는선으로 읽은 패널:
+//    긴 축  770.5 = 왼벽 110 · 바닥 219 · 뒷벽 108 · 뚜껑 225.5 · 꽂이 108      = 2·220 + 3·110 + 0.5
+//    짧은 축 658.0 = 바닥 211.5 + 위·아래 벽 두 겹(3.5 + 109 + 띠 20 + 90.5)×2   = 210 + 4·110 + 8
+//  ⟹ 마스크 패키지 견적서 도면(950×550)과 **같은 뼈대**다: 긴 축 2a+3H · 짧은 축 b+4H (a=뚜껑이 덮는 쪽 변).
+//  gtype_tray 식 704.5×769.5 와는 긴 축 −1.0 · **짧은 축 +46.5**(식이 크다 = 안전측 · 46전지 1up 은 안 갈린다).
+//  식은 안 고쳤다 — 여유분(+44.5)은 bbox 4건이 Δ0 으로 받치고 이 칼선 1건이 반대한다. 근거가 갈리면 큰(비싼) 쪽을 둔다.
+//  문서 둘(같은 날): ⓐ 전면 별5·후면 별2·후면 IR  ⓑ 전면 별2·후면 별3·전면 무광라미+후면 IR. 지대는 둘이 같다.
+// ══════════════════════════════════════════════════════════════════
+{
+  console.log("\n═══ 실물 견적서·칼선 대조 — G형 220×210×110 · BW350 · 4*6전 (26-07-06 모자 패키지) ════");
+  let rOk = 0; const rFail = [];
+  const rt = (label, cond, note = "") => { if (cond) rOk++; else rFail.push(label + (note ? " — " + note : "")); };
+  const S = { ...INITIAL_STATE, sizeMode: "box", boxType: "gtype_tray", bW: "220", bD: "210", bH: "110", paperId: "BW350", sheetId: "auto",
+    fpColor: false, fpSp: "2", fpBk: false, fpUv: false, bpColor: false, bpSp: "3", bpBk: false, bpUv: false,
+    fcId: "matte", bcId: "ir", glueId: "none" };
+  const DOC = { 500: { R: 1.8, paper: 689155, total: 1384155 }, 1000: { R: 2.8, paper: 1072019, total: 2057019 } };
+  for (const qty of [500, 1000]) {
+    const q = buildQuote(toQuoteInput({ ...S, qty: String(qty) }));
+    const pl = q.lines.find(l => l.name === "지대");
+    rt(`${qty}ea 지대R = 문서 ${DOC[qty].R}`, pl.qty === DOC[qty].R, `우리 ${pl.qty}`);
+    rt(`${qty}ea 지대 금액 = 문서 ${DOC[qty].paper} (BW350 46전지 382,864 · 원 단위)`, pl.amount === DOC[qty].paper, `우리 ${pl.amount}`);
+    const d = (q.totals.process - DOC[qty].total) / DOC[qty].total;
+    console.log(`  ${pl.amount === DOC[qty].paper ? "✓" : "✗"} ${qty}ea  지대 ${pl.qty}R × ${pl.unitPrice.toLocaleString()} = ${pl.amount.toLocaleString()} (문서 ${DOC[qty].paper.toLocaleString()}) · ` +
+      q.lines.filter(l => l.name !== "지대").map(l => `${l.name} ${l.amount.toLocaleString()}`).join(" · ") +
+      ` · 공정합계 ${q.totals.process.toLocaleString()} vs 문서ⓑ ${DOC[qty].total.toLocaleString()} (${(100 * d).toFixed(1)}% — 게이트 아님)`);
+  }
+  // 실물 칼선 — 파일이 있을 때만(회사 폴더). 파서가 고르는 1순위는 **부분**(441.5×425)이다: 칼선이 좌우 두 성분으로
+  // 나뉘어 있고 좌우 병합은 막혀 있다(iSHAP 2up 사고 방지). 그래서 후보들의 합집합으로 잰다. 그 한계도 찍는다.
+  const DIE = process.env.GTYPE_DIE ?? "C:/이예찬_업무/연도별/2026/고객사/제작완료/트렌드스페이스/디자인/G형220x210x110.pdf";
+  if (existsSync(DIE)) {
+    const r = await readDieline(readFileSync(DIE), { source: "G형220x210x110.pdf", maxCandidates: 10 });
+    const outer = r.candidates.reduce((a, c) => (c.bbox.w * c.bbox.h > a.bbox.w * a.bbox.h ? c : a));      // 3mm 도련 윤곽
+    const inner = r.candidates.filter(c => c !== outer);
+    const x0 = Math.min(...inner.map(c => c.bbox.x0)), y0 = Math.min(...inner.map(c => c.bbox.y0));
+    const x1 = Math.max(...inner.map(c => c.bbox.x0 + c.bbox.w)), y1 = Math.max(...inner.map(c => c.bbox.y0 + c.bbox.h));
+    const L = x1 - x0, Sx = y1 - y0, net = calcNetSize(220, 210, 110, "gtype_tray");
+    rt("[칼선] 실측 770.5×658 (도련 윤곽 776.5×664 = 사방 +3)", Math.abs(L - 770.5) < 0.2 && Math.abs(Sx - 658) < 0.2 && Math.abs(outer.bbox.w - 776.5) < 0.2 && Math.abs(outer.bbox.h - 664) < 0.2, `${L.toFixed(1)}×${Sx.toFixed(1)} · 윤곽 ${outer.bbox.w}×${outer.bbox.h}`);
+    rt("[칼선] gtype_tray 긴 축이 실측과 ±1.5mm", Math.abs(net.netH - L) <= 1.5, `식 ${net.netH} vs ${L.toFixed(1)}`);
+    rt("[칼선] gtype_tray 짧은 축은 실측보다 **크다**(안전측) — 문서화된 차이 +46.5", net.netW > Sx && Math.abs(net.netW - Sx - 46.5) < 0.2, `식 ${net.netW} vs ${Sx.toFixed(1)}`);
+    rt("[칼선] 재단 800×700 에 실측 칼선이 들어간다", L <= 800 && Sx <= 700);
+    console.log(`  ✓ [칼선 직독] 실측 ${L.toFixed(1)}×${Sx.toFixed(1)} · gtype_tray 식 ${net.netH}×${net.netW} (Δ ${(net.netH - L).toFixed(1)} / +${(net.netW - Sx).toFixed(1)}) · gtype_spec 식 ${2 * 210 + 4 * 110}×${220 + 4 * 110} (긴 축 +${(2 * 210 + 4 * 110 - L).toFixed(1)})`);
+    console.log(`  ※ 파서 1순위는 ${r.bbox.w}×${r.bbox.h} — 칼선의 **오른쪽 절반뿐**이다(좌우 두 성분 · 좌우 병합은 막혀 있다). 문서화된 한계.`);
+  } else console.log("  ⏭ 실물 칼선 PDF 가 없다(회사 폴더 · GTYPE_DIE 로 경로 지정) — **칼선은 읽지 않았다.** 견적서 대조만 돌았다.");
+  console.log(`실물 견적서·칼선 대조 ${rOk}/${rOk + rFail.length} 통과`);
+  for (const f of rFail) console.log(`  ✗ ${f}`);
+  if (rFail.length) process.exitCode = 1;
+}
