@@ -226,3 +226,50 @@ for (const c of DRAW) {
 console.log(`규격 도면 대조 ${dOk}/${dOk + dFail.length} 통과`);
 for (const f of dFail) console.log(`  ✗ ${f}`);
 if (dFail.length) process.exitCode = 1;
+
+// ══════════════════════════════════════════════════════════════════
+//  실물 견적서 대조 — G형 270×370×70 (26-03-16 크리아 · 마스크 패키지 · AB400 · 4*6전지) — 26-10-02
+//
+//  G형의 **첫 실물 근거**다. 견적서 아래 도면에서 전개도를 읽었다:
+//    긴 축  = 왼벽 70 + 바닥 370 + 뒷벽 70 + 뚜껑 370 + 뚜껑 띠 70 = **950 = 2D + 3H**
+//    짧은 축 = 바닥 270 + 위·아래 벽 두 겹씩(70×4)              = **550 = W + 4H**
+//    소부 재단 990×590(사방 20mm) · 4*6전지 한 장에 **1개**.
+//  문서가 스스로 1up 임을 말한다: 지대 4.8R = 2,400장 = 2,000 + 여분 400 · 6.8R = 3,400장 = 3,000 + 400,
+//  공정R 2.1 / 3.1 = (수량 + 100) ÷ 1,000.  ⚠ 비고칸의 「2」는 **이 문서에서는 up 이 아니다**(up 2 면 여분율 140%·127%).
+//  그 「2」가 무엇인지는 모른다 — 코퍼스 추출기(비고=up)는 이 문서를 up 2 로 싣고 검수대가 「⚠오라클 의심」으로 찍는다.
+//
+//  세 G형 모델에 같은 규격을 넣으면:
+//    gtype_tray  594.5×969.5 → 46전지 1up · 지대R 4.8 / 6.8  ← **문서와 원 단위(R)로 같다**
+//    gtype       1764×1251   → 들어가는 판형 없음              ← 이 규격에서는 식이 틀린다
+//    gtype_spec  550×1020    → 규격도는 앞벽이 두 겹(2D+4H)이라 실물 도면(2D+3H)보다 70 길다
+// ══════════════════════════════════════════════════════════════════
+import { INITIAL_STATE, toQuoteInput } from "../src/ui/state.mjs";
+import { buildQuote } from "../src/domain/quote.mjs";
+{
+  console.log("\n═══ 실물 견적서 대조 — G형 270×370×70 · AB400 · 4*6전지 (26-03-16) ══════════════");
+  let rOk = 0; const rFail = [];
+  const rt = (label, cond, note = "") => { if (cond) rOk++; else rFail.push(label + (note ? " — " + note : "")); };
+  const S = { ...INITIAL_STATE, sizeMode: "box", bW: "270", bD: "370", bH: "70", paperId: "AB400", sheetId: "auto",
+    fpColor: false, fpSp: "1", fpBk: true, fpUv: false, beda: true, bpColor: false, bpSp: "0", bpBk: false, bpUv: false,
+    fcId: "matte", bcId: "none", glueId: "none" };
+  const run = (boxType, qty) => buildQuote(toQuoteInput({ ...S, boxType, qty: String(qty) }));
+  const paperR = q => q.lines?.find(l => l.name === "지대")?.qty;
+  const DOC = { 2000: { R: 4.8, total: 2934614 }, 3000: { R: 6.8, total: 4150078 } };
+  for (const qty of [2000, 3000]) {
+    const q = run("gtype_tray", qty);
+    const net = q.netSize, R = paperR(q);
+    rt(`gtype_tray ${qty}ea 지대R = 문서 ${DOC[qty].R}`, R === DOC[qty].R, `우리 ${R}`);
+    rt(`gtype_tray ${qty}ea 전개도가 재단 990×590 근처(±25mm)`, Math.abs(net.netH - 990) <= 25 && Math.abs(net.netW - 590) <= 25, `${net.netW}×${net.netH}`);
+    const d = (q.totals.process - DOC[qty].total) / DOC[qty].total;
+    // 합계는 게이트가 아니다 — 단가(지대 455,232→431,272 최근 우선 · 관리비 재량 200,000 vs 110,000)가 달라 −6% 다. 수만 찍는다.
+    console.log(`  ${R === DOC[qty].R ? "✓" : "✗"} gtype_tray ${qty}ea  전개도 ${net.netW}×${net.netH} · 지대R ${R} (문서 ${DOC[qty].R}) · 공정합계 ${q.totals.process.toLocaleString()} vs 문서 ${DOC[qty].total.toLocaleString()} (${(100 * d).toFixed(1)}% — 게이트 아님)`);
+  }
+  const g = run("gtype", 2000), sp = run("gtype_spec", 2000);
+  rt("gtype(톰슨조립)은 이 규격에서 판형에 안 들어간다(문서화된 한계)", !g.lines, g.lines ? "견적이 나왔다" : "");
+  rt("gtype_spec 는 실물 도면(2D+3H=950)보다 긴 축이 H 만큼 길다(2D+4H=1020)", sp.netSize.netH === 2 * 370 + 4 * 70 && sp.netSize.netW === 270 + 4 * 70);
+  console.log(`  ※ gtype      ${g.netSize.netW}×${g.netSize.netH} → ${g.lines ? "견적 나옴" : "들어가는 판형 없음"}   ← 문서화된 한계`);
+  console.log(`  ※ gtype_spec ${sp.netSize.netW}×${sp.netSize.netH} → 실물 도면 550×950 보다 긴 축 +70(앞벽 안날개 한 칸) · ${sp.lines ? "견적 나옴" : "46전지에 배치 불성립"}`);
+  console.log(`실물 견적서 대조 ${rOk}/${rOk + rFail.length} 통과`);
+  for (const f of rFail) console.log(`  ✗ ${f}`);
+  if (rFail.length) process.exitCode = 1;
+}
