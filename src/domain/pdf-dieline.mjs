@@ -1123,7 +1123,18 @@ function buildComponents(subpaths) {
     if (qy[i] < cc.y0) cc.y0 = qy[i]; if (qy[i] > cc.y1) cc.y1 = qy[i];
   }
   for (const [a] of edges) comps.get(find(a)).segs++;
-  for (const ids of polys) comps.get(find(ids[0])).polys.push(ids);
+  for (const ids of polys) {
+    const cc = comps.get(find(ids[0]));
+    cc.polys.push(ids);
+    // 이 폴리라인이 **축에 나란한 닫힌 직사각형**인가 — 「패널 도식」 판정(mergeInto)이 읽는다.
+    //   닫힘(첫점=끝점) · 서로 다른 꼭짓점 4개 · 네 점이 전부 자기 bbox 의 모서리.
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const i of ids) { if (qx[i] < x0) x0 = qx[i]; if (qx[i] > x1) x1 = qx[i]; if (qy[i] < y0) y0 = qy[i]; if (qy[i] > y1) y1 = qy[i]; }
+    const E = 0.01;
+    const isRect = ids.length === 5 && ids[0] === ids[4] && new Set(ids).size === 4 &&
+      ids.every(i => (Math.abs(qx[i] - x0) < E || Math.abs(qx[i] - x1) < E) && (Math.abs(qy[i] - y0) < E || Math.abs(qy[i] - y1) < E));
+    if (isRect) (cc.rects ||= []).push([x0, y0, x1, y1]); else cc.nonRect = true;
+  }
   // 지름 상한에 걸려 못 이은 쌍은 **대표 id 로 옮겨서** 넘긴다 — 부르는 쪽이 「채택한
   // 도형 위에 그런 자리가 있나」를 물어볼 수 있어야 조용히 지나가지 않는다.
   return { comps: [...comps.values()], px: qx, py: qy,
@@ -1180,7 +1191,48 @@ function mergeInto(seed, pool) {
     g.x0 = Math.min(g.x0, c.x0); g.y0 = Math.min(g.y0, c.y0);
     g.x1 = Math.max(g.x1, c.x1); g.y1 = Math.max(g.y1, c.y1);
   }
+  // ── 패널 도식 — 직사각 패널을 변끼리 맞대어 그린 「규격 도면」 ─────────────────────────
+  //  ★ 26-10-02 — isFlap 주석이 「측면 조각이 별개 성분인 도면이 나오면 그때 실측을 근거로 열어라」고
+  //    남겨 둔 그 도면이 왔다(docs/g형예시/ 4장 — G형·4면접착을 색 패널 사각형으로 그린 것).
+  //    손으로 맞댄 사각형이라 꼭짓점이 0.04~0.62mm 어긋나 한 성분이 못 되고, 좌우 병합은 막혀 있어서
+  //      G형예시2       480×440 → 410×440  (바깥 벽 70 · 모서리 사각 4개 탈락)
+  //      G형예시        340×470 → 230×414.7
+  //      4면접착예시2   380.6×330 → 360×330  (오른쪽 접착띠가 0.617mm 떨어져 그려졌다)
+  //    로 읽혔다. 좌우를 통째로 여는 것은 여전히 위험하다(iSHAP 2up — 옆 판 조각을 끌어온다).
+  //    그래서 **본체도 붙는 쪽도 전부 「닫힌 직사각형」뿐일 때만** 연다 — 실제 칼선(곡선·사선·열린
+  //    폴리라인)은 nonRect 라 이 분기에 **구조적으로 못 들어온다**(오라클 48건 불변으로 확인).
+  //    여러 겹을 허용한다(G형 바깥 벽은 안쪽 벽에 붙고, 안쪽 벽이 본체에 붙는다).
+  const panelOnly = c => !c.nonRect && c.rects && c.rects.length > 0 && c.rects.length === c.polys.length;
+  if (g.used.every(panelOnly)) {
+    const rects = g.used.flatMap(c => c.rects);
+    for (let grew = true; grew;) {
+      grew = false;
+      for (const c of pool) {
+        if (g.used.includes(c) || !panelOnly(c)) continue;
+        if (!c.rects.some(r => rects.some(q => abutRect(r, q)))) continue;
+        g.nodes.push(...c.nodes); g.segs += c.segs; g.polys.push(...c.polys); g.parts++; g.used.push(c);
+        g.panels = (g.panels || 0) + 1;
+        g.x0 = Math.min(g.x0, c.x0); g.y0 = Math.min(g.y0, c.y0);
+        g.x1 = Math.max(g.x1, c.x1); g.y1 = Math.max(g.y1, c.y1);
+        rects.push(...c.rects);
+        grew = true;
+      }
+    }
+  }
   return g;
+}
+
+const PANEL_ABUT = 0.7;   // 맞닿은 변 사이 허용 틈(mm). 관측 최대 0.617(4면접착예시2 접착띠) · 겹침 0.1(G형 모서리 사각)
+/** 두 직사각형 [x0,y0,x1,y1] 이 **변을 맞대고** 있는가 — 틈 ≤ PANEL_ABUT 이고 맞닿은 길이가 짧은 쪽 변의 절반 이상.
+ *  모서리만 닿는 것(대각 이웃)은 길이 0 이라 안 붙는다. */
+function abutRect(a, b) {
+  const ovY = Math.min(a[3], b[3]) - Math.max(a[1], b[1]);
+  const ovX = Math.min(a[2], b[2]) - Math.max(a[0], b[0]);
+  const side = (Math.abs(a[0] - b[2]) <= PANEL_ABUT || Math.abs(a[2] - b[0]) <= PANEL_ABUT) &&
+               ovY >= 0.5 * Math.min(a[3] - a[1], b[3] - b[1]);
+  const stack = (Math.abs(a[1] - b[3]) <= PANEL_ABUT || Math.abs(a[3] - b[1]) <= PANEL_ABUT) &&
+                ovX >= 0.5 * Math.min(a[2] - a[0], b[2] - b[0]);
+  return side || stack;
 }
 
 // ── 두 겹 윤곽 (도련 + 칼선) ──────────────────────────────────────
@@ -1249,8 +1301,17 @@ export async function readDieline(bytes, opt = {}) {
   const mb = (doc.arr(page.MediaBox ?? inh.MediaBox) || []).map(v => num(doc.resolve(v)));
   if (mb.length !== 4) throw new Error(`/MediaBox 를 읽지 못했다: ${source}`);
   const ox = Math.min(mb[0], mb[2]), oy = Math.min(mb[1], mb[3]);
-  const rawW = +(Math.abs(mb[2] - mb[0]) * K).toFixed(2);
-  const rawH = +(Math.abs(mb[3] - mb[1]) * K).toFixed(2);
+  // ── /UserUnit — 좌표 1단위가 1/72 inch 의 몇 배인가 (PDF 32000-1 §14.11.2 · 기본 1 · 상속 안 됨) ──
+  //   ★ 26-10-02 — 일러스트레이터 「대형 캔버스」 문서는 /UserUnit 10 으로 저장된다(좌표가 전부 1/10).
+  //   이 값을 안 읽어서 200×80×70 4면접착 칼선(실물 380.6×330mm)이 **38×33mm** 로 읽혔고
+  //   4×64 한 판에 165up · 개당 93원이 경고 0개로 나갔다(`docs/g형예시/4면접착예시2_200x80x70.pdf`).
+  //   pt→mm 상수에 곱해 두면 MediaBox·CTM 이 한 번에 맞는다 — 아래 좌표는 종전대로 전부 mm 다.
+  const uuRaw = page.UserUnit === undefined ? 1 : num(doc.resolve(page.UserUnit));
+  const UU = uuRaw > 0 ? uuRaw : 1;
+  const KU = K * UU;
+  if (UU !== 1) warnings.push(`페이지 /UserUnit ${UU} 를 적용했다 — 좌표 1단위 = ${UU}/72 inch (일러스트레이터 대형 캔버스 문서).`);
+  const rawW = +(Math.abs(mb[2] - mb[0]) * KU).toFixed(2);
+  const rawH = +(Math.abs(mb[3] - mb[1]) * KU).toFixed(2);
   // ⚠ 타당성 검사 — 물리적으로 불가능한 값을 조용히 통과시키면 SheetCanvas 에 0 크기 판이
   //   내려가고 견적에는 그 숫자가 그대로 들어간다. MediaBox [0 0 0 0] 이나 원소가 없는
   //   간접참조(num() 이 0 으로 접힘)가 실제로 그런 값을 만든다.
@@ -1279,7 +1340,7 @@ export async function readDieline(bytes, opt = {}) {
   const res = [];
   // MediaBox 원점을 (0,0) 으로 옮기고 pt→mm 스케일을 CTM 에 넣은 뒤 /Rotate 를 곱한다.
   // 이렇게 하면 아래 모든 좌표가 처음부터 mm 이고, 폴리곤을 나중에 다시 훑지 않는다.
-  const base = mul([K, 0, 0, K, -ox * K, -oy * K], rotM);
+  const base = mul([KU, 0, 0, KU, -ox * KU, -oy * KU], rotM);
   // ⚠ /Contents 가 배열이면 **이어붙인 하나의 스트림**이다 (PDF 32000-1 §7.8.2).
   //   스트림마다 run() 을 새로 부르면 CTM·q/Q 스택이 초기화된다 — 스트림1 이
   //   `[mm cm] 2 0 0 2 0 0 cm`, 스트림2 가 50×30 폴리곤이면 100×60mm 가 나와야 하는데
