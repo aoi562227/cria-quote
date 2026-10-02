@@ -580,6 +580,31 @@ console.log("\n═══ §E 조용히 틀리지 않는지 (회귀 게이트) �
   console.log(`  ${ok ? "✓" : "✗"} /UserUnit 10 → ${a.err || b.err || `bbox ${b.r.bbox.w}×${b.r.bbox.h} · 페이지 ${b.r.pageSize.w}×${b.r.pageSize.h} (UserUnit 없는 같은 실물 ${a.r.bbox.w}×${a.r.bbox.h})`}`);
 }
 
+// E3-c 패널 도식 — 직사각 패널을 손으로 맞대어 그린 규격 도면. 옆 패널이 0.6mm 떨어져 있어도 한 도형으로 읽는다.
+//    종전: 좌우 병합이 통째로 막혀 있어 G형 규격도 480×440 이 410×440 으로, 4면접착 380.6×330 이 360×330 으로 읽혔다.
+//    ⚠ 대조군이 본체다 — **본체가 직사각형뿐이 아니면(실제 칼선) 옆 사각형을 끌어오면 안 된다.**
+//      그 문이 열리면 iSHAP 2up 사고(옆 판 조각을 삼켜 557.1 → 574.54)가 다시 난다.
+{
+  const R = (x, y, w, h) => `${x} ${y} ${w} ${h} re S`;
+  const cm = `${MM} 0 0 ${MM} 0 0 cm `;
+  // 가운데 100×60 + 위 100×20 + 왼쪽 30×60 (꼭짓점이 정확히 같다) · 오른쪽 30×60 은 **0.6mm 떨어져** 있다
+  const panel = cm + [R(50, 20, 100, 60), R(50, 80, 100, 20), R(20, 20, 30, 60), R(150.6, 20, 30, 60)].join(" ");
+  const a = await tryRead(buildPdf({ wMM: 220, hMM: 120, streams: [panel] }), "E3c-panels.pdf");
+  // 멀리 떨어진(5mm) 사각형은 패널이 아니다 — 안 붙는다
+  const far = cm + [R(50, 20, 100, 60), R(50, 80, 100, 20), R(20, 20, 30, 60), R(155, 20, 30, 60)].join(" ");
+  const f = await tryRead(buildPdf({ wMM: 220, hMM: 120, streams: [far] }), "E3c-far.pdf");
+  // 대조군 — 본체가 8각 칼선(직사각형이 아님)이고 옆에 0.6mm 떨어진 닫힌 사각형이 있다 → 삼키면 안 된다
+  const real = cm + L8(50, 20, 100, 60) + " " + R(150.6, 20, 30, 60);
+  const c = await tryRead(buildPdf({ wMM: 220, hMM: 120, streams: [real] }), "E3c-control.pdf");
+  const ok = !a.err && !f.err && !c.err &&
+             near(a.r.bbox.w, 160.6, .05) && near(a.r.bbox.h, 80, .05) &&
+             near(f.r.bbox.w, 130, .05) &&
+             near(c.r.bbox.w, 100, .05) && near(c.r.bbox.h, 60, .05);
+  check("E3-c 패널 도식: 0.6mm 떨어진 옆 패널 흡수(160.6×80) · 5mm 는 안 붙음(130) · 실제 칼선 본체는 안 삼킴(100×60)", ok,
+        a.err || f.err || c.err || `panels ${a.r.bbox.w}×${a.r.bbox.h} · far ${f.r.bbox.w} · control ${c.r.bbox.w}×${c.r.bbox.h}`);
+  console.log(`  ${ok ? "✓" : "✗"} 패널 도식 → ${a.err || f.err || c.err || `맞닿음 ${a.r.bbox.w}×${a.r.bbox.h} · 5mm 떨어짐 ${f.r.bbox.w}×${f.r.bbox.h} · 칼선 본체 대조군 ${c.r.bbox.w}×${c.r.bbox.h}`}`);
+}
+
 // E4 재단 마크만 있는 PDF — seed 가 없으면 **폴백하지 않는다.**
 //    종전: comps[0](파일에서 가장 먼저 그려진 성분)을 근거 없이 채택해 10×10mm 를
 //          경고 0개로 돌려주고 그 값이 nW/nH 에 자동 기입됐다.

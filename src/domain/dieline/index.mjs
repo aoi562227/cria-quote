@@ -10,13 +10,17 @@ import cross     from "./cross.mjs";
 import glue3     from "./glue3.mjs";
 import gtype     from "./gtype.mjs";
 import gtypeTray from "./gtype-tray.mjs";
+import gtypeSpec from "./gtype-spec.mjs";
+import glue4     from "./glue4.mjs";
 import direct    from "./direct.mjs";
 import { rect, piecesFromFlaps } from "./geometry.mjs";
 // 노브의 허용범위는 **그 노브를 읽는 구조 파일**이 소유한다. 여기서 5/60 을 다시
 // 적으면 두 벌이 되고, 한쪽만 고치는 순간 화면이 다시 거짓말을 한다.
 import { TAB_MIN, TAB_MAX, isValidTabW } from "./cross.mjs";
 
-const REGISTRY = [tuckBoth, cross, glue3, gtype, gtypeTray, direct];
+// ★ 26-10-02 — gtypeSpec · glue4 추가. 사용자가 그려 준 규격 도면을 패널 단위로 옮긴 구조다(pieces() 훅의 첫 사용처).
+//   기존 gtype · gtypeTray 는 한 칸도 안 건드렸다 — gtype_spec 과 모양이 겹치지만 크기 식의 근거가 다르다(gtype-spec.mjs 머리말).
+const REGISTRY = [tuckBoth, cross, glue3, glue4, gtype, gtypeTray, gtypeSpec, direct];
 const BY_ID = Object.fromEntries(REGISTRY.map(s => [s.id, s]));
 
 /**
