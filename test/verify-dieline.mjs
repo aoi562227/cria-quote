@@ -136,7 +136,7 @@ if (!unknownOk) process.exitCode = 1;
 //  허용오차 0.7mm — 손으로 맞댄 도면의 어긋남 관측 최대 0.617(4면접착예시2 오른쪽 띠).
 // ══════════════════════════════════════════════════════════════════
 import { existsSync, readFileSync } from "node:fs";
-import { panels as gPanels } from "../src/domain/dieline/gtype-spec.mjs";
+import { panels as gPanels, SKELETON as G_SKELETON } from "../src/domain/dieline/gtype-spec.mjs";
 import { panels as fPanels } from "../src/domain/dieline/glue4.mjs";
 import { readDieline } from "../src/domain/pdf-dieline.mjs";
 
@@ -163,7 +163,10 @@ const DRAW_ODD = { id: "glue_4side", file: "4면접착예시.pdf", W: 250, D: 10
 // ★ 26-10-02 — G형 도면의 **맨 아래 칸(앞벽 아래 H 한 칸)은 사용자가 「실수」라 했다**(앞벽은 한 겹이다).
 //   도면 수치는 그린 그대로 16칸을 박아 두고, 그 한 칸을 `mistake` 로 표시한다 — 모델은 나머지 15칸과 1:1 이어야 하고
 //   그 칸은 **모델에 없어야** 한다(누가 두 겹으로 되돌리면 여기가 빨개진다).
-const PANELS = { gtype_spec: gPanels, glue_4side: fPanels };
+// ★ 26-10-02 (2) — gtype_spec 은 이제 **실물 칼선의 여유분**을 싣는다(가로 +8 · 세로 +0.5). 규격 도면은 여유분 없는 도식이므로
+//   도면과는 `SKELETON`(여유분 0) 뼈대를 맞댄다 — 「패널 배치가 도면과 같다」를 재는 것이고, 치수의 정본은 실물 칼선 쪽 게이트다.
+const PANELS = { gtype_spec: (W, D, H) => gPanels(W, D, H, G_SKELETON), glue_4side: fPanels };
+const FULL   = { gtype_spec: gPanels, glue_4side: fPanels };
 const sameRect = (a, b) => a.every((v, i) => Math.abs(v - b[i]) < 1e-9);
 const TOL = 0.7;
 /** 도면 사각형마다 모델 패널 하나가 네 변 모두 TOL 안에 있어야 한다(1:1). 맞은 수를 돌려준다. */
@@ -191,16 +194,17 @@ for (const c of DRAW) {
   const net = calcNetSize(W, D, H, c.id);
   const dl = dielinePieces(W, D, H, c.id);
   const sumPieces = dl.pieces.reduce((a, p) => a + areaOf(p), 0);
-  const sumPanels = model.reduce((a, [, x0, y0, x1, y1]) => a + (x1 - x0) * (y1 - y0), 0);
+  const sumPanels = FULL[c.id](W, D, H).reduce((a, [, x0, y0, x1, y1]) => a + (x1 - x0) * (y1 - y0), 0);
+  const mw = Math.max(...model.map(q => q[3])), mh = Math.max(...model.map(q => q[4]));     // 뼈대 bbox
   dt(`${c.file} 패널 수`, model.length === drawn0.length, `모델 ${model.length} vs 도면 ${drawn0.length}`);
   dt(`${c.file} 패널 1:1 일치`, hit === drawn0.length, `${hit}/${drawn0.length}`);
-  dt(`${c.file} bbox`, Math.abs(net.netW - c.bbox[0]) <= TOL && Math.abs(net.netH - c.bbox[1]) <= TOL, `${net.netW}×${net.netH} vs ${c.bbox.join("×")}`);
+  dt(`${c.file} 뼈대 bbox`, Math.abs(mw - c.bbox[0]) <= TOL && Math.abs(mh - c.bbox[1]) <= TOL, `${mw}×${mh} vs ${c.bbox.join("×")}`);
   // 배치 조각(볼록 사각형 몇 개)이 패널 합집합을 **정확히** 덮는가 — 조각은 서로 안 겹치게 짰으므로 면적 합이 같아야 한다.
   dt(`${c.file} 배치 조각 면적 = 패널 면적 합`, Math.abs(sumPieces - sumPanels) < 1e-6, `${sumPieces} vs ${sumPanels}`);
   // 이빨 — D·H 를 바꿔 넣은 모델은 같은 도면에 맞으면 안 된다(맞으면 이 대조가 아무것도 안 재는 것이다).
   const swapped = matchRects(PANELS[c.id](W, H, D), drawn0);
   dt(`${c.file} 이빨(D↔H 바꾼 모델은 불일치)`, D === H || swapped < drawn0.length, `바꿔도 ${swapped}/${drawn0.length}`);
-  console.log(`  ${hit === drawn0.length ? "✓" : "✗"} ${c.id.padEnd(11)} ${String(c.dims.join("×")).padEnd(11)} 패널 ${hit}/${drawn0.length}${c.mistake ? " (+실수 칸 1 제외)" : ""} · 식 ${net.netW}×${net.netH} (도면 ${c.bbox.join("×")}) · 조각 ${dl.pieces.length}개 · D↔H 바꾸면 ${swapped}/${drawn0.length}   ${c.file}`);
+  console.log(`  ${hit === drawn0.length ? "✓" : "✗"} ${c.id.padEnd(11)} ${String(c.dims.join("×")).padEnd(11)} 패널 ${hit}/${drawn0.length}${c.mistake ? " (+실수 칸 1 제외)" : ""} · 뼈대 ${mw}×${mh} (도면 ${c.bbox.join("×")}) · 여유분 포함 ${net.netW}×${net.netH} · 조각 ${dl.pieces.length}개 · D↔H 바꾸면 ${swapped}/${drawn0.length}   ${c.file}`);
 }
 { // 예시1 — 문서화된 차이. 「어느 H 로도 안 맞는다」가 사실인 동안만 통과한다(누가 도면을 고쳐 주면 여기가 빨개져 알려 준다).
   const res = DRAW_ODD.tryH.map(H => [H, matchRects(fPanels(DRAW_ODD.W, DRAW_ODD.D, H), DRAW_ODD.rects)]);
@@ -275,13 +279,13 @@ import { buildQuote } from "../src/domain/quote.mjs";
   }
   const g = run("gtype", 2000), sp = run("gtype_spec", 2000);
   rt("gtype(톰슨조립)은 이 규격에서 판형에 안 들어간다(문서화된 한계)", !g.lines, g.lines ? "견적이 나왔다" : "");
-  rt("gtype_spec(앞벽 한 겹) 전개도 = 견적서 도면 550×950", sp.netSize.netH === 950 && sp.netSize.netW === 550, `${sp.netSize.netW}×${sp.netSize.netH}`);
+  rt("gtype_spec(얇은 벽) 전개도 558×950.5 = 견적서 도면 550×950 + 여유분(8 · 0.5) · 재단 990×590 안", sp.netSize.netH === 950.5 && sp.netSize.netW === 558 && sp.netSize.netH <= 990 && sp.netSize.netW <= 590, `${sp.netSize.netW}×${sp.netSize.netH}`);
   for (const qty of [2000, 3000]) {
     const R = paperR(run("gtype_spec", qty));
     rt(`gtype_spec ${qty}ea 지대R = 문서 ${DOC[qty].R}`, R === DOC[qty].R, `우리 ${R}`);
   }
   console.log(`  ※ gtype      ${g.netSize.netW}×${g.netSize.netH} → ${g.lines ? "견적 나옴" : "들어가는 판형 없음"}   ← 문서화된 한계`);
-  console.log(`  ✓ gtype_spec ${sp.netSize.netW}×${sp.netSize.netH} = 견적서 도면 550×950 · 지대R ${paperR(sp)} (문서 4.8) · ${sp.lines ? "46전지 1up" : "배치 불성립"}`);
+  console.log(`  ✓ gtype_spec ${sp.netSize.netW}×${sp.netSize.netH} (견적서 도면 550×950 + 여유분 · 재단 990×590 안) · 지대R ${paperR(sp)} (문서 4.8) · ${sp.lines ? "46전지 1up" : "배치 불성립"}`);
   console.log(`실물 견적서 대조 ${rOk}/${rOk + rFail.length} 통과`);
   for (const f of rFail) console.log(`  ✗ ${f}`);
   if (rFail.length) process.exitCode = 1;
@@ -316,6 +320,13 @@ import { buildQuote } from "../src/domain/quote.mjs";
       q.lines.filter(l => l.name !== "지대").map(l => `${l.name} ${l.amount.toLocaleString()}`).join(" · ") +
       ` · 공정합계 ${q.totals.process.toLocaleString()} vs 문서ⓑ ${DOC[qty].total.toLocaleString()} (${(100 * d).toFixed(1)}% — 게이트 아님)`);
   }
+  // ★ 같은 견적을 **얇은 벽 구조(gtype_spec · W=210·D=220)** 로 — 이 건의 실제 구조다. 지대가 문서와 원 단위로 같아야 한다.
+  for (const qty of [500, 1000]) {
+    const q = buildQuote(toQuoteInput({ ...S, boxType: "gtype_spec", bW: "210", bD: "220", qty: String(qty) }));
+    const pl = q.lines.find(l => l.name === "지대");
+    rt(`gtype_spec ${qty}ea 지대R·금액 = 문서`, pl.qty === DOC[qty].R && pl.amount === DOC[qty].paper, `우리 ${pl.qty}R · ${pl.amount}`);
+    console.log(`  ${pl.amount === DOC[qty].paper ? "✓" : "✗"} gtype_spec ${qty}ea  전개도 ${q.netSize.netW}×${q.netSize.netH} · 지대 ${pl.qty}R = ${pl.amount.toLocaleString()} (문서 ${DOC[qty].paper.toLocaleString()})`);
+  }
   // 실물 칼선 — 파일이 있을 때만(회사 폴더). 파서가 고르는 1순위는 **부분**(441.5×425)이다: 칼선이 좌우 두 성분으로
   // 나뉘어 있고 좌우 병합은 막혀 있다(iSHAP 2up 사고 방지). 그래서 후보들의 합집합으로 잰다. 그 한계도 찍는다.
   const DIE = process.env.GTYPE_DIE ?? "C:/이예찬_업무/연도별/2026/고객사/제작완료/트렌드스페이스/디자인/G형220x210x110.pdf";
@@ -332,8 +343,7 @@ import { buildQuote } from "../src/domain/quote.mjs";
     rt("[칼선] 재단 800×700 에 실측 칼선이 들어간다", L <= 800 && Sx <= 700);
     // 규격도 식(여유분 없음)은 뚜껑이 덮어 가는 변을 D 로 받는다 — 이 칼선은 그 변이 220 이다(접는선 바닥 219).
     const sp = calcNetSize(210, 220, 110, "gtype_spec");
-    rt("[칼선] gtype_spec(W=210·D=220) 긴 축 ±1mm", Math.abs(sp.netH - L) <= 1, `식 ${sp.netH} vs ${L.toFixed(1)}`);
-    rt("[칼선] gtype_spec 짧은 축은 실측보다 **작다**(여유분 없음) — 문서화된 차이 −8", Math.abs(sp.netW - Sx + 8) < 0.2, `식 ${sp.netW} vs ${Sx.toFixed(1)}`);
+    rt("[칼선] ★ gtype_spec(W=210·D=220) = 실측 658×770.5 (0.2mm 이내 — 이 구조의 여유분이 이 칼선에서 왔다)", Math.abs(sp.netH - L) < 0.2 && Math.abs(sp.netW - Sx) < 0.2, `식 ${sp.netW}×${sp.netH} vs ${Sx.toFixed(1)}×${L.toFixed(1)}`);
     console.log(`  ✓ [칼선 직독] 실측 ${L.toFixed(1)}×${Sx.toFixed(1)} · gtype_tray 식 ${net.netH}×${net.netW} (Δ ${(net.netH - L).toFixed(1)} / +${(net.netW - Sx).toFixed(1)}) · gtype_spec 식 ${sp.netH}×${sp.netW} (Δ ${(sp.netH - L).toFixed(1)} / ${(sp.netW - Sx).toFixed(1)})`);
     console.log(`  ※ 파서 1순위는 ${r.bbox.w}×${r.bbox.h} — 칼선의 **오른쪽 절반뿐**이다(좌우 두 성분 · 좌우 병합은 막혀 있다). 문서화된 한계.`);
   } else console.log("  ⏭ 실물 칼선 PDF 가 없다(회사 폴더 · GTYPE_DIE 로 경로 지정) — **칼선은 읽지 않았다.** 견적서 대조만 돌았다.");
@@ -382,6 +392,7 @@ import { buildQuote } from "../src/domain/quote.mjs";
     const other = d.f === THICK ? THIN(W, D, H) : THICK(W, D, H);
     wt(`${d.name} 반대 계열 식은 불일치(짧은 축 ±36)`, Math.abs(Math.abs(other[0] - d.bbox[0]) - 36) < 0.05);
     console.log(`  ✓ ${d.name.padEnd(12)} ${d.fam}  W${W}·D${D}·H${H} → 실측 ${d.bbox.join("×")} · 계열식 ${fw}×${fh} · tray식 ${tray.netW}×${tray.netH} (Δ ${(tray.netW - d.bbox[0]).toFixed(1)}/${(tray.netH - d.bbox[1]).toFixed(1)}) · spec식 ${spec.netW}×${spec.netH} (Δ ${(spec.netW - d.bbox[0]).toFixed(1)}/${(spec.netH - d.bbox[1]).toFixed(1)})`);
+    if (d.fam === "얇은 벽") wt(`${d.name} gtype_spec 식 = 실측(0.05mm)`, Math.abs(spec.netW - d.bbox[0]) <= 0.05 && Math.abs(spec.netH - d.bbox[1]) <= 0.05, `${spec.netW}×${spec.netH}`);
     if (d.fam === "두꺼운 벽") wt(`${d.name} gtype_tray 식이 실측 이상(안전측) · 짧은 축 +0.5 · 긴 축 +5`, Math.abs(tray.netW - d.bbox[0] - 0.5) < 0.05 && Math.abs(tray.netH - d.bbox[1] - 5) < 0.05, `${tray.netW}×${tray.netH}`);
     if (d.file) {
       if (existsSync(d.file)) {
