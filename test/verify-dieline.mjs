@@ -241,7 +241,7 @@ if (dFail.length) process.exitCode = 1;
 //  세 G형 모델에 같은 규격을 넣으면:
 //    gtype_tray  594.5×969.5 → 46전지 1up · 지대R 4.8 / 6.8  ← **문서와 원 단위(R)로 같다**
 //    gtype       1764×1251   → 들어가는 판형 없음              ← 이 규격에서는 식이 틀린다
-//    gtype_spec  550×1020    → 규격도는 앞벽이 두 겹(2D+4H)이라 실물 도면(2D+3H)보다 70 길다
+//    gtype_spec  550×1020    → **다른 변종**(앞벽 두 겹형 2D+4H · 영상 143436612). 이 건은 앞벽 한 겹형(2D+3H)이라 70 길게 나온다
 // ══════════════════════════════════════════════════════════════════
 import { INITIAL_STATE, toQuoteInput } from "../src/ui/state.mjs";
 import { buildQuote } from "../src/domain/quote.mjs";
