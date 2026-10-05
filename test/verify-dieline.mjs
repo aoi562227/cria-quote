@@ -199,8 +199,14 @@ for (const c of DRAW) {
   dt(`${c.file} 패널 수`, model.length === drawn0.length, `모델 ${model.length} vs 도면 ${drawn0.length}`);
   dt(`${c.file} 패널 1:1 일치`, hit === drawn0.length, `${hit}/${drawn0.length}`);
   dt(`${c.file} 뼈대 bbox`, Math.abs(mw - c.bbox[0]) <= TOL && Math.abs(mh - c.bbox[1]) <= TOL, `${mw}×${mh} vs ${c.bbox.join("×")}`);
-  // 배치 조각(볼록 사각형 몇 개)이 패널 합집합을 **정확히** 덮는가 — 조각은 서로 안 겹치게 짰으므로 면적 합이 같아야 한다.
-  dt(`${c.file} 배치 조각 면적 = 패널 면적 합`, Math.abs(sumPieces - sumPanels) < 1e-6, `${sumPieces} vs ${sumPanels}`);
+  // 배치 조각(축정렬 사각형)은 **서로 안 겹치고**, 패널 합집합을 **덮어야** 한다(≥ · 모델 ≥ 실물 = 안전측).
+  //   26-10-05 — G형 조각은 꽂이 어깨·옆날개까지 덮느라 패널 면적보다 크다. 「=」이던 검사를 「겹침 0 · ≥」로 바꿨다.
+  const rb = dl.pieces.map(q => [Math.min(...q.map(v => v[0])), Math.min(...q.map(v => v[1])), Math.max(...q.map(v => v[0])), Math.max(...q.map(v => v[1]))]);
+  let ovl = 0;
+  for (let i = 0; i < rb.length; i++) for (let j = i + 1; j < rb.length; j++)
+    ovl += Math.max(0, Math.min(rb[i][2], rb[j][2]) - Math.max(rb[i][0], rb[j][0])) * Math.max(0, Math.min(rb[i][3], rb[j][3]) - Math.max(rb[i][1], rb[j][1]));
+  dt(`${c.file} 배치 조각끼리 겹침 0`, ovl < 1e-6, `겹침 ${ovl}`);
+  dt(`${c.file} 배치 조각 면적 ≥ 패널 면적 합(덮개)`, sumPieces >= sumPanels - 1e-6, `${sumPieces} vs ${sumPanels}`);
   // 이빨 — D·H 를 바꿔 넣은 모델은 같은 도면에 맞으면 안 된다(맞으면 이 대조가 아무것도 안 재는 것이다).
   const swapped = matchRects(PANELS[c.id](W, H, D), drawn0);
   dt(`${c.file} 이빨(D↔H 바꾼 모델은 불일치)`, D === H || swapped < drawn0.length, `바꿔도 ${swapped}/${drawn0.length}`);
@@ -344,6 +350,22 @@ import { buildQuote } from "../src/domain/quote.mjs";
     // 규격도 식(여유분 없음)은 뚜껑이 덮어 가는 변을 D 로 받는다 — 이 칼선은 그 변이 220 이다(접는선 바닥 219).
     const sp = calcNetSize(210, 220, 110, "gtype_spec");
     rt("[칼선] ★ gtype_spec(W=210·D=220) = 실측 658×770.5 (0.2mm 이내 — 이 구조의 여유분이 이 칼선에서 왔다)", Math.abs(sp.netH - L) < 0.2 && Math.abs(sp.netW - Sx) < 0.2, `식 ${sp.netW}×${sp.netH} vs ${Sx.toFixed(1)}×${L.toFixed(1)}`);
+    // ★ 도면 그리기 — 우리 윤곽(cuts)의 꼭짓점이 실물 칼선 선분에서 얼마나 떨어지나(26-10-05 · 꽂이 곡선 점표 포함).
+    //   실물은 y 가 위로, 긴 축이 x 다 → 우리 좌표(x 짧은 축 · y 긴 축 · 꽂이 끝 y=0)로 돌려 잰다.
+    {
+      const die = inner.flatMap(c => c.polygons).map(poly => poly.map(q => [(q[1] ?? q.y) - y0, x1 - (q[0] ?? q.x)]));
+      const dl = dielinePieces(210, 220, 110, "gtype_spec");
+      const dseg = (p, a, b) => { const dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy;
+        const t = L2 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2)) : 0;
+        return Math.hypot(p[0] - (a[0] + t * dx), p[1] - (a[1] + t * dy)); };
+      const dist = p => { let m = Infinity; for (const q of die) for (let i = 0; i + 1 < q.length; i++) m = Math.min(m, dseg(p, q[i], q[i + 1])); return m; };
+      const ds = dl.cuts[0].map(dist).sort((a, b) => a - b);
+      const med = ds[ds.length >> 1], p90 = ds[Math.floor(ds.length * 0.9)], mx = ds[ds.length - 1];
+      rt("[도면] 우리 윤곽 꼭짓점 → 실물 칼선 선분: max ≤ 1.2mm · 중앙 ≤ 0.1mm", mx <= 1.2 && med <= 0.1, `중앙 ${med.toFixed(2)} · p90 ${p90.toFixed(2)} · max ${mx.toFixed(2)}`);
+      rt("[도면] 윤곽은 닫혀 있고 bbox = 전개도 · 접는선 16 · 이름표 11", dl.cuts.length === 1 && dl.cuts[0][0][0] === dl.cuts[0].at(-1)[0] && dl.cuts[0][0][1] === dl.cuts[0].at(-1)[1] &&
+        Math.abs(Math.max(...dl.cuts[0].map(p => p[0])) - 658) < 0.05 && Math.abs(Math.max(...dl.cuts[0].map(p => p[1])) - 770.5) < 0.05 && dl.folds.length === 16 && dl.panels.length === 11);
+      console.log(`  ✓ [도면] 우리 윤곽 ${dl.cuts[0].length}점 → 실물 선: 중앙 ${med.toFixed(2)} · p90 ${p90.toFixed(2)} · max ${mx.toFixed(2)} mm · 접는선 ${dl.folds.length} · 이름표 ${dl.panels.length}`);
+    }
     console.log(`  ✓ [칼선 직독] 실측 ${L.toFixed(1)}×${Sx.toFixed(1)} · gtype_tray 식 ${net.netH}×${net.netW} (Δ ${(net.netH - L).toFixed(1)} / +${(net.netW - Sx).toFixed(1)}) · gtype_spec 식 ${sp.netH}×${sp.netW} (Δ ${(sp.netH - L).toFixed(1)} / ${(sp.netW - Sx).toFixed(1)})`);
     console.log(`  ※ 파서 1순위는 ${r.bbox.w}×${r.bbox.h} — 칼선의 **오른쪽 절반뿐**이다(좌우 두 성분 · 좌우 병합은 막혀 있다). 문서화된 한계.`);
   } else console.log("  ⏭ 실물 칼선 PDF 가 없다(회사 폴더 · GTYPE_DIE 로 경로 지정) — **칼선은 읽지 않았다.** 견적서 대조만 돌았다.");
