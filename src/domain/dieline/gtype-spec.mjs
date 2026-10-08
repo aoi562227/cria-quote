@@ -57,11 +57,19 @@ const grid = (W, D, H, a) => {
 };
 
 /**
- * 모양 상수 — 모자 칼선(H=110 · D=220)에서 읽은 값을 **H 비례**로 옮긴 것. 괄호가 실측(mm)이다.
- *   꽂이 : 길이 H−2(108) · 뿌리가 뚜껑 밖으로 tuckRoot(70.8) · 가장 넓은 자리 tuckBulge(98.5) 가 끝에서 tuckBulgeY(66.6)
- *   옆날개: 깊이 H−3.5(106.5) · 꼭짓점 틈 3.7 · 비탈 ↓47.4 →100.2 · 모서리 r15
- *   모서리 날개: 길이 H−19.5(90.5) · 바깥 모서리 r10 · 앞벽 쪽은 벽 끝에서 1 안쪽
- *   안벽 탭: 폭 41 · 깊이 3.5 · 모따기 2 · 바닥 중심에서 ±0.215·D(±47)
+ * 모양 상수 — 모자 칼선(H=110 · D=220)의 값을 **H 비례**로 옮기되, **접기 조건으로 깎는다** (26-10-08).
+ *   모자 원값(괄호): 꽂이 어깨 0.9162H(100.8) · 옆날개 깊이 H−3.5(106.5) · 비탈 ↓0.431H(47.4) →0.911H · r15
+ *                    · 모서리 날개 H−19.5(90.5) · r10 · 탭 41 × 3.5 · 모따기 2 · 바닥 중심 ±0.2146·D
+ *   ★ 왜 깎나 — 실물 3장(모자 H110 · 유니다 H75.5 · 아이엠 H45.5)을 맞대 보니 **장식 치수는 H 비례가 아니다.**
+ *     두꺼운 벽 2장은 같은 설계자인데 옆날개 깊이가 50 · 48(H 가 30 다른데 거의 같다) · 꽂이 어깨가 min(50, ·) ·
+ *     모서리 날개가 D/2−3 · D/2 · 탭이 D/4 다 — 「표준 치수 · 상자가 작으면 줄인다」와 「D 를 따른다」.
+ *     얇은 벽 실물은 모자 1장뿐이라 그 값을 버리지 않고, 실물 3/3 이 지키는 **접기 관계**를 상한으로 건다:
+ *       P1 모서리 날개 앞+뒤 ≤ 옆벽 길이   → flap ≤ 옆벽길이/2 − 1.5   (두꺼운 벽 2/2: D/2−3 + D/2 = D−3)
+ *       P2 옆날개 깊이 ≤ 안벽 높이          → earDepth = H−3.5 (모자 그대로 · 안벽 H+2.5 에서 6 여유)
+ *       P3 옆날개가 뚜껑 안에 들어간다      → 비탈 높이를 뚜껑 길이로 깎는다 (D ≪ H 에서 날개가 꼬이던 자리)
+ *       P4 꽂이 어깨 ≤ 옆날개 깊이          → 어깨 폭을 earDepth 로 깎는다 (실물 3/3: 100.8≤106.5 · 50≤50 · 42≤48)
+ *   모자(210×220×110)에서는 어느 상한도 안 걸린다 — 실물 재현(최대 1.0mm)은 그대로다.
+ *   ⚠ 이 상수들은 **그림만** 바꾼다. 전개도 크기(grid)와 배치 조각의 바깥 경계는 패널 격자가 정하므로 견적 금액·판걸이는 안 움직인다.
  */
 /** 꽂이 어깨 곡선 — 모자 칼선(H=110)의 꼭짓점 25개를 (바깥쪽 거리/H, 끝에서 거리/H)로 적은 것. 끝(0,0)에서 뿌리(0.64, 0.98)까지. */
 export const TUCK_PROFILE = [
@@ -70,14 +78,28 @@ export const TUCK_PROFILE = [
   [0.9095, 0.7693], [0.9003, 0.8011], [0.8871, 0.8318], [0.87, 0.8611], [0.8495, 0.8879], [0.826, 0.9118],
   [0.8, 0.9325], [0.7718, 0.9497], [0.7418, 0.9635], [0.7102, 0.9735], [0.6773, 0.9797], [0.6435, 0.9818],
 ];
+const TUCK_OUT_MAX = Math.max(...TUCK_PROFILE.map(p => p[0]));          // 0.9162
+const TUCK_DOWN_END = TUCK_PROFILE.at(-1)[1];                           // 0.9818
 
-export function shape(H, D) {
+export function shape(W, D, H, a = ALLOW) {
   const r = v => Math.max(0, v);
+  const innerH = H + a.inner, sideLen = D + a.baseD, lidLen = D + a.lid, tuckLen = H + a.tuck;
+  const earDepth = Math.min(r(H - 3.5), innerH);                                      // P2
+  const earGap = Math.min(3.7, H / 4, lidLen / 6);
+  const earSlantX = Math.min(r(0.911 * H), r(earDepth - 2));
+  const earR0 = Math.min(15, H / 7);
+  const room = r(lidLen / 2 - earGap);                                                // P3 — 비탈+모서리가 뚜껑 반을 못 넘는다
+  const earR = Math.min(earR0, room / 2);
+  const earSlantY = Math.min(r(0.431 * H), r(room - earR));
+  const shoulder = Math.min(TUCK_OUT_MAX * H, earDepth);                              // P4
+  const flap = Math.min(r(H - 19.5), r(sideLen / 2 - 1.5));                           // P1
+  const tabW = Math.min(41, 0.186 * D), tabC = Math.min(2, tabW / 4), tabAt = 0.2146 * D;
   return {
-    tuckRoot: r(0.644 * H), tuckBulge: r(0.895 * H), tuckBulgeY: r(0.617 * (H - 2)),
-    earDepth: r(H - 3.5), earGap: Math.min(3.7, H / 4), earSlantY: r(0.431 * H), earSlantX: Math.min(r(0.911 * H), r(H - 5.5)), earR: Math.min(15, H / 7),   // 비탈이 날개 깊이를 넘지 않게(H<39 보호)
-    flap: r(H - 19.5), flapR: Math.min(10, r(H - 19.5) / 2), frontIn: 1,
-    tabW: Math.min(41, D / 4), tabD: 3.5, tabC: 2, tabAt: 0.2146 * D,
+    innerH, sideLen, lidLen, tuckLen,
+    tuckKx: shoulder / TUCK_OUT_MAX, tuckKy: tuckLen / TUCK_DOWN_END, shoulder,
+    earDepth, earGap, earSlantX, earSlantY, earR,
+    flap, flapR: Math.min(10, flap / 2), frontIn: Math.min(1, H / 10),
+    tabW, tabD: Math.min(3.5, innerH / 4), tabC, tabAt,
   };
 }
 
@@ -126,14 +148,14 @@ export default {
   pieces(W, D, H) {
     const g = grid(W, D, H, ALLOW), x = g.x, y = g.y;
     const [xA0, xA1, xC0, xC1, xB1, xE] = x, [, yT, yL, yK, yB, yF] = y;
-    const S = shape(H, D);
+    const S = shape(W, D, H);
     const mid = (xC0 + xC1) / 2;
     // ── 왼쪽 반 윤곽: 꽂이 끝(xC0,0)에서 시계 반대 방향으로 내려가 앞벽 아래 가운데(mid,yF)까지 ──
     const L = [];
     const arc = (cx, cy, rx, ry, a0, a1, n = 8) => { for (let i = 1; i <= n; i++) { const t = a0 + (a1 - a0) * i / n; L.push([cx + rx * Math.cos(t), cy + ry * Math.sin(t)]); } };
     const curve = (p0, c, p1, n = 5) => { for (let i = 1; i <= n; i++) { const t = i / n, u = 1 - t; L.push([u * u * p0[0] + 2 * u * t * c[0] + t * t * p1[0], u * u * p0[1] + 2 * u * t * c[1] + t * t * p1[1]]); } };
-    // 꽂이 어깨 — 실물 곡선을 H 비례 점표(TUCK_PROFILE)로 그대로 옮긴다(타원 근사는 최대 6.5mm 벗어났다).
-    for (const [out, down] of TUCK_PROFILE) L.push([xC0 - out * H, Math.min(down * H, yT)]);
+    // 꽂이 어깨 — 실물 곡선 점표(TUCK_PROFILE). 가로는 어깨 폭(P4 로 깎인 값), 세로는 꽂이 길이에 맞춘다(모자에서는 둘 다 H 와 같다).
+    for (const [out, down] of TUCK_PROFILE) L.push([xC0 - out * S.tuckKx, down * S.tuckKy]);
     L.push([xC0, yT], [xC0, yT + S.earGap]);                                                 // 뚜껑 끝 모서리 · 옆날개 꼭짓점 틈
     const ya = yT + S.earGap, yb = yL - S.earGap, xEar = xC0 - S.earDepth;
     L.push([xC0 - S.earSlantX, ya + S.earSlantY]);
@@ -146,16 +168,20 @@ export default {
     arc(xFl + S.flapR, yL + S.flapR, S.flapR, S.flapR, -Math.PI / 2, -Math.PI, 4);
     L.push([xFl, yK], [xA1, yK], [xA0 + S.tabD, yK]);                                       // 날개 아래 → 바깥벽·안벽 윗변
     const cB = (yK + yB) / 2;                                                                 // 안벽 바깥 변 — 탭 2개
+    const tabs = [];
     for (const cy of [cB - S.tabAt, cB + S.tabAt]) {
       L.push([xA0 + S.tabD, cy - S.tabW / 2 - S.tabC], [xA0, cy - S.tabW / 2], [xA0, cy + S.tabW / 2], [xA0 + S.tabD, cy + S.tabW / 2 + S.tabC]);
+      tabs.push([cy - S.tabW / 2 - S.tabC, cy + S.tabW / 2 + S.tabC]);
     }
     L.push([xA0 + S.tabD, yB], [xA1, yB], [xC0 - S.flap, yB]);                              // 안벽·바깥벽 아랫변 → 앞벽 모서리 날개
     const yFf = yF - S.frontIn;
     L.push([xC0 - S.flap, yFf - S.flapR]);
     arc(xC0 - S.flap + S.flapR, yFf - S.flapR, S.flapR, S.flapR, Math.PI, Math.PI / 2, 4);
     L.push([xC0, yFf], [xC0, yF], [mid, yF]);
-    const R = L.slice().reverse().map(([px, py]) => [2 * mid - px, py]);
-    const outline = [...L, ...R, L[0]];
+    // 같은 자리 연속 점(깎여서 0 이 된 모서리)을 지운다 — 윤곽 검사(G2)가 길이 0 변을 꺾임으로 오인하지 않게
+    const Lc = L.filter((p, i) => i === 0 || Math.abs(p[0] - L[i - 1][0]) > 1e-9 || Math.abs(p[1] - L[i - 1][1]) > 1e-9);
+    const R = Lc.slice().reverse().map(([px, py]) => [2 * mid - px, py]);
+    const outline = [...Lc, ...R.slice(1), Lc[0]];
     // ── 접는선 ──
     const folds = [
       [[xC0, yT], [xC1, yT]], [[xC0, yL], [xC1, yL]], [[xC0, yK], [xC1, yK]], [[xC0, yB], [xC1, yB]],   // 가운데 열 가로 접는선
@@ -169,7 +195,8 @@ export default {
     // ── 배치용 조각 (덮개) ──
     const pieces = [
       rect(xC0, 0, xC1, yF),                                   // 가운데 열
-      rect(xC0 - S.tuckBulge, 0, xC0, yT), rect(xC1, 0, xC1 + S.tuckBulge, yT),   // 꽂이 어깨
+      // ★ 26-10-08 — 종전 폭 0.895H 는 그려진 어깨(0.9162H)보다 **좁았다**(gtype-physics G4 · 스윕 175/175 걸림 · 판 위 겹침을 놓칠 수 있었다).
+      rect(xC0 - S.shoulder, 0, xC0, yT), rect(xC1, 0, xC1 + S.shoulder, yT),   // 꽂이 어깨
       rect(xA1, yT, xC0, yF), rect(xC1, yT, xB1, yF),         // 바깥벽 열(옆날개·모서리·바깥벽·모서리)
       rect(xA0, yK, xA1, yB), rect(xB1, yK, xE, yB),           // 안벽
     ];
@@ -186,6 +213,10 @@ export default {
       lab("안벽", xA0, xA1, (yK + yB) / 2), lab("안벽", xB1, xE, (yK + yB) / 2),
       lab("날개", xEar, xC0, (yT + yL) / 2), lab("날개", xC1, xC1 + S.earDepth, (yT + yL) / 2),
     ];
-    return { pieces, meta, cuts: [outline], folds, panels };
+    // 접기 치수 — test/gtype-physics.mjs 가 P1~P5 를 이것으로 잰다(생성기가 실제로 쓴 값).
+    const geo = { flapBack: S.flap, flapFront: S.flap, sideLen: yB - yK, earDepth: S.earDepth, innerH: xA1 - xA0,
+                  earGap: S.earGap, earSlantY: S.earSlantY, earR: S.earR, lidLen: yL - yT, shoulder: S.shoulder,
+                  tabs, innerY0: yK, innerY1: yB };
+    return { pieces, meta, cuts: [outline], folds, panels, geo };
   },
 };

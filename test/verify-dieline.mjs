@@ -427,3 +427,97 @@ import { buildQuote } from "../src/domain/quote.mjs";
   for (const f of wFail) console.log(`  ✗ ${f}`);
   if (wFail.length) process.exitCode = 1;
 }
+
+
+// ══════════════════════════════════════════════════════════════════
+//  G형 도면 생성기 — 칼선 없이 하는 검증 (26-10-08)
+//
+//  사용자: 「더는 G형 칼선을 얻을 수 없다 — 네가 직접 해라 · 할 수 있는 만큼 다 하고 검증까지」.
+//  칼선 3장(모자 · 유니다 · 아이엠) 밖의 크기에서도 도면이 **물리적으로 성립하는지**를 잰다.
+//    ① 접기 검사 스윕 — 두 생성기 × 175 크기(gtype-physics.mjs: 윤곽 단순성 · 전개도 안 · 덮개 · 날개·탭 접기 조건)
+//    ② 검사기의 이빨 — 일부러 망가뜨린 도면을 각 검사가 잡는가(검사가 아무것도 안 재면 ①은 거짓 초록이다)
+//    ③ 두꺼운 벽 도면 = 실물 2장 (치수는 박아 두고, 칼선 파일이 있으면 윤곽까지)
+//    ④ 「H 비례」가 왜 틀렸나 — 한 장에서 H 비례로 다른 장을 예측하면 얼마나 빗나가는가 vs 우리 규칙
+// ══════════════════════════════════════════════════════════════════
+import { checkGtype, SWEEP } from "./gtype-physics.mjs";
+import { thickGeom, thickPieces, SLACK as THICK_SLACK } from "../src/domain/dieline/gtype-tray.mjs";
+{
+  console.log("\n═══ G형 도면 생성기 — 칼선 없이 하는 검증 ═════════════════════════════════════");
+  let gOk = 0; const gFail = [];
+  const gt = (label, cond, note = "") => { if (cond) gOk++; else gFail.push(label + (note ? " — " + note : "")); };
+
+  // ① 스윕
+  for (const id of ["gtype_spec", "gtype_tray"]) {
+    const bad = [];
+    for (const [W, D, H] of SWEEP) bad.push(...checkGtype(dielinePieces(W, D, H, id), `${W}x${D}x${H}`));
+    gt(`① ${id} 접기 검사 스윕 ${SWEEP.length}건 위반 0`, bad.length === 0, bad.slice(0, 3).join(" | "));
+    console.log(`  ${bad.length ? "✗" : "✓"} ① ${id.padEnd(11)} 스윕 ${SWEEP.length}건 (W 40~500 · D 40~500 · H 10~200) — 위반 ${bad.length}`);
+  }
+
+  // ② 이빨 — 멀쩡한 도면을 하나씩 망가뜨린다
+  const base = () => JSON.parse(JSON.stringify(dielinePieces(220, 210, 110, "gtype_tray")));
+  const hits = (dl, code) => checkGtype(dl).some(b => b.split(" ")[1] === code);
+  const T = [];
+  { const d = base(); const o = d.cuts[0]; [o[5], o[40]] = [o[40], o[5]]; T.push(["G2 윤곽 꼬임", hits(d, "G2")]); }
+  { const d = base(); d.cuts[0][7] = [d.net.netW + 9, 3]; T.push(["G3 전개도 밖", hits(d, "G3")]); }
+  { const d = base(); d.pieces.splice(1, 1); T.push(["G4 덮개 빠짐", hits(d, "G4")]); }
+  { const d = base(); d.pieces.push(d.pieces[0]); T.push(["G4 조각 겹침", hits(d, "G4")]); }
+  { const d = base(); d.geo.flapFront = d.geo.sideLen; T.push(["P1 모서리날개 넘침", hits(d, "P1")]); }
+  { const d = base(); d.geo.earDepth = d.geo.innerH + 5; T.push(["P2 옆날개 > 안벽", hits(d, "P2")]); }
+  { const d = base(); d.geo.earSlantY = d.geo.lidLen; T.push(["P3 옆날개 > 뚜껑", hits(d, "P3")]); }
+  { const d = base(); d.geo.shoulder = d.geo.earDepth + 5; T.push(["P4 어깨 > 옆날개", hits(d, "P4")]); }
+  { const d = base(); d.geo.tabs[1] = [d.geo.tabs[0][0], d.geo.tabs[0][1]]; T.push(["P5 탭 겹침", hits(d, "P5")]); }
+  for (const [name, ok] of T) gt(`② 이빨 — ${name} 을 잡는다`, ok);
+  console.log(`  ${T.every(t => t[1]) ? "✓" : "✗"} ② 검사기 이빨 ${T.filter(t => t[1]).length}/${T.length} — ` + T.map(([n, ok]) => `${ok ? "" : "✗"}${n}`).join(" · "));
+
+  // ③ 두꺼운 벽 = 실물 2장 — 접는선·윤곽에서 잰 치수(mm). 칼선 파일은 저장소 밖이라 수치를 박아 둔다.
+  const THICK = [
+    { name: "유니다 240809", dims: [94, 100, 75.5], file: "C:/이예찬_업무/private/도면/견적용도면/240809_유니다/240809_유니다.pdf",
+      m: { xIn: 82, xSt: 90, xb: 173, xl0: 180, xf0: 176, yT: 80, yL: 183, yK: 263, yB: 363, yF: 441, E: 50, R: 50, rc: 8, fb: 47, ff: 50, tl: 25, W: 440 } },
+    { name: "아이엠 240807", dims: [394, 130, 45.5], file: "C:/이예찬_업무/private/도면/견적용도면/240807_아이엠/G형.pdf",
+      m: { xIn: 52, xSt: 60, xb: 113, xl0: 120, xf0: 116, yT: 50, yL: 183, yK: 233, yB: 363, yF: 411, E: 48, R: 42, rc: 5, fb: 62, ff: 65, tl: 33, W: 620 } },
+  ];
+  for (const t of THICK) {
+    const g = thickGeom(...t.dims);
+    const off = Object.entries(t.m).map(([k, v]) => [k, v, g[k]]).filter(([k, v, w]) => Math.abs(v - w) > (k === "tl" ? 0.6 : 0.05));
+    gt(`③ ${t.name} 치수 ${Object.keys(t.m).length}개 = 실측`, off.length === 0, off.map(([k, v, w]) => `${k} 실측 ${v} · 우리 ${w}`).join(" · "));
+    console.log(`  ${off.length ? "✗" : "✓"} ③ ${t.name}  치수 ${Object.keys(t.m).length - off.length}/${Object.keys(t.m).length} 일치 (꽂이 H+4.5 · 어깨 R${g.R}/r${g.rc} · 옆날개 ${g.E} · 모서리날개 ${g.fb}/${g.ff} · 탭 ${g.tl})` +
+      (off.length ? "  어긋남: " + off.map(([k, v, w]) => `${k} ${v}→${w}`).join(" ") : ""));
+    if (existsSync(t.file)) {
+      const r = await readDieline(readFileSync(t.file), { source: t.name, maxCandidates: 4 });
+      const polys = r.candidates[0].polygons.map(q => q.map(v => [v[0] ?? v.x, v[1] ?? v.y]));
+      const xs = polys.flat().map(p => p[0]), ys = polys.flat().map(p => p[1]);
+      const X0 = Math.min(...xs), Y1 = Math.max(...ys);
+      const die = polys.map(q => q.map(([x, y]) => [x - X0, Y1 - y]));                  // 꽂이 끝 y=0 · 왼쪽 탭 끝 x=0
+      const dseg = (p, a, b) => { const dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy;
+        const u = L2 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2)) : 0;
+        return Math.hypot(p[0] - (a[0] + u * dx), p[1] - (a[1] + u * dy)); };
+      const dl = thickPieces(...t.dims);
+      const ds = dl.cuts[0].map(([x, y]) => [x - THICK_SLACK.x, y - THICK_SLACK.y]).map(p => {
+        let m = Infinity; for (const q of die) for (let i = 0; i + 1 < q.length; i++) m = Math.min(m, dseg(p, q[i], q[i + 1])); return m; }).sort((a, b) => a - b);
+      const mx = ds.at(-1);
+      gt(`③ [칼선] ${t.name} 우리 윤곽 → 실물 선 최대 ≤ 0.5mm`, mx <= 0.5, `최대 ${mx.toFixed(2)}`);
+      console.log(`  ✓ ③ [칼선 직독] ${t.name}  우리 윤곽 ${ds.length}점 → 실물 선: 중앙 ${ds[ds.length >> 1].toFixed(2)} · 최대 ${mx.toFixed(2)} mm`);
+    } else console.log(`  ⏭ ③ ${t.name} 칼선 PDF 가 없다(회사 폴더) — **윤곽은 대조하지 않았다.** 박아 둔 치수 대조만 돌았다.`);
+  }
+
+  // ④ H 비례 대안의 교차 예측 — 한 장의 장식 치수를 H 비례로 다른 장에 옮겼을 때 vs 우리 규칙
+  const FEAT = { "옆날개 깊이": ["E"], "꽂이 어깨": ["R"], "뒷벽 모서리날개": ["fb"], "탭 길이": ["tl"] };
+  const [A, B] = THICK;
+  let worstProp = 0, worstRule = 0; const rows = [];
+  for (const [nm, [k]] of Object.entries(FEAT)) for (const [src, dst] of [[A, B], [B, A]]) {
+    const prop = src.m[k] * dst.dims[2] / src.dims[2];
+    const rule = thickGeom(...dst.dims)[k];
+    const eP = Math.abs(prop - dst.m[k]), eR = Math.abs(rule - dst.m[k]);
+    worstProp = Math.max(worstProp, eP); worstRule = Math.max(worstRule, eR);
+    rows.push(`${nm} ${src.name.slice(0, 3)}→${dst.name.slice(0, 3)}: 실측 ${dst.m[k]} · H비례 ${prop.toFixed(1)} · 규칙 ${rule}`);
+  }
+  gt("④ 우리 규칙의 교차 예측 오차 ≤ 0.6mm", worstRule <= 0.6, `최대 ${worstRule.toFixed(2)}`);
+  gt("④ H 비례 대안은 크게 빗나간다(> 10mm) — 비례로 되돌리면 이 줄이 이유를 말해 준다", worstProp > 10, `최대 ${worstProp.toFixed(1)}`);
+  console.log(`  ✓ ④ 교차 예측 최대 오차 — H 비례 ${worstProp.toFixed(1)}mm vs 우리 규칙 ${worstRule.toFixed(2)}mm`);
+  for (const r of rows) console.log(`       ${r}`);
+
+  console.log(`G형 도면 생성기 검증 ${gOk}/${gOk + gFail.length} 통과`);
+  for (const f of gFail) console.log(`  ✗ ${f}`);
+  if (gFail.length) process.exitCode = 1;
+}

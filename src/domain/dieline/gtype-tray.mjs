@@ -50,18 +50,135 @@
  *   ★ 영상 142545450(분홍 상자를 펼치는 장면)이 이 변종의 위상을 받친다 — **앞벽 한 겹**(뚜껑 꽂이가 반달 홈에 끼워진다) ·
  *     옆벽 두 겹 · 모서리 날개 있음 · 뚜껑 옆 귀. ★ 사용자 결정(26-10-02): **G형 기준은 앞벽 한 겹**이다 — gtype_spec 도 한 겹으로 고쳤다
  *     (규격 도면의 「앞벽 아래 칸」은 실수). 영상 143436612 의 상자는 앞벽을 접어 넘기지만 이 앱의 기준이 아니다.
- *   ⚠ 폴리곤은 아직 없다. 이 칼선은 뚜껑 꽂이가 둥글고 뒷벽 옆에 사다리꼴 날개가 있어(직사각 패널이 아니다)
- *     1건으로 일반식을 세우면 지어내는 것이다. 게이트: verify-dieline 「실물 견적서·칼선 대조」.
  *
- * polygon:false — 칼선 폴리곤 미확정. 배치는 netW×netH 직사각 1조각.
+ * ★★ 26-10-08 — **도면을 그린다(polygon:true).** 사용자: 「더는 G형 칼선을 얻을 수 없다 — 네가 직접 해라 · 검증까지」.
+ *   두꺼운 벽 실물 2장(유니다 W94·D100·H75.5 · 아이엠 W394·D130·H45.5 — 같은 설계자)에서 **2/2 로 성립하는 규칙만** 썼다:
+ *     가로  안벽 H+6.5(탭 깊이 4 포함) · 띠 8 · 바깥벽 H+7.5 · 바닥 W · 뚜껑 W−14 · 앞벽 W−6
+ *     세로  꽂이 H+4.5 · 뚜껑 D+3 · 뒷벽 H+4.5 · 바닥 D · 앞벽 H+2.5
+ *     꽂이 어깨  사분원 반지름 min(50, 어깨높이−5) · 모서리 r min(8, 남은 높이)         (유니다 50/8 · 아이엠 42/5)
+ *     옆날개    깊이 min(50, 안벽−4) · 비탈 15° · 모서리 r12.5                      (유니다 50 · 아이엠 48 · 둘 다 15°)
+ *     모서리날개 뒷벽 D/2−3 · 앞벽 D/2 (위·아래 틈 1.5·3)                           (유니다 47/50 · 아이엠 62/65)
+ *     안벽 탭    길이 D/4 · 바닥 중심 ±D/4 · 깊이 4 · 모따기 1.5                     (유니다 25 @±25 · 아이엠 33 @±32.5)
+ *   ⚠ 「H 비례」가 아니다 — 옆날개 깊이는 H 가 30 다른 두 장에서 50·48 이다. 표준 50 을 쓰고 얕은 상자에서 줄인다.
+ *   ⚠ 전개도 크기는 **위 netSize 식 그대로**다(bbox 4건 · +44.5/+19.5). 실물 2장의 크기(+44/+14.5)보다 0.5/5mm 크다 —
+ *     그 차이는 꽂이 끝 위쪽 5mm · 좌우 0.25mm 여백으로 둔다(배치 조각이 덮는다 · 그리지 않는다). 식을 줄이면 견적이 싸진다.
+ *   ⚠ 작은 상자 보호(검증: test/gtype-physics 스윕) — 뚜껑이 짧으면 옆날개를 줄이고, 모서리날개는 전개도 밖으로 못 나가게 깎는다.
+ *   게이트: verify-dieline 「G형 두꺼운 벽 도면」 — 실물 2장과 윤곽 대조 · 스윕 175건 접기 검사.
  */
+import { rect } from "./geometry.mjs";
+
+const SIN15 = Math.sin(Math.PI / 12), COS15 = Math.cos(Math.PI / 12), TAN15 = Math.tan(Math.PI / 12);
+/** 식(netSize)이 실물 2장보다 큰 만큼 — 꽂이 끝 위쪽 · 좌우 여백으로 둔다. */
+export const SLACK = { x: 0.25, y: 5 };
+
+/** 실물 좌표(여백 전)의 치수 — 도면·검사가 같이 읽는다. */
+export function thickGeom(W, D, H) {
+  const xIn = H + 6.5, xSt = H + 14.5, xb = 2 * H + 22, xbR = xb + W;
+  const xl0 = xb + 7, xl1 = xbR - 7, xf0 = xb + 3, xf1 = xbR - 3;
+  const yT = H + 4.5, yL = yT + D + 3, yK = yL + H + 4.5, yB = yK + D, yF = yB + H + 2.5;
+  const lidLen = D + 3;
+  // 옆날개 — 깊이 min(50, 안벽−4), 뚜껑이 짧으면 비탈·모서리를 줄인다(P3)
+  let r = Math.min(12.5, Math.max(0, (lidLen / 2 - 1.5) / 2 / COS15));
+  let E = Math.min(50, xIn - 4);
+  const Emax = 1.1 + (1 - SIN15) * r + Math.max(0, lidLen / 2 - 1.5 - COS15 * r) / TAN15;
+  E = Math.max(0, Math.min(E, Emax, xl0));
+  if (E < 1.1 + (1 - SIN15) * r) r = Math.max(0, (E - 1.1) / (1 - SIN15));
+  const drop = Math.max(0, (E - 1.1 - (1 - SIN15) * r) * TAN15);
+  // 꽂이 어깨
+  const S = yT - 3;
+  const R = Math.max(0, Math.min(50, S - 5, E));
+  const rc = Math.max(0, Math.min(8, S - R));
+  // 모서리 날개 — 전개도 밖으로 못 나간다
+  const fb = Math.max(0, Math.min(D / 2 - 3, xb));
+  const ff = Math.max(0, Math.min(D / 2, xf0));
+  const tl = D / 4, cB = (yK + yB) / 2;
+  return { xIn, xSt, xb, xbR, xl0, xl1, xf0, xf1, yT, yL, yK, yB, yF, lidLen, E, r, drop, R, rc, fb, ff, tl, cB,
+           W: 2 * xb + W, H: yF };
+}
+
+export function thickPieces(W, D, H) {
+  const g = thickGeom(W, D, H);
+  const { xIn, xSt, xb, xbR, xl0, xl1, xf0, xf1, yT, yL, yK, yB, yF, E, r, drop, R, rc, fb, ff, tl, cB } = g;
+  const mid = (xb + xbR) / 2;
+  const L = [];
+  const arc = (cx, cy, rad, a0, a1, n = 6) => { for (let i = 1; i <= n; i++) { const t = a0 + (a1 - a0) * i / n; L.push([cx + rad * Math.cos(t), cy + rad * Math.sin(t)]); } };
+  // 꽂이 끝 → 어깨(사분원) → 세로 → 모서리 → 뿌리 → 뚜껑 모서리
+  L.push([mid, 0], [xb + 1.5, 0], [xb, 1.5]);
+  arc(xb, 1.5 + R, R, -Math.PI / 2, -Math.PI, 8);
+  L.push([xb - R, yT - 1.5 - rc]);
+  arc(xb - R + rc, yT - 1.5 - rc, rc, Math.PI, Math.PI / 2, 4);
+  L.push([xl0 - 1.5, yT - 1.5]);
+  arc(xl0 - 1.5, yT, 1.5, -Math.PI / 2, 0, 2);
+  // 옆날개 (위 반) — 15° 비탈 → 모서리 r → 세로
+  const xEar = xl0 - E;
+  const ty = yT + 1.5 + drop, cy = ty + r * COS15;
+  L.push([xl0 - 1.1, yT + 1.5], [xEar + (1 - SIN15) * r, ty]);
+  arc(xEar + r, cy, r, -Math.PI + Math.PI * 75 / 180, -Math.PI, 4);
+  // 아래 반(뚜껑 가운데 기준 거울)
+  const ym = (yT + yL) / 2, cy2 = 2 * ym - cy, ty2 = 2 * ym - ty;
+  L.push([xEar, cy2]);
+  arc(xEar + r, cy2, r, Math.PI, Math.PI - Math.PI * 75 / 180, 4);
+  L.push([xl0 - 1.1, yL - 1.5], [xl0, yL]);
+  // 뒷벽 모서리날개 → 바깥벽 윗변 틈 → 띠 → 안벽(탭) → 띠 → 바깥벽 아랫변 → 앞벽 모서리날개
+  L.push([xl0 - 1.5, yL + 1.5], [xb - fb, yL + 1.5], [xb - fb, yK - 3], [xb - 1.5, yK - 3], [xb, yK - 1.5], [xb - 1.5, yK]);
+  L.push([xSt, yK], [xIn, yK + 3], [4, yK + 3]);
+  const tabs = [];
+  for (const c of [cB - tl, cB + tl]) {
+    L.push([4, c - tl / 2], [0, c - tl / 2 + 1.5], [0, c + tl / 2 - 1.5], [4, c + tl / 2]);
+    tabs.push([c - tl / 2, c + tl / 2]);
+  }
+  L.push([4, yB - 3], [xIn, yB - 3], [xSt, yB], [xb + 1.5, yB], [xf0, yB + 1.5], [xb + 1.5, yB + 3]);
+  L.push([xf0 - ff, yB + 3], [xf0 - ff, yF], [mid, yF]);
+  const Lc = L.filter((p, i) => i === 0 || Math.abs(p[0] - L[i - 1][0]) > 1e-9 || Math.abs(p[1] - L[i - 1][1]) > 1e-9);
+  const Rr = Lc.slice().reverse().map(([px, py]) => [2 * mid - px, py]);
+  const sh = ([px, py]) => [px + SLACK.x, py + SLACK.y];
+  const outline = [...Lc, ...Rr.slice(1), Lc[0]].map(sh);
+  const seg = (a, b) => [sh(a), sh(b)];
+  const folds = [
+    seg([xl0, yT], [xl1, yT]), seg([xl0, yL], [xl1, yL]), seg([xb, yK], [xbR, yK]), seg([xf0, yB], [xf1, yB]),
+    seg([xl0, yT], [xl0, yL]), seg([xl1, yT], [xl1, yL]),
+    seg([xb, yL], [xb, yK]), seg([xbR, yL], [xbR, yK]),
+    seg([xb, yK], [xb, yB]), seg([xbR, yK], [xbR, yB]),
+    seg([xSt, yK], [xSt, yB]), seg([2 * mid - xSt, yK], [2 * mid - xSt, yB]),
+    seg([xIn, yK + 3], [xIn, yB - 3]), seg([2 * mid - xIn, yK + 3], [2 * mid - xIn, yB - 3]),
+    seg([xf0, yB], [xf0, yF]), seg([xf1, yB], [xf1, yF]),
+  ];
+  // 배치 조각 — 윤곽을 덮는 축정렬 사각형 11개(안 겹침). 위·좌우 여백까지 덮어 bbox = netW×netH 가 된다.
+  const NW = g.W + 2 * SLACK.x, NH = yF + SLACK.y;
+  const X = v => v + SLACK.x, Y = v => v + SLACK.y;
+  const pieces = [
+    rect(X(xb), 0, X(xbR), NH),
+    rect(X(xb - R), 0, X(xb), Y(yT)), rect(X(xbR), 0, X(xbR + R), Y(yT)),
+    rect(X(Math.min(xEar, xb)), Y(yT), X(xb), Y(yL)), rect(X(xbR), Y(yT), X(Math.max(2 * mid - xEar, xbR)), Y(yL)),
+    rect(X(xb - fb), Y(yL), X(xb), Y(yK)), rect(X(xbR), Y(yL), X(xbR + fb), Y(yK)),
+    rect(0, Y(yK), X(xb), Y(yB)), rect(X(xbR), Y(yK), NW, Y(yB)),
+    rect(X(xf0 - ff), Y(yB), X(xb), NH), rect(X(xbR), Y(yB), X(xf1 + ff), NH),
+  ];
+  const meta = [
+    { panel: 1, part: "body" }, { panel: 1, part: "flap" }, { panel: 1, part: "flap" },
+    { panel: 0, part: "flap" }, { panel: 2, part: "flap" }, { panel: 0, part: "flap" }, { panel: 2, part: "flap" },
+    { panel: 4, part: "wall" }, { panel: 4, part: "wall" }, { panel: 0, part: "flap" }, { panel: 2, part: "flap" },
+  ];
+  const lab = (label, x0, x1, yc) => ({ i: label, x0: X(x0), x1: X(x1), y: Y(yc), label });
+  const panels = [
+    lab("꽂이", xb, xbR, yT / 2), lab("뚜껑", xl0, xl1, (yT + yL) / 2), lab("뒷벽", xb, xbR, (yL + yK) / 2),
+    lab("바닥", xb, xbR, (yK + yB) / 2), lab("앞벽", xf0, xf1, (yB + yF) / 2),
+    lab("바깥벽", xSt, xb, (yK + yB) / 2), lab("바깥벽", xbR, 2 * mid - xSt, (yK + yB) / 2),
+    lab("안벽", 0, xIn, (yK + yB) / 2), lab("안벽", 2 * mid - xIn, g.W, (yK + yB) / 2),
+    lab("날개", xEar, xl0, (yT + yL) / 2), lab("날개", xl1, 2 * mid - xEar, (yT + yL) / 2),
+  ];
+  const geo = { flapBack: fb, flapFront: ff, sideLen: D, earDepth: E, innerH: xIn,
+                earGap: 1.5, earSlantY: drop, earR: r * COS15, lidLen: yL - yT, shoulder: R,
+                tabs: tabs.map(([a, b2]) => [Y(a), Y(b2)]), innerY0: Y(yK + 3), innerY1: Y(yB - 3) };
+  return { pieces, meta, cuts: [outline], folds, panels, geo };
+}
 export default {
   // verified 는 라벨 문자열이 아니라 필드다 — 표시(✓)는 UI 가 붙인다.
   // 종전 label 에 「✓칼선실측」을 넣었더니 드롭다운 문자열이 곧 근거 표기가 되어
   // 태그 추출(label 첫 낱말)까지 얽혔다.
   id: "gtype_tray", label: "G형 트레이 (두꺼운 옆벽 · 끼움형)", labelJa: "G型トレー（側壁厚め・差込み）",
   tag: "G형트레이",
-  verified: "bbox 4건(폴리곤 없음)", polygon: false,
+  verified: "bbox 4건 · 실물 칼선 2건(도면)", polygon: true, thomsonDefault: "g_std",
 
   netSize(W, D, H, { hangTab = 0 } = {}) {
     return {
@@ -76,5 +193,8 @@ export default {
     };
   },
 
-  flaps: () => null,
+  // 슬리브 위상이 아니다 — 계약(폴리곤 구조는 flaps 를 준다)용 0 프로파일. 도형은 pieces() 가 만든다.
+  flaps: () => ({ type: "panels", top: [0], bot: [0] }),
+
+  pieces(W, D, H) { return thickPieces(W, D, H); },
 };
