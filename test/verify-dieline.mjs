@@ -521,3 +521,58 @@ import { thickGeom, thickPieces, SLACK as THICK_SLACK } from "../src/domain/diel
   for (const f of gFail) console.log(`  ✗ ${f}`);
   if (gFail.length) process.exitCode = 1;
 }
+
+// ══════════════════════════════════════════════════════════════════
+//  G형 도면 파일 내보내기 — tools/gtype-dieline.mjs (26-10-12)
+//
+//  사용자: 「일단 G형 전개도를 그리는 프로그램을 먼저 작성해 봐」. 그 프로그램이 쓰는 SVG · PDF · DXF 가
+//  **앱 생성기와 같은 도형**인지 잰다. 핵심은 PDF 왕복이다 — 만든 PDF 를 앱 자신의 칼선 PDF 판독기(readDieline)로
+//  다시 읽어 같은 크기가 나와야 한다(치수선·제목이 윤곽 후보를 가로채지 않는다). 통과하면 이 도면을 앱의
+//  「칼선 PDF 올리기」에 넣어도 같은 판걸이가 나온다는 뜻이다.
+// ══════════════════════════════════════════════════════════════════
+import { buildSheet, renderSVG, renderPDF, renderDXF, main as dielineMain } from "../tools/gtype-dieline.mjs";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join as pjoin } from "node:path";
+{
+  console.log("\n═══ G형 도면 파일 내보내기 — SVG · PDF · DXF (tools/gtype-dieline.mjs) ═══════════════");
+  let eOk = 0; const eFail = [];
+  const et = (label, cond, note = "") => { if (cond) eOk++; else eFail.push(label + (note ? " — " + note : "")); };
+  const CASES = [["thin", 210, 220, 110], ["thin", 120, 80, 40], ["thin", 300, 60, 120], ["thick", 94, 100, 75.5], ["thick", 394, 130, 45.5], ["thick", 150, 60, 25]];
+  for (const [wall, W, D, H] of CASES) {
+    const S = buildSheet(W, D, H, wall), tag = `${wall} ${W}×${D}×${H}`;
+    const nSeg = S.dl.cuts[0].length - 1, nFold = S.dl.folds.length;
+    // PDF 왕복
+    const r = await readDieline(renderPDF(S), { source: tag });
+    const okPdf = Math.abs(r.bbox.w - S.box.w) < 0.05 && Math.abs(r.bbox.h - S.box.h) < 0.05;
+    et(`${tag} PDF 왕복 — 앱 판독기가 읽은 크기 = 그린 윤곽`, okPdf, `읽힘 ${r.bbox.w}×${r.bbox.h} vs ${f2x(S.box.w)}×${f2x(S.box.h)}`);
+    // DXF — 도면층별 선 수 · 좌표 유한
+    const dx = renderDXF(S), lines = dx.text.split("\r\n");
+    let cut = 0, crease = 0, bad = 0;
+    for (let i = 0; i < lines.length - 1; i += 2) if (lines[i] === "0" && lines[i + 1] === "LINE") {
+      // 0/LINE · 8/도면층 · 10,20,30,11,21,31/좌표 — 값은 코드 다음 줄이다
+      const lay = lines[i + 3]; if (lay === "CUT") cut++; else if (lay === "CREASE") crease++;
+      for (let j = i + 4; j < i + 16; j += 2) if (!/^[123][01]$/.test(lines[j]) || !Number.isFinite(Number(lines[j + 1]))) bad++;
+    }
+    et(`${tag} DXF CUT ${nSeg}변 · CREASE ${nFold}줄 · 좌표 유한`, cut === nSeg && crease === nFold && bad === 0 && dx.text.endsWith("EOF\r\n"), `CUT ${cut} · CREASE ${crease} · 비수치 ${bad}`);
+    // SVG — 선 수 · 1:1 mm 크기
+    const svg = renderSVG(S);
+    const sc = (svg.match(/class="cut"/g) || []).length, sf = (svg.match(/class="crease"/g) || []).length;
+    et(`${tag} SVG 칼선 ${S.dl.cuts.length} · 오시선 ${nFold} · 크기 mm`, sc === S.dl.cuts.length && sf === nFold && svg.includes(`width="${f2x(S.pageW)}mm"`), `cut ${sc} · crease ${sf}`);
+    console.log(`  ${okPdf ? "✓" : "✗"} ${tag.padEnd(20)} 윤곽 ${f2x(S.box.w)}×${f2x(S.box.h)} · PDF 왕복 ${r.bbox.w}×${r.bbox.h} · DXF CUT ${cut}/CREASE ${crease} · SVG ${sc}/${sf}`);
+  }
+  // 명령줄 — 잘못된 입력은 1, 바른 입력은 파일 3개
+  const dir = mkdtempSync(pjoin(tmpdir(), "gdl-"));
+  const quiet = fn => { const l = console.log; console.log = () => {}; try { return fn(); } finally { console.log = l; } };
+  const rcBad = quiet(() => dielineMain(["210", "220"])), rcGood = quiet(() => dielineMain(["210x220x110", "--out", dir]));
+  const files = readdirSync(dir);
+  et("명령줄 — 치수 2개면 실패(1) · 「210x220x110」이면 svg·pdf·dxf 3개", rcBad === 1 && rcGood === 0 && ["svg", "pdf", "dxf"].every(e => files.some(f => f.endsWith("." + e))), `rc ${rcBad}/${rcGood} · ${files.join(",")}`);
+  let threw = false; try { buildSheet(210, 220, 110, "wide"); } catch { threw = true; }
+  et("명령줄 — 모르는 --wall 은 거부", threw);
+  rmSync(dir, { recursive: true, force: true });
+  console.log(`  ✓ 명령줄 — 잘못된 입력 rc=${rcBad} · 바른 입력 rc=${rcGood} → ${files.length}개 파일`);
+  console.log(`G형 도면 파일 내보내기 ${eOk}/${eOk + eFail.length} 통과`);
+  for (const f of eFail) console.log(`  ✗ ${f}`);
+  if (eFail.length) process.exitCode = 1;
+}
+function f2x(v) { return (Math.round(v * 100) / 100).toString(); }
