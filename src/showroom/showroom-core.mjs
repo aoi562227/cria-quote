@@ -171,9 +171,8 @@ function bodyFolds(dl) {
  *   읽힌다. 그리고 그림은 근사다 — 같은 화면의 출처 줄이 「날개 모양은 표준형 근사입니다」
  *   라고 적고 있다. 두 줄이 같은 크기·같은 대비로 173px 떨어져 마주 서면 더 확언조인
  *   쪽(「근사 없음」)이 이기고, 고객은 우리 근사를 실측으로 읽는다. 적대검증 major 였다.
- *   ⚠ G형·G형트레이는 더 나쁘다 — 그 두 구조는 폴리곤이 확정돼 있지 않아 전개도가
- *     **빈 직사각형 하나**인데(dieline/index.mjs `!st.polygon`), 도형이 사각형이므로
- *     mode 는 여전히 "exact" 다. 「근사 없음」이 붙은 빈 네모가 뜬다.
+ *   ⚠ (26-10-08 갱신) 종전 「G형·G형트레이는 빈 직사각형」은 더는 사실이 아니다 — 두 구조 모두 실물 칼선에서
+ *     세운 도면(윤곽·접는선)을 그린다(gtype-spec.mjs · gtype-tray.mjs). 지금 빈 직사각형은 「직접입력」 하나다.
  *   치수 경로의 정직성은 출처 줄(srcBox / srcOutline)이 소유한다. 두 곳에서 말하지 않는다.
  */
 export const precisionKeyOf = mode =>
@@ -407,7 +406,9 @@ export const STD = {
   fpColor: true, fpSp: "0", fpBk: false, fpUv: false,   // 앞면 원색 4도
   bpColor: false, bpSp: "0", bpBk: false, bpUv: false,  // 뒷면 없음
   beda: false, fcId: "ir", bcId: "none",                // IR 코팅 (앞면)
-  glueId: "dan", thomId: "n",                           // 단면접착 · 일반 톰슨
+  glueId: "dan", thomId: "s",                           // 단면접착 · 단순형 톰슨
+  //  ⚠ thomId 는 **INITIAL_STATE.thomId 와 같은 값**을 유지해라 — 다르면 쇼룸 단독 진입만
+  //    다른 기본값으로 돈다(26-09-16 에 "n" → "s" 로 같이 내렸다 · ui/state.mjs 주석 참조).
   hang: false, mR: false, mPrice: false, lossSheets: "",
 };
 
@@ -853,7 +854,7 @@ const KO = {
   // ★ 출처 한 줄 — 정직성 게이트. 표기의 「값」은 실측이 주지 않는다(우리 관용이다).
   //   **세 갈래다.** 도면이 무엇인지에 따라 말이 달라야 한다:
   //     srcBox     날개·오시선·접착면을 그린 구조 (맞뚜껑·십자·삼면접착)
-  //     srcOutline 폴리곤 미확정 구조 (G형·G형트레이) — 윤곽 사각형만 뜬다.
+  //     srcOutline 폴리곤 미확정 구조 (26-10-08 부터는 「직접입력」뿐 — G형 둘은 도면이 생겨 srcBox 로 간다) — 윤곽 사각형만 뜬다.
   //                「날개 모양은 근사」가 아니다. 날개가 **아예 없다** — 그렇게 적는다.
   //     srcPdf     협력사 칼선 원본 (선 구분이 원본에 없다)
   srcBox: "치수에서 계산한 도면입니다 — 선 구분(칼선·오시선·접착면)은 우리 표기이고, " +

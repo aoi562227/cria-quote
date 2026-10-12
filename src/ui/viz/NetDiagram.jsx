@@ -48,8 +48,9 @@ export default function NetDiagram({ dieline, H }) {
           <DielineShape dl={dieline} color="rgba(120,220,255,0.9)"/>
         </g>
         {/* 패널 라벨 — 경계·이름 모두 domain 이 준 panels */}
-        {panels.map(p => sc(p.x1 - p.x0) > 18 && (
-          <text key={'l' + p.i} x={px((p.x0 + p.x1) / 2)} y={py(yBody + H / 2)}
+        {/* 패널 이름 — 슬리브 위상은 몸통 높이 가운데(yBody+H/2), 패널 격자 구조(G형)는 domain 이 준 p.y 에 찍는다 */}
+        {panels.map((p, k) => sc(p.x1 - p.x0) > 18 && (
+          <text key={'l' + k} x={px((p.x0 + p.x1) / 2)} y={py(p.y ?? (yBody + H / 2))}
             textAnchor='middle' dominantBaseline='central'
             fontSize={Math.min(10, sc(p.x1 - p.x0) * 0.18)} fill='#7ab8f5'>{p.label}</text>
         ))}

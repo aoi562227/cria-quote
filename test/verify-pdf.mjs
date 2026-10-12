@@ -488,7 +488,7 @@ const L8 = (x, y, w, h) => {
 
 /** 구식 xref table · 무압축 PDF 를 조립한다. /Contents 를 **배열로** 만들 수 있어야
  *  다중 스트림 경로(PDF 32000-1 §7.8.2)를 밟을 수 있다. */
-function buildPdf({ wMM = 200, hMM = 100, oxMM = 0, oyMM = 0, rotate = 0, streams = [] }) {
+function buildPdf({ wMM = 200, hMM = 100, oxMM = 0, oyMM = 0, rotate = 0, userUnit = 0, streams = [] }) {
   const parts = []; let len = 0;
   const push = x => { const u = typeof x === "string" ? encL(x) : x; parts.push(u); len += u.length; };
   push("%PDF-1.4\n");
@@ -498,7 +498,7 @@ function buildPdf({ wMM = 200, hMM = 100, oxMM = 0, oyMM = 0, rotate = 0, stream
   const objs = [
     [1, `<</Type/Catalog/Pages 2 0 R>>`, null],
     [2, `<</Type/Pages/Kids[3 0 R]/Count 1>>`, null],
-    [3, `<</Type/Page/Parent 2 0 R/MediaBox[${mb}]${rotate ? `/Rotate ${rotate}` : ""}/Contents ${cRef}>>`, null],
+    [3, `<</Type/Page/Parent 2 0 R/MediaBox[${mb}]${rotate ? `/Rotate ${rotate}` : ""}${userUnit ? `/UserUnit ${userUnit}` : ""}/Contents ${cRef}>>`, null],
     ...bodies.map((b, i) => [4 + i, `<</Length ${b.length}>>`, b]),
   ];
   const off = {};
@@ -560,6 +560,49 @@ console.log("\n═══ §E 조용히 틀리지 않는지 (회귀 게이트) �
              near(r.pageSize.w, 200, .05) && near(r.pageSize.h, 100, .05);
   check("E3 MediaBox 원점 이동 → x0/y0 = 10,10", ok, err || `x0,y0 = ${c?.bbox.x0},${c?.bbox.y0} · page ${r?.pageSize.w}×${r?.pageSize.h}`);
   console.log(`  ${ok ? "✓" : "✗"} MediaBox 원점 (100,50)mm → 도형 x0,y0 = ${err || `${c.bbox.x0},${c.bbox.y0}`}`);
+}
+
+// E3-b /UserUnit — 일러스트레이터 「대형 캔버스」 문서는 좌표가 전부 1/10 이고 페이지에 /UserUnit 10 이 붙는다.
+//    종전: 이 값을 안 읽어 200×80×70 4면접착 칼선(실물 380.6×330)이 38×33mm 로 읽혔고, 한 판에 165up ·
+//          개당 93원이 **경고 0개**로 나갔다(26-10-02 · docs/g형예시/4면접착예시2_200x80x70.pdf).
+//    같은 도형을 UserUnit 없이/10 으로 두 번 읽어 **정확히 10배**인지, 경고가 뜨는지를 같이 잰다.
+{
+  // 같은 실물(50×30 도형 · 200×100 페이지)을 두 가지로 적는다: 좌표 그대로 / 좌표 1/10 + UserUnit 10.
+  const a = await tryRead(buildPdf({ wMM: 200, hMM: 100, streams: [`${MM} 0 0 ${MM} 0 0 cm ` + L8(20, 15, 50, 30)] }), "E3b-plain.pdf");
+  const b = await tryRead(buildPdf({ wMM: 20, hMM: 10, userUnit: 10, streams: [`${MM} 0 0 ${MM} 0 0 cm ` + L8(2, 1.5, 5, 3)] }), "E3b-userunit10.pdf");
+  const ok = !a.err && !b.err &&
+             near(a.r.bbox.w, 50, .05) && near(a.r.bbox.h, 30, .05) &&
+             near(b.r.bbox.w, 50, .05) && near(b.r.bbox.h, 30, .05) &&
+             near(b.r.pageSize.w, 200, .05) && near(b.r.pageSize.h, 100, .05) &&
+             b.r.warnings.some(w => /UserUnit/.test(w)) && !a.r.warnings.some(w => /UserUnit/.test(w));
+  check("E3-b /UserUnit 10 → 좌표 1/10 문서가 같은 실물(페이지 200×100 · bbox 50×30)로 읽힌다 · 경고", ok,
+        a.err || b.err || `plain ${a.r.bbox.w}×${a.r.bbox.h} · uu10 ${b.r.bbox.w}×${b.r.bbox.h} page ${b.r.pageSize.w}×${b.r.pageSize.h}`);
+  console.log(`  ${ok ? "✓" : "✗"} /UserUnit 10 → ${a.err || b.err || `bbox ${b.r.bbox.w}×${b.r.bbox.h} · 페이지 ${b.r.pageSize.w}×${b.r.pageSize.h} (UserUnit 없는 같은 실물 ${a.r.bbox.w}×${a.r.bbox.h})`}`);
+}
+
+// E3-c 패널 도식 — 직사각 패널을 손으로 맞대어 그린 규격 도면. 옆 패널이 0.6mm 떨어져 있어도 한 도형으로 읽는다.
+//    종전: 좌우 병합이 통째로 막혀 있어 G형 규격도 480×440 이 410×440 으로, 4면접착 380.6×330 이 360×330 으로 읽혔다.
+//    ⚠ 대조군이 본체다 — **본체가 직사각형뿐이 아니면(실제 칼선) 옆 사각형을 끌어오면 안 된다.**
+//      그 문이 열리면 iSHAP 2up 사고(옆 판 조각을 삼켜 557.1 → 574.54)가 다시 난다.
+{
+  const R = (x, y, w, h) => `${x} ${y} ${w} ${h} re S`;
+  const cm = `${MM} 0 0 ${MM} 0 0 cm `;
+  // 가운데 100×60 + 위 100×20 + 왼쪽 30×60 (꼭짓점이 정확히 같다) · 오른쪽 30×60 은 **0.6mm 떨어져** 있다
+  const panel = cm + [R(50, 20, 100, 60), R(50, 80, 100, 20), R(20, 20, 30, 60), R(150.6, 20, 30, 60)].join(" ");
+  const a = await tryRead(buildPdf({ wMM: 220, hMM: 120, streams: [panel] }), "E3c-panels.pdf");
+  // 멀리 떨어진(5mm) 사각형은 패널이 아니다 — 안 붙는다
+  const far = cm + [R(50, 20, 100, 60), R(50, 80, 100, 20), R(20, 20, 30, 60), R(155, 20, 30, 60)].join(" ");
+  const f = await tryRead(buildPdf({ wMM: 220, hMM: 120, streams: [far] }), "E3c-far.pdf");
+  // 대조군 — 본체가 8각 칼선(직사각형이 아님)이고 옆에 0.6mm 떨어진 닫힌 사각형이 있다 → 삼키면 안 된다
+  const real = cm + L8(50, 20, 100, 60) + " " + R(150.6, 20, 30, 60);
+  const c = await tryRead(buildPdf({ wMM: 220, hMM: 120, streams: [real] }), "E3c-control.pdf");
+  const ok = !a.err && !f.err && !c.err &&
+             near(a.r.bbox.w, 160.6, .05) && near(a.r.bbox.h, 80, .05) &&
+             near(f.r.bbox.w, 130, .05) &&
+             near(c.r.bbox.w, 100, .05) && near(c.r.bbox.h, 60, .05);
+  check("E3-c 패널 도식: 0.6mm 떨어진 옆 패널 흡수(160.6×80) · 5mm 는 안 붙음(130) · 실제 칼선 본체는 안 삼킴(100×60)", ok,
+        a.err || f.err || c.err || `panels ${a.r.bbox.w}×${a.r.bbox.h} · far ${f.r.bbox.w} · control ${c.r.bbox.w}×${c.r.bbox.h}`);
+  console.log(`  ${ok ? "✓" : "✗"} 패널 도식 → ${a.err || f.err || c.err || `맞닿음 ${a.r.bbox.w}×${a.r.bbox.h} · 5mm 떨어짐 ${f.r.bbox.w}×${f.r.bbox.h} · 칼선 본체 대조군 ${c.r.bbox.w}×${c.r.bbox.h}`}`);
 }
 
 // E4 재단 마크만 있는 PDF — seed 가 없으면 **폴백하지 않는다.**

@@ -12,8 +12,8 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { calcNetSize, dielinePieces } from "../src/domain/dieline/index.mjs";
-import { solveImposition } from "../src/domain/imposition.mjs";
-import { BASE_SHEETS } from "../src/domain/data/sheets.mjs";
+import { solveImposition, printableArea } from "../src/domain/imposition.mjs";
+import { BASE_SHEETS, GRIP_MM, FIT_TOL, effectiveSheet } from "../src/domain/data/sheets.mjs";
 import { readDieline } from "../src/domain/pdf-dieline.mjs";
 import { resolveOracle } from "./oracle-path.mjs";
 import { buildDieline } from "../src/domain/quote.mjs";
@@ -1396,12 +1396,15 @@ const COV_BUDGET = {
     "이웃 패널 쪽으로 못 나간다. 최악 지점이 전면(idx1) 가장자리 열인 것이 그 증거다. " +
     "조치 = 구조 파일이 날개의 x 범위를 직접 주는 통로가 필요하다(현재 깊이 1개만 준다). " +
     "★ 26-08-26 area 321.5 → 322.5 (실측 321.1 → 322.1) — **모델이 나빠진 게 아니라 실물이 " +
-    "더 잘 읽혔다.** pdf-dieline 이 허용오차 안의 끝점을 병합하게 되면서(JOIN_TOL 0.28) 이 " +
+    "더 잘 읽혔다.** pdf-dieline 이 허용오차 안의 끝점을 병합하게 되면서(JOIN_TOL 0.275) 이 " +
     "도면의 61.05×34.82 조각(@128.81,208.93 · 잠금 귀 자리, 칼선 bbox **안**)이 본체에 붙었다. " +
     "후보 2개 → 1개 · 선분 241 → 249 · 채움 71.6% → 74.1% · healSegs 인공 다리 103 → 101건. " +
     "실물에 재료가 1.0mm² 더 보이니 「실물 − 모델」도 그만큼 늘었다. bbox 는 303.33×285.00 " +
     "그대로이고 최대깊이 44.27 도 그대로이며 자세는 오히려 좋아졌다(여백오차 4.94 → 2.94mm/칸). " +
-    "즉 늘어난 1.0mm² 는 새 결손이 아니라 **원래 있었는데 안 보이던 결손**이다. 원인 문장은 그대로다" },
+    "즉 늘어난 1.0mm² 는 새 결손이 아니라 **원래 있었는데 안 보이던 결손**이다. 원인 문장은 그대로다. " +
+    "★ 26-08-27 JOIN_TOL 0.275 → 0.315 로 올렸을 때 이 값은 **안 움직였다**(실측 322.1 그대로) — " +
+    "이 도면이 그 구간에서 새로 잇는 쌍은 없다(안정대 0.30001~0.32999 · 다음 변화는 0.3300 에서 " +
+    "선분 234 → 233 이다). 예산 322.5 는 재측정 후에도 그대로다" },
   "다빈기획":  { run: 58.75, area:  679.5, why: "니치어와 같은 원인(뚜껑이 패널 경계를 넘음). W=190 이라 절대값이 가장 크다" },
   "뉴로티엑스": { run:  6.35, area:  103.0, why: "니치어와 같은 원인. 5벌 중 가장 작다(D=20 · 뚜껑 32)" },
   "칼선-09":  { run: 24.10, area:  201.0, why: "니치어와 같은 원인. DXF 유래라 칼선/오시선이 레이어로 갈려 있어 계측 신뢰도는 5벌 중 가장 높다" },
@@ -1660,6 +1663,60 @@ console.log(`
                              표본이 그 줄을 안 지나간다. 겹침만 「실측 자세」 절이 잰다.
                              near 를 싣는 목형이 생기면 그때 자동으로 두 게이트에 들어온다.
     ✗ 배치 규칙(맞물림 종류)·금액   — verify-net · scorecard-* 의 일이다.`);
+
+// ══════════════════════════════════════════════════════════════════
+//  ★ 물림 여백 — 「3,3」 과 「1.5 1.5 1.5 1.5」 는 **같은 수다** (선주 물음 26-09-17)
+//
+//  물음 원문: 「근데 원래 3 3이었다가 1.5 1.5 1.5 1.5 이렇게 들어가는데 뭐가 다른겨」
+//  답: **한 개도 안 다르다.** 선주의 지적이 정확하고, 그 사실을 여기서 잰다.
+//
+//  왜 같은가 — `printableArea` 는 축마다 **여백의 합**만 뺀다(`GRIP_MM * 2 = 3.0`).
+//  위3+아래0 이든 위1.5+아래1.5 든 축당 총량이 3.0 이면 printW/printH 가 같은 수이고,
+//  up 은 printW/printH 의 순수 함수이므로 **판걸이도 R 도 금액도 한 자리도 안 움직인다.**
+//  다른 것은 **여백의 위치**뿐이다. 실무적으로 나뉘는 쪽이 옳다 — 반대편 물림이 0 이면
+//  그쪽 칼선이 판 끝에 붙는다.
+//  ⚠ 그리고 **실제로 판걸이를 움직인 것은 3,3 → 1.5×4 가 아니라 `0 → 3` 이었다.**
+//    26-09-16 이전 코드에는 여백 상수가 아예 없었다(sheets.mjs GRIP_MM 주석 — 「위·왼쪽
+//    3mm」는 코드에 없던 수다). up 스윕 6,300조합에서 움직인 133건은 전부 그 0→3 의 몫이다.
+//
+//  ★ 이 단언이 막는 오해: 「대칭으로 바꾸면 인쇄면이 좁아져 up 이 준다」 · 「한쪽으로 몰면
+//    넓게 쓴다」. 둘 다 거짓이고, 그걸 믿고 되돌리면 **아무 스위트도 안 빨개진 채** 여백
+//    정책만 뒤집힌다. 여기서 빨개지는 경우는 둘뿐이다 —
+//      ① printableArea 가 축 총량이 아니라 **split 에 의존**하게 바뀌었다(비대칭 차감)
+//      ② 축 총량 3.0 자체가 바뀌었다(GRIP_MM 을 1.5 아닌 값으로 옮겼다)
+// ══════════════════════════════════════════════════════════════════
+{
+  // 축 하나를 (앞여백, 뒷여백)으로 나눠 인쇄 가능 길이를 내는 식 — printableArea 와 같은 꼴.
+  const axis = (len, head, tail) => Math.max(0, len - (head + tail)) * (1 + FIT_TOL);
+  // 축당 총량이 **전부 3.0** 인 다섯 가지 나눔. 선주가 말한 두 가지가 첫 둘이다.
+  const SPLITS = [["3,0 (한쪽 몰림 = 선주가 「원래」로 읽은 모양)", 3.0, 0],
+                  ["1.5,1.5 (현행 GRIP_MM 사방 1.5)",              1.5, 1.5],
+                  ["0,3 (반대쪽 몰림)",                            0,   3.0],
+                  ["2,1",                                          2.0, 1.0],
+                  ["0.75,2.25",                                    0.75, 2.25]];
+  let splitBad = 0, paBad = 0;
+  for (const s of BASE_SHEETS) {
+    const es = effectiveSheet(s.w, s.h), pa = printableArea(s);
+    for (const [, head, tail] of SPLITS) {
+      if (axis(es.long, head, tail) !== axis(es.long, 1.5, 1.5)) splitBad++;
+      if (axis(es.short, head, tail) !== axis(es.short, 1.5, 1.5)) splitBad++;
+    }
+    // 현행 printableArea 가 정말 「축 총량만」 보는가 — 식이 아니라 **출력**으로 확인한다.
+    if (pa.printW !== axis(es.long, 1.5, 1.5) || pa.printH !== axis(es.short, 1.5, 1.5)) paBad++;
+  }
+  console.log("");
+  console.log("═══ 물림 여백 — 「3,3」 vs 「1.5×4」 ═════════════════════════════════════");
+  console.log(`  축당 총량 = GRIP_MM ${GRIP_MM} × 2 = ${(GRIP_MM * 2).toFixed(1)}mm  (사방으로 나눈 값이지 한 변 값이 아니다)`);
+  const s0 = BASE_SHEETS[1], es0 = effectiveSheet(s0.w, s0.h);   // 4×62 — 절대선이 쓰는 판
+  for (const [label, head, tail] of SPLITS)
+    console.log(`    ${label.padEnd(44)} 4×62 인쇄면 ` +
+                `${axis(es0.long, head, tail).toFixed(3)} × ${axis(es0.short, head, tail).toFixed(3)}`);
+  console.log(`  ⟹ 다섯 나눔이 **전부 같은 수**다. up 은 이 두 수의 함수이므로 판걸이도 안 움직인다.`);
+  check("여백 나눔이 달라도 인쇄면이 같다 (판형 11 × 나눔 5 × 축 2)", 0, splitBad, 0.5, null);
+  check("printableArea 가 축 총량만 본다 (판형 11)", 0, paBad, 0.5, null);
+  // 축 총량 자체를 못박는다 — 「대칭으로 만들자」며 GRIP_MM 을 3 으로 올리면 여기가 빨개진다.
+  check("물림 여백 축당 총량 = 3.0mm", 3.0, GRIP_MM * 2, 1e-9, null);
+}
 
 // ══════════════════════════════════════════════════════════════════
 //  집계 — 종전에는 카운터가 없어 몇 건이 틀려도 항상 exit 0 이었다

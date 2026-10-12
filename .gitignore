@@ -28,3 +28,5 @@ docs/
 #     경로는 **로컬 수동 배포** 하나였고 그것을 predeploy 가 닫는다.
 test-pdf/
 public/*.pdf
+# tools/gtype-dieline.mjs 기본 출력 폴더 — 고객 규격 도면이 들어간다(공개 저장소)
+dieline-out/

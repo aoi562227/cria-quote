@@ -1202,7 +1202,8 @@ export default function ShowroomPage({ carried = null }) {
           {/* 도면 범례 — 고객이 「어디가 잘리고 어디가 접히고 어디에 풀이 발리는지」를
               읽는 자리. 구분이 없으면 도면이 아니라 선 뭉치로 보인다.
               ⚠ 출처 줄은 **세 갈래**다. 조건이 `folds.length` 인 이유:
-                G형·G형트레이는 dieline/index.mjs 의 `if (!st.polygon)` 분기로 빠져
+                (26-10-08 — G형 둘은 이제 도면을 그려 folds 가 16 이다 → srcBox. 아래는 「직접입력」의 이야기다.)
+                종전 G형·G형트레이는 dieline/index.mjs 의 `if (!st.polygon)` 분기로 빠져
                 전개도가 **직사각 1조각**이다(cuts 1 · folds 0 · glue 0 — ARCHITECTURE
                 「폴리곤 미확정 → 직사각」). 그 구조에 srcBox(「날개 모양은 표준형
                 근사입니다」)를 내면 사실과 다르다 — 근사된 날개가 아니라 날개·오시선·

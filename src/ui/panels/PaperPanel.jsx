@@ -64,6 +64,13 @@ export default function PaperPanel({ s, u, sheetInfo, autoPriceInfo, result }) {
       {/* 지대 단가 자동 표시 */}
       {sheetInfo && !s.mPrice && autoPriceInfo && (()=>{
         const pi = autoPriceInfo;
+        // 판형 id → 사람이 읽는 짧은 이름 ("4×62  (788×545)" → "4×62")
+        const nameOf = id => (BASE_SHEETS.find(x=>x.id===id)?.label||"").split("(")[0].trim();
+        const badge = pi.basis === "obs"   ? "✓ 확인"
+                    : pi.basis === "fam"   ? "≡ 계열"
+                    : pi.basis === "ratio" ? "⚠ 환산"
+                    : pi.basis === "gsm"   ? "⚠ 평량"
+                    : pi.confirmed         ? "✓ 확인" : "⚠ 추정";
         return (
           <div style={{background:"#050f1c",border:`1px solid ${pi.noData?"#aa2200":pi.confirmed?"#1a3a50":"#4a2a10"}`,borderRadius:4,padding:"7px 10px",fontSize:10,color:"#66aadd",marginBottom:8}}>
             {pi.noData ? (
@@ -78,10 +85,20 @@ export default function PaperPanel({ s, u, sheetInfo, autoPriceInfo, result }) {
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                 <span>
                   지대 단가
+                  {/* ★ 26-09-15 — 배지가 3단이 됐다(정합 N1~N4). 기준은 **basis** 다
+                      (confirmed 가 아니다 — 그건 「견적서가 있나」라는 다른 질문이고,
+                       N3 로 자격을 잃은 칸에서 둘이 갈린다. process/paper.mjs markOf 참조):
+                        ✓ 확인 : 이 칸에 견적서가 있고 값도 그대로다
+                        ≡ 계열 : 같은 원지계열에 견적서가 있다 (1R = 원지 500장 항등식)
+                        ⚠ 환산 : 그 계열엔 없어 원지 면적비로 뻗은 값이다
+                      ★ 26-09-17 — **4단**이 됐다(평량 정합 N5~N8):
+                        ⚠ 평량 : 그 **지종**에 견적서가 0장이라 같은 계열의 다른 평량에서
+                                 뻗었다. ⚠환산보다 한 단 더 먼 값이라 색을 더 붉게 준다 —
+                                 같은 주황으로 찍으면 사용자가 둘을 같은 급으로 읽는다. */}
                   <span style={{fontSize:8,marginLeft:4,padding:"1px 5px",borderRadius:2,
-                    background:pi.confirmed?"#0a3020":"#3a2000",
-                    color:pi.confirmed?"#44cc88":"#ffaa44"}}>
-                    {pi.confirmed?"✓ 확인":"⚠ 추정"}
+                    background:badge==="✓ 확인"?"#0a3020":badge==="≡ 계열"?"#0a2838":badge==="⚠ 평량"?"#3a1000":"#3a2000",
+                    color:badge==="✓ 확인"?"#44cc88":badge==="≡ 계열"?"#55bbdd":badge==="⚠ 평량"?"#ff8866":"#ffaa44"}}>
+                    {badge}
                   </span>
                 </span>
                 <strong style={{color:pi.confirmed?"#ffcc44":"#ff9944",fontFamily:"monospace",fontSize:13}}>
@@ -90,10 +107,36 @@ export default function PaperPanel({ s, u, sheetInfo, autoPriceInfo, result }) {
               </div>
             )}
             {!pi.noData && (
+              /* 근거 줄 — ★ 정합이 값을 움직였으면 **원래 표값을 화면에 남긴다.**
+                 주석은 고객 앞에 안 나온다. 되돌릴 근거는 보이는 곳에 있어야 한다.
+                 ⚠ 여기는 `&&` 뒤 JS 식 자리라 중괄호 JSX 주석을 쓰면 빌드가 깨진다.
+                    이 자리엔 블록 주석만 쓴다. */
               <div style={{fontSize:8.5,color:"#335566",marginTop:3}}>
-                {pi.confirmed
+                {pi.basis === "fam"
+                  /* ⚠ famSheet 다(anchorSheet 아니다) — 값을 준 건 **같은 계열**의 칸이다.
+                     ALK325 하4 는 하2 에서 받고 앵커는 사륙 4×62 라 둘이 다르다. */
+                  ? `${nameOf(pi.famSheet)} 견적서 실측가로 정합 · 같은 ${sheetInfo.family} 원지`
+                    + ` (1R = 원지 500장이라 절수가 달라도 원/R 은 같다)`
+                    + (pi.raw > 0 ? ` · 이 칸 견적서값 ${pi.raw.toLocaleString()} → ${pi.price.toLocaleString()}` : "")
+                  : pi.basis === "gsm" && pi.gsm
+                  /* ⚠평량 — 그 지종의 견적서가 **0장**이다. 어느 지종의 몇 g 두 점에서
+                     어떻게 왔는지를 **수까지** 적는다. 「추정입니다」만 적으면 사용자가
+                     되짚을 수가 없고, 되짚을 수 없는 추정은 고객 앞에서 그냥 주장이다. */
+                  ? `⚠ 견적서 없는 지종 — 같은 계열의 ${pi.gsm.from.map(f => `${f.gsm}g ${f.v.toLocaleString()}`).join(" · ")}`
+                    + ` (${nameOf(pi.gsm.sheet)}) 를 평량으로 ${pi.gsm.via}해 ${pi.gsm.v.toLocaleString()} 원/R`
+                    + (pi.gsm.fam === sheetInfo.family ? ""
+                       : ` · 다시 ${pi.gsm.fam}→${sheetInfo.family} 원지 면적비로 환산`)
+                  : pi.basis === "ratio"
+                  ? `⚠ ${nameOf(pi.anchorSheet)} 값을 ${pi.anchorFam}→${sheetInfo.family}`
+                    + ` 원지 면적비로 환산 (이 계열엔 견적서가 없다)`
+                    /* raw 가 있는데 ratio 면 N3 로 자격을 잃은 칸이다 — 그 사실을 적는다.
+                       값을 지운 게 아니라 **증거 자격만** 뺏었다는 걸 화면이 말해야 한다. */
+                    + (pi.raw > 0 ? ` · 이 칸 견적서값 ${pi.raw.toLocaleString()} 은 다른 원지계열 칸과`
+                                  + ` 같은 수라 복사로 본다 (N3)` : "")
+                  /* basis 가 없는 경로 — 수동단가·지종이 표에 통째로 없을 때의 구식 환산. */
+                  : pi.confirmed
                   ? `${sheetInfo.label.split("(")[0].trim()} 견적서 실측가 · 1R=${sheetInfo.sheetsPerR?.toLocaleString()}장`
-                  : `${(BASE_SHEETS.find(x=>x.id===pi.estimateFrom)?.label||"").split("(")[0].trim()} 장당단가 × 면적비 환산 (미확인)`}
+                  : `${nameOf(pi.estimateFrom)} 장당단가 × 면적비 환산 (미확인)`}
               </div>
             )}
           </div>

@@ -912,18 +912,31 @@ async function run(doc, data, ctm0, res, resources, depth, st8) {
  *
  *  값의 근거 — 짐작이 아니다. 16개 파일(오라클 9건 + 십자조립 5벌 + 칼선-10 + 소스코
  *  C5AF4AD1) 전수에서 **실제로 병합된 쌍의 거리를 전부** 재고, TOL 을 0.05~1.00 으로
- *  쓸어 16개 결과가 어디서 바뀌는지 확인해서 잡았다(26-08-26 실측):
+ *  쓸어 16개 결과가 어디서 바뀌는지 확인해서 잡았다(26-08-26 실측 · 26-08-27 재측):
  *
- *   이어야 함 — 실제로 이어지는 거리 **전수** (최소 0.0100 · 최대 0.2746)
+ *   이어야 함 — 실제로 이어지는 거리 **전수** (최소 0.0100 · 최대 0.3000)
  *     0.0100  소스코C5AF · 니치어 · 아르토
- *     0.0400  아르토 — 다섯 조각을 가르던 진짜 이음새 **이 버그의 원인** · 칼선-09
+ *     0.0400  아르토 — 다섯 조각을 가르던 진짜 이음새 **그 버그의 원인** · 칼선-09
  *     0.0200 0.0224 0.0361 0.0424 0.0447 0.0671 0.0707 0.0985 0.1105 0.1253 0.1300
  *     0.1503 0.1700 0.1749 0.1811 0.1844 0.1879 0.1942 0.2081 0.2100 0.2110 0.2220
- *     0.2300 0.2377 0.2419 0.2500 0.2532 0.2581 0.2702
- *     0.2746  칼선-14 모서리 필렛 T 접합 — **이어지는 것의 최대값**
- *       (쌍 수: 소스코C5AF 30 · 아르토 19 · 니치어 4 · 칼선-14 1 · 칼선-09 1 · 나머지 11개 파일 0)
- *   ── 관측 안정대: TOL 0.25~0.30 에서 16개 파일 결과가 **완전히 같다.** 0.275 는 그 한가운데 ──
- *     0.3000  소스코 삼면접착 — 여기부터 결과가 바뀐다(채택 도형 선분 128 → 130)
+ *     0.2300 0.2319 0.2377 0.2419 0.2476 0.2500 0.2532 0.2581 0.2702
+ *     0.2746  칼선-14 모서리 필렛 T 접합
+ *     0.2864 0.2927 0.2973  소스코C5AF
+ *     0.3000  ★ **소스코 삼면접착 몸통 윗변** — 이것이 26-08-27 에 올린 이유다. 이 두 쌍이
+ *             안 이어지면 몸통 윗변 조각(폴리라인 2개)이 본체에서 떨어진 별개 성분으로
+ *             남는다. 이으면 채택 도형이 선분 128 → 130 · 폴리라인 10 → 12 가 되고
+ *             열린 끝 최악 이격이 130.30 → 42.86mm 로 준다.
+ *             ⚠ **그래도 윤곽은 안 닫힌다** — 이 도면은 몸통 윗변이 x 24~337 구간에서
+ *               통째로 안 그려져 있고 이 두 쌍은 그중 **한 조각**만 붙인다. 손배치 충돌
+ *               도형은 여전히 볼록껍질이고 **그게 맞다**: 그 상태의 래스터는 전개도의
+ *               36% 밖에 안 돼 실물보다 작아진다(nest-drag 「부분 누수」 절 · ARCHITECTURE §12).
+ *               올린 값이 좋은 것과 「이제 raster 가 된다」는 **다른 얘기다.**
+ *       (쌍 수: 소스코C5AF 37 · 아르토 19 · 니치어 4 · 소스코삼면 2 · 칼선-14 1 ·
+ *        칼선-09 1 · 나머지 10개 파일 0.  총 64쌍 · 최대 군지름 0.3048)
+ *   ── 관측 안정대: TOL **0.30001 ~ 0.32999** 에서 16개 파일 결과가 **완전히 같다.**
+ *      0.315 는 그 한가운데다. 양 끝은 둘 다 격자에 정확히 얹힌 쌍이라 폭이 딱 떨어진다 —
+ *      아래 0.3000(소스코 윗변)에서 열리고 아래 0.3300(니치어)에서 닫힌다 ──
+ *     0.3300  니치어 — 여기부터 다시 결과가 바뀐다(채택 도형 선분 234 → 233)
  *   끊어야 함
  *     0.700   텍 혀 모서리가 몸통 접는선에서 물러난 폭(= 구조 치수 D−0.7).
  *             TOL 을 0.7 로 올리면 16개 중 13개가 이 거리를 잇는다.
@@ -936,15 +949,22 @@ async function run(doc, data, ctm0, res, resources, depth, st8) {
  *     bbox 는 380.3×223.5 그대로고 9건 오라클 전부 초록이다. 바뀌는 것은 채택 도형의
  *     **선분 수**(128 → 170)와 polygons — 3단계 드래그 배치가 쓰는 충돌 도형이다.
  *     → 그러니 이 값을 「오라클이 안 깨지니까」로 올리지 마라. 올릴 근거는 구조 치수(0.700)와
- *       니크(0.890) **아래**라는 것 하나뿐이고, 0.275 는 그 3.2분의 1 이다.
+ *       니크(0.890) **아래**라는 것 하나뿐이고, 0.315 는 그 2.2분의 1 · 2.8분의 1 이다.
+ *       ★ 실측으로도 확인한다: 16개 파일 전수에서 **실제로 생긴 군의 최대 지름이 0.3048** 이다
+ *         (0.700 · 0.890 근처는 아무것도 안 이어졌다). 완전연결이 그 상한을 보장하지만
+ *         「보장된다」로 끝내지 않고 값을 옮길 때마다 다시 잰다.
  *
- *  ⚠ 0.275 가 격자(0.01mm)의 배수가 **아닌 것은 일부러다.** 좌표가 0.01 격자에 얹혀 있어
- *    두 점 사이 d² 는 언제나 1e-4 × 정수인데 T² = 1e-4 × 756.25 라 **정수가 될 수 없다** —
+ *  ⚠ 0.315 가 격자(0.01mm)의 배수가 **아닌 것은 일부러다.** 좌표가 0.01 격자에 얹혀 있어
+ *    두 점 사이 d² 는 언제나 1e-4 × 정수인데 T² = 1e-4 × 992.25 라 **정수가 될 수 없다** —
  *    어떤 쌍도 문턱에 정확히 얹히지 못한다. 종전 0.28(= 0.01×28)에서는 d² = T² 인 쌍이
  *    실제로 나왔고 부동소수 잔차로 갈렸다: iSHAP 무제-3 의 dx=0 · dy=0.280 짜리 6쌍이
  *    3쌍은 병합 3쌍은 미병합이었다(같은 도면의 기하학적으로 똑같은 간극이다).
- *    값을 옮길 일이 있으면 **0.005 의 홀수배**로 유지해라 — 0.265 · 0.275 · 0.285 …  */
-const JOIN_TOL = 0.275;
+ *    값을 옮길 일이 있으면 **0.005 의 홀수배**로 유지해라 — 0.305 · 0.315 · 0.325 …
+ *    ⚠⚠ **0.31 은 쓰지 마라 — 0.315 와 오늘은 결과가 같지만 격자 위다.** 0.31² = 1e-4×961
+ *      이라 dx=0·dy=0.310 짜리 쌍이 문턱에 정확히 얹힌다. 안정대 (0.300, 0.330) 안의 값
+ *      중 **0.31 · 0.32 만** 그 성질을 갖는다(0.30·0.33 은 안정대 밖의 실제 쌍이다).
+ *      지금 16개 파일에 그런 쌍이 없다는 것은 운이고, 다음 도면에서 위 iSHAP 이 재현된다.  */
+const JOIN_TOL = 0.315;
 
 function buildComponents(subpaths) {
   const key = new Map();             // "x|y" → node id
@@ -1103,7 +1123,18 @@ function buildComponents(subpaths) {
     if (qy[i] < cc.y0) cc.y0 = qy[i]; if (qy[i] > cc.y1) cc.y1 = qy[i];
   }
   for (const [a] of edges) comps.get(find(a)).segs++;
-  for (const ids of polys) comps.get(find(ids[0])).polys.push(ids);
+  for (const ids of polys) {
+    const cc = comps.get(find(ids[0]));
+    cc.polys.push(ids);
+    // 이 폴리라인이 **축에 나란한 닫힌 직사각형**인가 — 「패널 도식」 판정(mergeInto)이 읽는다.
+    //   닫힘(첫점=끝점) · 서로 다른 꼭짓점 4개 · 네 점이 전부 자기 bbox 의 모서리.
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const i of ids) { if (qx[i] < x0) x0 = qx[i]; if (qx[i] > x1) x1 = qx[i]; if (qy[i] < y0) y0 = qy[i]; if (qy[i] > y1) y1 = qy[i]; }
+    const E = 0.01;
+    const isRect = ids.length === 5 && ids[0] === ids[4] && new Set(ids).size === 4 &&
+      ids.every(i => (Math.abs(qx[i] - x0) < E || Math.abs(qx[i] - x1) < E) && (Math.abs(qy[i] - y0) < E || Math.abs(qy[i] - y1) < E));
+    if (isRect) (cc.rects ||= []).push([x0, y0, x1, y1]); else cc.nonRect = true;
+  }
   // 지름 상한에 걸려 못 이은 쌍은 **대표 id 로 옮겨서** 넘긴다 — 부르는 쪽이 「채택한
   // 도형 위에 그런 자리가 있나」를 물어볼 수 있어야 조용히 지나가지 않는다.
   return { comps: [...comps.values()], px: qx, py: qy,
@@ -1160,7 +1191,48 @@ function mergeInto(seed, pool) {
     g.x0 = Math.min(g.x0, c.x0); g.y0 = Math.min(g.y0, c.y0);
     g.x1 = Math.max(g.x1, c.x1); g.y1 = Math.max(g.y1, c.y1);
   }
+  // ── 패널 도식 — 직사각 패널을 변끼리 맞대어 그린 「규격 도면」 ─────────────────────────
+  //  ★ 26-10-02 — isFlap 주석이 「측면 조각이 별개 성분인 도면이 나오면 그때 실측을 근거로 열어라」고
+  //    남겨 둔 그 도면이 왔다(docs/g형예시/ 4장 — G형·4면접착을 색 패널 사각형으로 그린 것).
+  //    손으로 맞댄 사각형이라 꼭짓점이 0.04~0.62mm 어긋나 한 성분이 못 되고, 좌우 병합은 막혀 있어서
+  //      G형예시2       480×440 → 410×440  (바깥 벽 70 · 모서리 사각 4개 탈락)
+  //      G형예시        340×470 → 230×414.7
+  //      4면접착예시2   380.6×330 → 360×330  (오른쪽 접착띠가 0.617mm 떨어져 그려졌다)
+  //    로 읽혔다. 좌우를 통째로 여는 것은 여전히 위험하다(iSHAP 2up — 옆 판 조각을 끌어온다).
+  //    그래서 **본체도 붙는 쪽도 전부 「닫힌 직사각형」뿐일 때만** 연다 — 실제 칼선(곡선·사선·열린
+  //    폴리라인)은 nonRect 라 이 분기에 **구조적으로 못 들어온다**(오라클 48건 불변으로 확인).
+  //    여러 겹을 허용한다(G형 바깥 벽은 안쪽 벽에 붙고, 안쪽 벽이 본체에 붙는다).
+  const panelOnly = c => !c.nonRect && c.rects && c.rects.length > 0 && c.rects.length === c.polys.length;
+  if (g.used.every(panelOnly)) {
+    const rects = g.used.flatMap(c => c.rects);
+    for (let grew = true; grew;) {
+      grew = false;
+      for (const c of pool) {
+        if (g.used.includes(c) || !panelOnly(c)) continue;
+        if (!c.rects.some(r => rects.some(q => abutRect(r, q)))) continue;
+        g.nodes.push(...c.nodes); g.segs += c.segs; g.polys.push(...c.polys); g.parts++; g.used.push(c);
+        g.panels = (g.panels || 0) + 1;
+        g.x0 = Math.min(g.x0, c.x0); g.y0 = Math.min(g.y0, c.y0);
+        g.x1 = Math.max(g.x1, c.x1); g.y1 = Math.max(g.y1, c.y1);
+        rects.push(...c.rects);
+        grew = true;
+      }
+    }
+  }
   return g;
+}
+
+const PANEL_ABUT = 0.7;   // 맞닿은 변 사이 허용 틈(mm). 관측 최대 0.617(4면접착예시2 접착띠) · 겹침 0.1(G형 모서리 사각)
+/** 두 직사각형 [x0,y0,x1,y1] 이 **변을 맞대고** 있는가 — 틈 ≤ PANEL_ABUT 이고 맞닿은 길이가 짧은 쪽 변의 절반 이상.
+ *  모서리만 닿는 것(대각 이웃)은 길이 0 이라 안 붙는다. */
+function abutRect(a, b) {
+  const ovY = Math.min(a[3], b[3]) - Math.max(a[1], b[1]);
+  const ovX = Math.min(a[2], b[2]) - Math.max(a[0], b[0]);
+  const side = (Math.abs(a[0] - b[2]) <= PANEL_ABUT || Math.abs(a[2] - b[0]) <= PANEL_ABUT) &&
+               ovY >= 0.5 * Math.min(a[3] - a[1], b[3] - b[1]);
+  const stack = (Math.abs(a[1] - b[3]) <= PANEL_ABUT || Math.abs(a[3] - b[1]) <= PANEL_ABUT) &&
+                ovX >= 0.5 * Math.min(a[2] - a[0], b[2] - b[0]);
+  return side || stack;
 }
 
 // ── 두 겹 윤곽 (도련 + 칼선) ──────────────────────────────────────
@@ -1229,8 +1301,17 @@ export async function readDieline(bytes, opt = {}) {
   const mb = (doc.arr(page.MediaBox ?? inh.MediaBox) || []).map(v => num(doc.resolve(v)));
   if (mb.length !== 4) throw new Error(`/MediaBox 를 읽지 못했다: ${source}`);
   const ox = Math.min(mb[0], mb[2]), oy = Math.min(mb[1], mb[3]);
-  const rawW = +(Math.abs(mb[2] - mb[0]) * K).toFixed(2);
-  const rawH = +(Math.abs(mb[3] - mb[1]) * K).toFixed(2);
+  // ── /UserUnit — 좌표 1단위가 1/72 inch 의 몇 배인가 (PDF 32000-1 §14.11.2 · 기본 1 · 상속 안 됨) ──
+  //   ★ 26-10-02 — 일러스트레이터 「대형 캔버스」 문서는 /UserUnit 10 으로 저장된다(좌표가 전부 1/10).
+  //   이 값을 안 읽어서 200×80×70 4면접착 칼선(실물 380.6×330mm)이 **38×33mm** 로 읽혔고
+  //   4×64 한 판에 165up · 개당 93원이 경고 0개로 나갔다(`docs/g형예시/4면접착예시2_200x80x70.pdf`).
+  //   pt→mm 상수에 곱해 두면 MediaBox·CTM 이 한 번에 맞는다 — 아래 좌표는 종전대로 전부 mm 다.
+  const uuRaw = page.UserUnit === undefined ? 1 : num(doc.resolve(page.UserUnit));
+  const UU = uuRaw > 0 ? uuRaw : 1;
+  const KU = K * UU;
+  if (UU !== 1) warnings.push(`페이지 /UserUnit ${UU} 를 적용했다 — 좌표 1단위 = ${UU}/72 inch (일러스트레이터 대형 캔버스 문서).`);
+  const rawW = +(Math.abs(mb[2] - mb[0]) * KU).toFixed(2);
+  const rawH = +(Math.abs(mb[3] - mb[1]) * KU).toFixed(2);
   // ⚠ 타당성 검사 — 물리적으로 불가능한 값을 조용히 통과시키면 SheetCanvas 에 0 크기 판이
   //   내려가고 견적에는 그 숫자가 그대로 들어간다. MediaBox [0 0 0 0] 이나 원소가 없는
   //   간접참조(num() 이 0 으로 접힘)가 실제로 그런 값을 만든다.
@@ -1259,7 +1340,7 @@ export async function readDieline(bytes, opt = {}) {
   const res = [];
   // MediaBox 원점을 (0,0) 으로 옮기고 pt→mm 스케일을 CTM 에 넣은 뒤 /Rotate 를 곱한다.
   // 이렇게 하면 아래 모든 좌표가 처음부터 mm 이고, 폴리곤을 나중에 다시 훑지 않는다.
-  const base = mul([K, 0, 0, K, -ox * K, -oy * K], rotM);
+  const base = mul([KU, 0, 0, KU, -ox * KU, -oy * KU], rotM);
   // ⚠ /Contents 가 배열이면 **이어붙인 하나의 스트림**이다 (PDF 32000-1 §7.8.2).
   //   스트림마다 run() 을 새로 부르면 CTM·q/Q 스택이 초기화된다 — 스트림1 이
   //   `[mm cm] 2 0 0 2 0 0 cm`, 스트림2 가 50×30 폴리곤이면 100×60mm 가 나와야 하는데
